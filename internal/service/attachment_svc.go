@@ -15,15 +15,20 @@ type attachmentStore interface {
 type AttachmentService struct {
 	attachmentRepo attachmentStore
 	todoRepo       todoScopeChecker
+	access         TodoAccessChecker
 }
 
-func NewAttachmentService(attachmentRepo attachmentStore, todoRepo todoScopeChecker) *AttachmentService {
-	return &AttachmentService{attachmentRepo: attachmentRepo, todoRepo: todoRepo}
+func NewAttachmentService(attachmentRepo attachmentStore, todoRepo todoScopeChecker, access TodoAccessChecker) *AttachmentService {
+	return &AttachmentService{attachmentRepo: attachmentRepo, todoRepo: todoRepo, access: access}
 }
 
 func (s *AttachmentService) CreateAttachment(todoID, spaceID, userID, fileURL string, fileName *string, fileSize *int64, mimeType *string) (*model.TodoAttachment, error) {
-	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
+	todo, err := s.todoRepo.GetByID(todoID, spaceID)
+	if err != nil {
 		return nil, err
+	}
+	if !s.access.CanAccessTodo(todo, userID) {
+		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	a := &model.TodoAttachment{
 		TodoID:   todoID,
@@ -39,22 +44,28 @@ func (s *AttachmentService) CreateAttachment(todoID, spaceID, userID, fileURL st
 	return a, nil
 }
 
-func (s *AttachmentService) ListAttachments(todoID, spaceID string) ([]*model.TodoAttachment, error) {
-	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
+func (s *AttachmentService) ListAttachments(todoID, spaceID, userID string) ([]*model.TodoAttachment, error) {
+	todo, err := s.todoRepo.GetByID(todoID, spaceID)
+	if err != nil {
 		return nil, err
+	}
+	if !s.access.CanAccessTodo(todo, userID) {
+		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	return s.attachmentRepo.ListByTodo(todoID)
 }
 
-// DeleteAttachment enforces: (1) the attachment exists, (2) its parent todo is in
-// the caller's space, (3) the caller is the uploader.
 func (s *AttachmentService) DeleteAttachment(id, spaceID, userID string) error {
 	a, err := s.attachmentRepo.GetByID(id)
 	if err != nil {
 		return err
 	}
-	if _, err := s.todoRepo.GetByID(a.TodoID, spaceID); err != nil {
+	todo, err := s.todoRepo.GetByID(a.TodoID, spaceID)
+	if err != nil {
 		return err
+	}
+	if !s.access.CanAccessTodo(todo, userID) {
+		return apperr.Forbidden("not authorized to access this todo")
 	}
 	if a.UserID != userID {
 		return apperr.ErrForbidden

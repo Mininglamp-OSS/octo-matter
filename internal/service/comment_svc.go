@@ -5,7 +5,6 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
-// commentStore is the narrow CommentRepo surface the service depends on.
 type commentStore interface {
 	Create(c *model.TodoComment) error
 	GetByID(id string) (*model.TodoComment, error)
@@ -13,8 +12,7 @@ type commentStore interface {
 	ListByTodo(todoID string) ([]*model.TodoComment, error)
 }
 
-// todoScopeChecker is satisfied by TodoRepo; it only needs to resolve a todo
-// within a space so we can reject cross-space access.
+// todoScopeChecker resolves a todo within a space to reject cross-space access.
 type todoScopeChecker interface {
 	GetByID(id, spaceID string) (*model.Todo, error)
 }
@@ -22,18 +20,20 @@ type todoScopeChecker interface {
 type CommentService struct {
 	commentRepo commentStore
 	todoRepo    todoScopeChecker
+	access      TodoAccessChecker
 }
 
-func NewCommentService(commentRepo commentStore, todoRepo todoScopeChecker) *CommentService {
-	return &CommentService{commentRepo: commentRepo, todoRepo: todoRepo}
+func NewCommentService(commentRepo commentStore, todoRepo todoScopeChecker, access TodoAccessChecker) *CommentService {
+	return &CommentService{commentRepo: commentRepo, todoRepo: todoRepo, access: access}
 }
 
-// CreateComment verifies the parent todo belongs to spaceID before inserting.
-// Returns apperr.ErrNotFound for todos in other spaces — clients cannot
-// distinguish "wrong space" from "does not exist".
 func (s *CommentService) CreateComment(todoID, spaceID, userID, content string) (*model.TodoComment, error) {
-	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
+	todo, err := s.todoRepo.GetByID(todoID, spaceID)
+	if err != nil {
 		return nil, err
+	}
+	if !s.access.CanAccessTodo(todo, userID) {
+		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	c := &model.TodoComment{
 		TodoID:  todoID,
@@ -46,22 +46,28 @@ func (s *CommentService) CreateComment(todoID, spaceID, userID, content string) 
 	return c, nil
 }
 
-func (s *CommentService) ListComments(todoID, spaceID string) ([]*model.TodoComment, error) {
-	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
+func (s *CommentService) ListComments(todoID, spaceID, userID string) ([]*model.TodoComment, error) {
+	todo, err := s.todoRepo.GetByID(todoID, spaceID)
+	if err != nil {
 		return nil, err
+	}
+	if !s.access.CanAccessTodo(todo, userID) {
+		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	return s.commentRepo.ListByTodo(todoID)
 }
 
-// DeleteComment enforces: (1) the comment exists, (2) its parent todo is in the
-// caller's space (via a GetByID check), (3) the caller is the comment's author.
 func (s *CommentService) DeleteComment(id, spaceID, userID string) error {
 	c, err := s.commentRepo.GetByID(id)
 	if err != nil {
 		return err
 	}
-	if _, err := s.todoRepo.GetByID(c.TodoID, spaceID); err != nil {
+	todo, err := s.todoRepo.GetByID(c.TodoID, spaceID)
+	if err != nil {
 		return err
+	}
+	if !s.access.CanAccessTodo(todo, userID) {
+		return apperr.Forbidden("not authorized to access this todo")
 	}
 	if c.UserID != userID {
 		return apperr.ErrForbidden

@@ -48,10 +48,11 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 // ListByUser returns non-archived goals where user is creator or assignee.
 func (r *GoalRepo) ListByUser(spaceID, userID string) ([]*model.Goal, error) {
 	var goals []*model.Goal
-	_, err := r.runner.Select("DISTINCT g.*").
+	_, err := r.runner.Select("g.*").
 		From(dbr.I("goals").As("g")).
 		LeftJoin(dbr.I("goal_assignees").As("ga"), "ga.goal_id = g.id").
 		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id = ? OR ga.user_id = ?)", spaceID, userID, userID).
+		GroupBy("g.id").
 		OrderDir("g.created_at", false).
 		Load(&goals)
 	if err != nil {

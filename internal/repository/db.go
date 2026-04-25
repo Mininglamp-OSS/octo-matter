@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"database/sql"
 	"errors"
 
 	"github.com/go-sql-driver/mysql"
@@ -33,5 +32,3 @@ func isDuplicateKeyErr(err error) bool {
 	return false
 }
 
-// placeholder for dbr.I usage in conditions
-var _ = sql.ErrNoRows

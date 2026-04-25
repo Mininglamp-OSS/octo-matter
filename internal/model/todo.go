@@ -46,6 +46,28 @@ func AllowedTransitions(current TodoStatus) []TodoStatus {
 	return result
 }
 
+// AllowedTransitionsForRole returns only the transitions the caller can perform.
+func AllowedTransitionsForRole(current TodoStatus, isCreator, isAssignee bool) []TodoStatus {
+	targets, ok := ValidTransitions[current]
+	if !ok {
+		return nil
+	}
+	var result []TodoStatus
+	for target, requiredRole := range targets {
+		switch requiredRole {
+		case "creator":
+			if isCreator {
+				result = append(result, target)
+			}
+		case "creator_or_assignee":
+			if isCreator || isAssignee {
+				result = append(result, target)
+			}
+		}
+	}
+	return result
+}
+
 // CanTransition checks if a transition from current to target is valid for the given user role.
 // userIsCreator: the user is the todo creator.
 // userIsAssignee: the user is an assignee of the todo.

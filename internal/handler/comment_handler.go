@@ -32,7 +32,7 @@ func (h *CommentHandler) Create(c *gin.Context) {
 }
 
 func (h *CommentHandler) List(c *gin.Context) {
-	comments, err := h.svc.ListComments(c.Param("id"), spaceID(c))
+	comments, err := h.svc.ListComments(c.Param("id"), spaceID(c), uid(c))
 	if err != nil {
 		respondErr(c, err)
 		return
