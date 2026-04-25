@@ -77,30 +77,31 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		limit = 20
 	}
 
-	q := r.runner.Select("DISTINCT t.*").
-		From(dbr.I("todos").As("t")).
-		LeftJoin(dbr.I("todo_assignees").As("ta"), "ta.todo_id = t.id").
-		LeftJoin(dbr.I("goal_assignees").As("ga"), "ga.goal_id = t.goal_id").
-		Where("t.space_id = ? AND t.deleted_at IS NULL", spaceID).
-		Where("(t.creator_id = ? OR ta.user_id = ? OR ga.user_id = ?)", filter.CallerID, filter.CallerID, filter.CallerID)
+	q := r.runner.Select("*").
+		From("todos").
+		Where("space_id = ? AND deleted_at IS NULL", spaceID).
+		Where(
+			"(creator_id = ? OR id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?) OR goal_id IN (SELECT goal_id FROM goal_assignees WHERE user_id = ?))",
+			filter.CallerID, filter.CallerID, filter.CallerID,
+		)
 
 	if filter.GoalID != nil {
-		q = q.Where("t.goal_id = ?", *filter.GoalID)
+		q = q.Where("goal_id = ?", *filter.GoalID)
 	}
 	if filter.Status != nil {
-		q = q.Where("t.status = ?", *filter.Status)
+		q = q.Where("status = ?", *filter.Status)
 	}
 	if filter.AssigneeID != nil {
-		q = q.Where("t.id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?)", *filter.AssigneeID)
+		q = q.Where("id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?)", *filter.AssigneeID)
 	}
 	if filter.CreatorID != nil {
-		q = q.Where("t.creator_id = ?", *filter.CreatorID)
+		q = q.Where("creator_id = ?", *filter.CreatorID)
 	}
 	if filter.SourceChannelID != nil {
-		q = q.Where("t.source_channel_id = ?", *filter.SourceChannelID)
+		q = q.Where("source_channel_id = ?", *filter.SourceChannelID)
 	}
 	if filter.SourceChannelType != nil {
-		q = q.Where("t.source_channel_type = ?", *filter.SourceChannelType)
+		q = q.Where("source_channel_type = ?", *filter.SourceChannelType)
 	}
 	if filter.DeadlineBefore != nil {
 		q = q.Where("deadline < ?", *filter.DeadlineBefore)

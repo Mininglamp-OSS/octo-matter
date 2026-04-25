@@ -31,7 +31,7 @@ func main() {
 	txMgr := repository.NewTxManager(sess)
 
 	// Services
-	goalSvc := service.NewGoalService(goalRepo, todoRepo)
+	goalSvc := service.NewGoalService(goalRepo, todoRepo, txMgr)
 	todoSvc := service.NewTodoService(todoRepo, assigneeRepo, goalRepo, txMgr)
 	commentSvc := service.NewCommentService(commentRepo, todoRepo)
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, todoRepo)
