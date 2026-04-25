@@ -27,8 +27,8 @@ func main() {
 	// Services
 	goalSvc := service.NewGoalService(goalRepo, todoRepo)
 	todoSvc := service.NewTodoService(todoRepo, assigneeRepo)
-	commentSvc := service.NewCommentService(commentRepo)
-	attachmentSvc := service.NewAttachmentService(attachmentRepo)
+	commentSvc := service.NewCommentService(commentRepo, todoRepo)
+	attachmentSvc := service.NewAttachmentService(attachmentRepo, todoRepo)
 
 	// Handlers
 	goalH := handler.NewGoalHandler(goalSvc)

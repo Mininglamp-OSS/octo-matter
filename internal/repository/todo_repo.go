@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/gocraft/dbr/v2"
 	"github.com/google/uuid"
@@ -44,13 +46,18 @@ func (r *TodoRepo) Create(todo *model.Todo) error {
 	return err
 }
 
-func (r *TodoRepo) GetByID(id string) (*model.Todo, error) {
+// GetByID loads a non-deleted todo that belongs to spaceID. Returns apperr.ErrNotFound
+// if the row does not exist OR lives in another space (callers must not distinguish).
+func (r *TodoRepo) GetByID(id, spaceID string) (*model.Todo, error) {
 	var todo model.Todo
 	err := r.sess.Select("*").
 		From("todos").
-		Where("id = ? AND deleted_at IS NULL", id).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		LoadOne(&todo)
 	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.ErrNotFound
+		}
 		return nil, err
 	}
 	return &todo, nil
@@ -129,11 +136,11 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 	return todos, int(total), nil
 }
 
-func (r *TodoRepo) ListByGoalGroupedByStatus(goalID string) (map[string][]*model.Todo, error) {
+func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string) (map[string][]*model.Todo, error) {
 	var todos []*model.Todo
 	_, err := r.sess.Select("*").
 		From("todos").
-		Where("goal_id = ? AND deleted_at IS NULL", goalID).
+		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
 		OrderDir("created_at", false).
 		Load(&todos)
 	if err != nil {
@@ -147,7 +154,7 @@ func (r *TodoRepo) ListByGoalGroupedByStatus(goalID string) (map[string][]*model
 	return grouped, nil
 }
 
-func (r *TodoRepo) CountByGoalStatus(goalID string) (map[string]int, error) {
+func (r *TodoRepo) CountByGoalStatus(spaceID, goalID string) (map[string]int, error) {
 	type row struct {
 		Status string `db:"status"`
 		Count  int    `db:"cnt"`
@@ -155,7 +162,7 @@ func (r *TodoRepo) CountByGoalStatus(goalID string) (map[string]int, error) {
 	var rows []row
 	_, err := r.sess.Select("status", "COUNT(*) AS cnt").
 		From("todos").
-		Where("goal_id = ? AND deleted_at IS NULL", goalID).
+		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
 		GroupBy("status").
 		Load(&rows)
 	if err != nil {
@@ -168,6 +175,8 @@ func (r *TodoRepo) CountByGoalStatus(goalID string) (map[string]int, error) {
 	return result, nil
 }
 
+// Update writes all editable fields of todo. The WHERE clause includes space_id
+// so a stale struct from another space cannot overwrite a row here.
 func (r *TodoRepo) Update(todo *model.Todo) error {
 	todo.UpdatedAt = time.Now()
 	_, err := r.sess.Update("todos").
@@ -177,24 +186,24 @@ func (r *TodoRepo) Update(todo *model.Todo) error {
 		Set("deadline", todo.Deadline).
 		Set("remind_at", todo.RemindAt).
 		Set("updated_at", todo.UpdatedAt).
-		Where("id = ? AND deleted_at IS NULL", todo.ID).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", todo.ID, todo.SpaceID).
 		Exec()
 	return err
 }
 
-func (r *TodoRepo) UpdateStatus(id string, status string) error {
+func (r *TodoRepo) UpdateStatus(id, spaceID, status string) error {
 	_, err := r.sess.Update("todos").
 		Set("status", status).
 		Set("updated_at", time.Now()).
-		Where("id = ? AND deleted_at IS NULL", id).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		Exec()
 	return err
 }
 
-func (r *TodoRepo) SoftDelete(id string) error {
+func (r *TodoRepo) SoftDelete(id, spaceID string) error {
 	_, err := r.sess.Update("todos").
 		Set("deleted_at", time.Now()).
-		Where("id = ? AND deleted_at IS NULL", id).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		Exec()
 	return err
 }

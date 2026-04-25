@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/gocraft/dbr/v2"
 	"github.com/google/uuid"
@@ -24,6 +26,23 @@ func (r *AttachmentRepo) Create(a *model.TodoAttachment) error {
 		Record(a).
 		Exec()
 	return err
+}
+
+// GetByID loads an attachment by id. Returns apperr.ErrNotFound if absent. Caller is
+// responsible for validating the attachment's todo lives in the caller's space.
+func (r *AttachmentRepo) GetByID(id string) (*model.TodoAttachment, error) {
+	var a model.TodoAttachment
+	err := r.sess.Select("*").
+		From("todo_attachments").
+		Where("id = ?", id).
+		LoadOne(&a)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.ErrNotFound
+		}
+		return nil, err
+	}
+	return &a, nil
 }
 
 func (r *AttachmentRepo) Delete(id string) error {
