@@ -9,12 +9,16 @@ import (
 type GoalService struct {
 	goalRepo *repository.GoalRepo
 	todoRepo *repository.TodoRepo
+	tx       txRunner
 }
 
-func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo) *GoalService {
-	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo}
+func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo, tx txRunner) *GoalService {
+	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo, tx: tx}
 }
 
+// CreateGoal atomically inserts the goal and its owner membership row.
+// Without the transaction a failed AddMember would leave a goal with no
+// owner, which no other code path can fix (owner is required to add members).
 func (s *GoalService) CreateGoal(spaceID, ownerID, title string, description *string) (*model.Goal, error) {
 	goal := &model.Goal{
 		SpaceID:     spaceID,
@@ -22,10 +26,13 @@ func (s *GoalService) CreateGoal(spaceID, ownerID, title string, description *st
 		Description: description,
 		OwnerID:     ownerID,
 	}
-	if err := s.goalRepo.Create(goal); err != nil {
-		return nil, err
-	}
-	if err := s.goalRepo.AddMember(goal.ID, ownerID, "owner"); err != nil {
+	err := s.tx.Do(func(r *repository.TxRepos) error {
+		if err := r.Goal.Create(goal); err != nil {
+			return err
+		}
+		return r.Goal.AddMember(goal.ID, ownerID, "owner")
+	})
+	if err != nil {
 		return nil, err
 	}
 	return goal, nil

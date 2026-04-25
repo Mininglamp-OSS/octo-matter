@@ -28,10 +28,11 @@ func main() {
 	assigneeRepo := repository.NewAssigneeRepo(sess)
 	commentRepo := repository.NewCommentRepo(sess)
 	attachmentRepo := repository.NewAttachmentRepo(sess)
+	txMgr := repository.NewTxManager(sess)
 
 	// Services
-	goalSvc := service.NewGoalService(goalRepo, todoRepo)
-	todoSvc := service.NewTodoService(todoRepo, assigneeRepo)
+	goalSvc := service.NewGoalService(goalRepo, todoRepo, txMgr)
+	todoSvc := service.NewTodoService(todoRepo, assigneeRepo, txMgr)
 	commentSvc := service.NewCommentService(commentRepo, todoRepo)
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, todoRepo)
 

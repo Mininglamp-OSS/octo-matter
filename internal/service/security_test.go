@@ -87,6 +87,22 @@ func (f *fakeTodoRepo) SoftDelete(id, spaceID string) error {
 
 // --- assignee fake ------------------------------------------------------
 
+// panickingTxRunner is used by tests that never exercise the transactional
+// flows (create-with-assignees, transition-to-done). Invoking Do is a test
+// bug — real tx behavior requires MySQL integration testing and is verified
+// separately.
+type panickingTxRunner struct{}
+
+func (panickingTxRunner) Do(fn func(r *repository.TxRepos) error) error {
+	panic("tx runner invoked in a non-tx test")
+}
+
+// newTodoSvc builds a TodoService wired with the panickingTxRunner. Use this
+// for tests that don't need the tx path.
+func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
+	return NewTodoService(todoRepo, assigneeRepo, panickingTxRunner{})
+}
+
 type fakeAssigneeRepo struct {
 	byTodo map[string][]*model.TodoAssignee
 }
@@ -228,7 +244,7 @@ func (f *fakeAttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment,
 
 func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
-	svc := NewTodoService(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	_, err := svc.GetTodo("t1", "space-B")
 	if !errors.Is(err, apperr.ErrNotFound) {
@@ -238,7 +254,7 @@ func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 
 func TestTodoService_UpdateTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
-	svc := NewTodoService(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	_, err := svc.UpdateTodo("t1", "space-B", "u1", "new title", nil, nil, nil, nil)
 	if !errors.Is(err, apperr.ErrNotFound) {
@@ -248,7 +264,7 @@ func TestTodoService_UpdateTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 
 func TestTodoService_UpdateTodo_NonCreatorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
-	svc := NewTodoService(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	_, err := svc.UpdateTodo("t1", "space-A", "u2", "new", nil, nil, nil, nil)
 	if !errors.Is(err, apperr.ErrForbidden) {
@@ -258,7 +274,7 @@ func TestTodoService_UpdateTodo_NonCreatorReturnsForbidden(t *testing.T) {
 
 func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
-	svc := NewTodoService(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	err := svc.SoftDelete("t1", "space-B", "u1")
 	if !errors.Is(err, apperr.ErrNotFound) {
