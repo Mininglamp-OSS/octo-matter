@@ -28,26 +28,26 @@ func (h *AttachmentHandler) Create(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	att, err := h.svc.CreateAttachment(c.Param("id"), uid(c), req.FileURL, req.FileName, req.FileSize, req.MimeType)
+	att, err := h.svc.CreateAttachment(c.Param("id"), spaceID(c), uid(c), req.FileURL, req.FileName, req.FileSize, req.MimeType)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	created(c, att)
 }
 
 func (h *AttachmentHandler) List(c *gin.Context) {
-	attachments, err := h.svc.ListAttachments(c.Param("id"))
+	attachments, err := h.svc.ListAttachments(c.Param("id"), spaceID(c))
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, attachments)
 }
 
 func (h *AttachmentHandler) Delete(c *gin.Context) {
-	if err := h.svc.DeleteAttachment(c.Param("attachment_id"), uid(c)); err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+	if err := h.svc.DeleteAttachment(c.Param("attachment_id"), spaceID(c), uid(c)); err != nil {
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)

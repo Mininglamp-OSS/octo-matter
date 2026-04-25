@@ -36,24 +36,27 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	sid := spaceID(c)
+	userID := uid(c)
 	todo := &model.Todo{
-		SpaceID:           spaceID(c),
+		SpaceID:           sid,
 		Title:             req.Title,
 		Description:       req.Description,
 		GoalID:            req.GoalID,
-		CreatorID:         uid(c),
+		CreatorID:         userID,
 		SourceChannelID:   req.SourceChannelID,
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
 	}
 	result, err := h.svc.CreateTodo(todo)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
-	// Add assignees if provided
+	// Best-effort assignee adds. Partial failure leaves the todo created but
+	// some assignees missing; transactional wrapping is tracked in PR3 (H4).
 	for _, assigneeID := range req.AssigneeIDs {
-		_ = h.svc.AddAssignee(result.ID, uid(c), assigneeID)
+		_ = h.svc.AddAssignee(result.ID, sid, userID, assigneeID)
 	}
 	created(c, result)
 }
@@ -105,16 +108,16 @@ func (h *TodoHandler) List(c *gin.Context) {
 
 	result, err := h.svc.ListTodos(spaceID(c), filter)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, result)
 }
 
 func (h *TodoHandler) Get(c *gin.Context) {
-	detail, err := h.svc.GetTodo(c.Param("id"), uid(c))
+	detail, err := h.svc.GetTodo(c.Param("id"), spaceID(c))
 	if err != nil {
-		fail(c, http.StatusNotFound, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, detail)
@@ -134,9 +137,9 @@ func (h *TodoHandler) Update(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	todo, err := h.svc.UpdateTodo(c.Param("id"), uid(c), req.Title, req.Description, req.GoalID, req.Deadline, req.RemindAt)
+	todo, err := h.svc.UpdateTodo(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description, req.GoalID, req.Deadline, req.RemindAt)
 	if err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, todo)
@@ -152,17 +155,17 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	detail, err := h.svc.TransitionStatus(c.Param("id"), uid(c), model.TodoStatus(req.Status))
+	detail, err := h.svc.TransitionStatus(c.Param("id"), spaceID(c), uid(c), model.TodoStatus(req.Status))
 	if err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, detail)
 }
 
 func (h *TodoHandler) Delete(c *gin.Context) {
-	if err := h.svc.SoftDelete(c.Param("id"), uid(c)); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+	if err := h.svc.SoftDelete(c.Param("id"), spaceID(c), uid(c)); err != nil {
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
@@ -178,15 +181,11 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.svc.AddAssignee(c.Param("id"), uid(c), req.UserID); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+	if err := h.svc.AddAssignee(c.Param("id"), spaceID(c), uid(c), req.UserID); err != nil {
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
-}
-
-type removeAssigneeReq struct {
-	UserID string `json:"user_id" binding:"required"`
 }
 
 func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
@@ -195,8 +194,8 @@ func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "assignee uid is required")
 		return
 	}
-	if err := h.svc.RemoveAssignee(c.Param("id"), uid(c), assigneeUID); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+	if err := h.svc.RemoveAssignee(c.Param("id"), spaceID(c), uid(c), assigneeUID); err != nil {
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
@@ -212,8 +211,8 @@ func (h *TodoHandler) UpdateAssigneeStatus(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.svc.UpdateAssigneeStatus(c.Param("id"), uid(c), model.AssigneeStatus(req.Status)); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+	if err := h.svc.UpdateAssigneeStatus(c.Param("id"), spaceID(c), uid(c), model.AssigneeStatus(req.Status)); err != nil {
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)

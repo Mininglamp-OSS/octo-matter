@@ -1,18 +1,38 @@
 package service
 
 import (
-	"errors"
-
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
 
-type TodoService struct {
-	todoRepo     *repository.TodoRepo
-	assigneeRepo *repository.AssigneeRepo
+// todoStore is the narrow TodoRepo surface TodoService depends on. Declared at
+// the service layer (not the repo layer) so tests can swap in fakes without
+// bringing in real dbr/MySQL machinery.
+type todoStore interface {
+	Create(todo *model.Todo) error
+	GetByID(id, spaceID string) (*model.Todo, error)
+	ListBySpace(spaceID string, filter repository.TodoFilter) ([]*model.Todo, int, error)
+	Update(todo *model.Todo) error
+	UpdateStatus(id, spaceID, status string) error
+	SoftDelete(id, spaceID string) error
 }
 
-func NewTodoService(todoRepo *repository.TodoRepo, assigneeRepo *repository.AssigneeRepo) *TodoService {
+type assigneeStore interface {
+	Create(a *model.TodoAssignee) error
+	Delete(todoID, userID string) error
+	UpdateStatus(todoID, userID, status string) error
+	MarkAllDone(todoID string) error
+	ListByTodo(todoID string) ([]*model.TodoAssignee, error)
+	IsAssignee(todoID, userID string) (bool, error)
+}
+
+type TodoService struct {
+	todoRepo     todoStore
+	assigneeRepo assigneeStore
+}
+
+func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
 	return &TodoService{todoRepo: todoRepo, assigneeRepo: assigneeRepo}
 }
 
@@ -54,8 +74,8 @@ type TodoDetail struct {
 	AllowedTransitions []model.TodoStatus    `json:"allowed_transitions"`
 }
 
-func (s *TodoService) GetTodo(id, userID string) (*TodoDetail, error) {
-	todo, err := s.todoRepo.GetByID(id)
+func (s *TodoService) GetTodo(id, spaceID string) (*TodoDetail, error) {
+	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -70,13 +90,13 @@ func (s *TodoService) GetTodo(id, userID string) (*TodoDetail, error) {
 	}, nil
 }
 
-func (s *TodoService) UpdateTodo(id, userID string, title string, description *string, goalID *string, deadline, remindAt *string) (*model.Todo, error) {
-	todo, err := s.todoRepo.GetByID(id)
+func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, description *string, goalID *string, deadline, remindAt *string) (*model.Todo, error) {
+	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
 	}
 	if todo.CreatorID != userID {
-		return nil, errors.New("only the creator can update a todo")
+		return nil, apperr.ErrForbidden
 	}
 	todo.Title = title
 	todo.Description = description
@@ -87,8 +107,8 @@ func (s *TodoService) UpdateTodo(id, userID string, title string, description *s
 	return todo, nil
 }
 
-func (s *TodoService) TransitionStatus(id, userID string, target model.TodoStatus) (*TodoDetail, error) {
-	todo, err := s.todoRepo.GetByID(id)
+func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.TodoStatus) (*TodoDetail, error) {
+	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -98,18 +118,17 @@ func (s *TodoService) TransitionStatus(id, userID string, target model.TodoStatu
 		return nil, err
 	}
 	if !model.CanTransition(todo.Status, target, isCreator, isAssignee) {
-		return nil, errors.New("transition not allowed")
+		return nil, apperr.ErrForbidden
 	}
-	if err := s.todoRepo.UpdateStatus(id, string(target)); err != nil {
+	if err := s.todoRepo.UpdateStatus(id, spaceID, string(target)); err != nil {
 		return nil, err
 	}
-	// When transitioning to done, mark all assignees as done
+	// When transitioning to done, mark all assignees as done.
 	if target == model.TodoStatusDone {
 		if err := s.assigneeRepo.MarkAllDone(id); err != nil {
 			return nil, err
 		}
 	}
-	// Return updated detail with new allowed_transitions
 	todo.Status = target
 	assignees, _ := s.assigneeRepo.ListByTodo(id)
 	return &TodoDetail{
@@ -119,24 +138,24 @@ func (s *TodoService) TransitionStatus(id, userID string, target model.TodoStatu
 	}, nil
 }
 
-func (s *TodoService) SoftDelete(id, userID string) error {
-	todo, err := s.todoRepo.GetByID(id)
+func (s *TodoService) SoftDelete(id, spaceID, userID string) error {
+	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return err
 	}
 	if todo.CreatorID != userID {
-		return errors.New("only the creator can delete a todo")
+		return apperr.ErrForbidden
 	}
-	return s.todoRepo.SoftDelete(id)
+	return s.todoRepo.SoftDelete(id, spaceID)
 }
 
-func (s *TodoService) AddAssignee(todoID, userID, assigneeUserID string) error {
-	todo, err := s.todoRepo.GetByID(todoID)
+func (s *TodoService) AddAssignee(todoID, spaceID, userID, assigneeUserID string) error {
+	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
 		return err
 	}
 	if todo.CreatorID != userID {
-		return errors.New("only the creator can add assignees")
+		return apperr.ErrForbidden
 	}
 	a := &model.TodoAssignee{
 		TodoID: todoID,
@@ -146,24 +165,28 @@ func (s *TodoService) AddAssignee(todoID, userID, assigneeUserID string) error {
 	return s.assigneeRepo.Create(a)
 }
 
-func (s *TodoService) RemoveAssignee(todoID, userID, assigneeUserID string) error {
-	todo, err := s.todoRepo.GetByID(todoID)
+func (s *TodoService) RemoveAssignee(todoID, spaceID, userID, assigneeUserID string) error {
+	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
 		return err
 	}
 	if todo.CreatorID != userID {
-		return errors.New("only the creator can remove assignees")
+		return apperr.ErrForbidden
 	}
 	return s.assigneeRepo.Delete(todoID, assigneeUserID)
 }
 
-func (s *TodoService) UpdateAssigneeStatus(todoID, userID string, status model.AssigneeStatus) error {
+func (s *TodoService) UpdateAssigneeStatus(todoID, spaceID, userID string, status model.AssigneeStatus) error {
+	// Validate the parent todo is in the caller's space before any assignee-table write.
+	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
+		return err
+	}
 	isAssignee, err := s.assigneeRepo.IsAssignee(todoID, userID)
 	if err != nil {
 		return err
 	}
 	if !isAssignee {
-		return errors.New("user is not an assignee of this todo")
+		return apperr.ErrForbidden
 	}
 	return s.assigneeRepo.UpdateStatus(todoID, userID, string(status))
 }

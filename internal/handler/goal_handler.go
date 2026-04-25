@@ -28,7 +28,7 @@ func (h *GoalHandler) Create(c *gin.Context) {
 	}
 	goal, err := h.svc.CreateGoal(spaceID(c), uid(c), req.Title, req.Description)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	created(c, goal)
@@ -37,7 +37,7 @@ func (h *GoalHandler) Create(c *gin.Context) {
 func (h *GoalHandler) List(c *gin.Context) {
 	goals, err := h.svc.ListGoals(spaceID(c))
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, goals)
@@ -46,7 +46,7 @@ func (h *GoalHandler) List(c *gin.Context) {
 func (h *GoalHandler) Get(c *gin.Context) {
 	detail, err := h.svc.GetGoal(c.Param("id"), spaceID(c))
 	if err != nil {
-		fail(c, http.StatusNotFound, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, detail)
@@ -65,7 +65,7 @@ func (h *GoalHandler) Update(c *gin.Context) {
 	}
 	goal, err := h.svc.UpdateGoal(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description)
 	if err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, goal)
@@ -73,7 +73,7 @@ func (h *GoalHandler) Update(c *gin.Context) {
 
 func (h *GoalHandler) Archive(c *gin.Context) {
 	if err := h.svc.ArchiveGoal(c.Param("id"), spaceID(c), uid(c)); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
@@ -91,14 +91,10 @@ func (h *GoalHandler) AddMember(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AddMember(c.Param("id"), spaceID(c), uid(c), req.UserID, req.Role); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
-}
-
-type removeMemberReq struct {
-	UserID string `json:"user_id" binding:"required"`
 }
 
 func (h *GoalHandler) RemoveMember(c *gin.Context) {
@@ -108,7 +104,7 @@ func (h *GoalHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RemoveMember(c.Param("id"), spaceID(c), uid(c), memberUID); err != nil {
-		fail(c, http.StatusForbidden, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)

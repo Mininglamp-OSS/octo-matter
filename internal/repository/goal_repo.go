@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"errors"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/gocraft/dbr/v2"
 	"github.com/google/uuid"
@@ -35,6 +37,9 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 		Where("id = ? AND space_id = ?", id, spaceID).
 		LoadOne(&goal)
 	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.ErrNotFound
+		}
 		return nil, err
 	}
 	return &goal, nil
@@ -59,7 +64,7 @@ func (r *GoalRepo) Update(goal *model.Goal) error {
 		Set("title", goal.Title).
 		Set("description", goal.Description).
 		Set("updated_at", goal.UpdatedAt).
-		Where("id = ?", goal.ID).
+		Where("id = ? AND space_id = ?", goal.ID, goal.SpaceID).
 		Exec()
 	return err
 }

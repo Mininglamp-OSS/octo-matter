@@ -25,26 +25,26 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	comment, err := h.svc.CreateComment(c.Param("id"), uid(c), req.Content)
+	comment, err := h.svc.CreateComment(c.Param("id"), spaceID(c), uid(c), req.Content)
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	created(c, comment)
 }
 
 func (h *CommentHandler) List(c *gin.Context) {
-	comments, err := h.svc.ListComments(c.Param("id"))
+	comments, err := h.svc.ListComments(c.Param("id"), spaceID(c))
 	if err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+		respondErr(c, err)
 		return
 	}
 	ok(c, comments)
 }
 
 func (h *CommentHandler) Delete(c *gin.Context) {
-	if err := h.svc.DeleteComment(c.Param("comment_id"), uid(c)); err != nil {
-		fail(c, http.StatusInternalServerError, err.Error())
+	if err := h.svc.DeleteComment(c.Param("comment_id"), spaceID(c), uid(c)); err != nil {
+		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
