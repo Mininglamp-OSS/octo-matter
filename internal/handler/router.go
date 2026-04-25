@@ -5,11 +5,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// SetupRouter wires handlers to routes. The userAuth middleware is injected so
+// main.go can construct the right variant for the configured AuthMode.
 func SetupRouter(
 	goalH *GoalHandler,
 	todoH *TodoHandler,
 	commentH *CommentHandler,
 	attachmentH *AttachmentHandler,
+	userAuth gin.HandlerFunc,
 ) *gin.Engine {
 	r := gin.Default()
 
@@ -18,7 +21,7 @@ func SetupRouter(
 	r.GET("/health/ready", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ready"}) })
 
 	api := r.Group("/api/v1")
-	api.Use(auth.UserAuthMiddleware(), auth.SpaceMiddleware())
+	api.Use(userAuth, auth.SpaceMiddleware())
 
 	// Goals
 	goals := api.Group("/goals")

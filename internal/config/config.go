@@ -1,30 +1,98 @@
+// Package config loads and validates service configuration from environment
+// variables. Validation is strict for production: required fields must be set
+// explicitly, there is no silent fallback to localhost DSNs or stub auth.
 package config
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
+
+// AuthMode selects which authentication backend middleware uses.
+type AuthMode string
+
+const (
+	// AuthModeStub parses "uid@name@role" tokens directly. Only safe for local
+	// development — the service logs a loud WARN on startup when this is set.
+	AuthModeStub AuthMode = "stub"
+	// AuthModeRemote calls the dmworkim internal auth API. Not yet implemented;
+	// startup currently fails fast when this is selected so the stub cannot
+	// silently handle production traffic.
+	AuthModeRemote AuthMode = "remote"
+)
+
+// AppEnv distinguishes development from production for validation strictness.
+type AppEnv string
+
+const (
+	AppEnvDev  AppEnv = "dev"
+	AppEnvProd AppEnv = "prod"
+)
 
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
+	AppEnv     AppEnv
+	AuthMode   AuthMode
 	MySQLDSN   string
 	RedisURL   string
 	AuthURL    string
-	BotToken   string
 	ServerPort string
 }
 
-// Load reads configuration from environment variables with sensible defaults.
+// Load reads configuration from environment. It does NOT validate — call
+// Validate() before using the config. Defaults are only applied in dev mode;
+// production deploys must set every required field explicitly.
 func Load() *Config {
+	env := AppEnv(envOrDefault("APP_ENV", string(AppEnvDev)))
 	return &Config{
-		MySQLDSN:   getEnv("MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
-		RedisURL:   getEnv("REDIS_URL", "redis://127.0.0.1:6379/0"),
-		AuthURL:    getEnv("AUTH_URL", "http://127.0.0.1:8090/internal/v1"),
-		BotToken:   getEnv("BOT_TOKEN", ""),
-		ServerPort: getEnv("SERVER_PORT", "8080"),
+		AppEnv:     env,
+		AuthMode:   AuthMode(envOrDefault("AUTH_MODE", string(AuthModeStub))),
+		MySQLDSN:   devDefault(env, "MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
+		RedisURL:   envOrDefault("REDIS_URL", "redis://127.0.0.1:6379/0"),
+		AuthURL:    devDefault(env, "AUTH_URL", "http://127.0.0.1:8090/internal/v1"),
+		ServerPort: envOrDefault("SERVER_PORT", "8080"),
 	}
 }
 
-func getEnv(key, fallback string) string {
+// Validate returns an error if any required field is missing or any value is
+// out of range. Callers should log.Fatal on the returned error.
+func (c *Config) Validate() error {
+	if c.AppEnv != AppEnvDev && c.AppEnv != AppEnvProd {
+		return fmt.Errorf("APP_ENV must be 'dev' or 'prod', got %q", c.AppEnv)
+	}
+	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeRemote {
+		return fmt.Errorf("AUTH_MODE must be 'stub' or 'remote', got %q", c.AuthMode)
+	}
+	if c.MySQLDSN == "" {
+		return fmt.Errorf("MYSQL_DSN is required")
+	}
+	if c.AuthMode == AuthModeRemote && c.AuthURL == "" {
+		return fmt.Errorf("AUTH_URL is required when AUTH_MODE=remote")
+	}
+	if c.AppEnv == AppEnvProd && c.AuthMode == AuthModeStub {
+		return fmt.Errorf("AUTH_MODE=stub is not permitted when APP_ENV=prod")
+	}
+	if c.ServerPort == "" {
+		return fmt.Errorf("SERVER_PORT is required")
+	}
+	return nil
+}
+
+func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return fallback
+}
+
+// devDefault returns the env var when set, the fallback when in dev, and ""
+// in prod (so Validate can complain about the missing required field).
+func devDefault(env AppEnv, key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	if env == AppEnvDev {
+		return fallback
+	}
+	return ""
 }
