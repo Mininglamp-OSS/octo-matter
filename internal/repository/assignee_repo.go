@@ -9,17 +9,17 @@ import (
 )
 
 type AssigneeRepo struct {
-	sess *dbr.Session
+	runner dbr.SessionRunner
 }
 
 func NewAssigneeRepo(sess *dbr.Session) *AssigneeRepo {
-	return &AssigneeRepo{sess: sess}
+	return &AssigneeRepo{runner: sess}
 }
 
 func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
 	a.ID = uuid.New().String()
 	a.CreatedAt = time.Now()
-	_, err := r.sess.InsertInto("todo_assignees").
+	_, err := r.runner.InsertInto("todo_assignees").
 		Columns("id", "todo_id", "user_id", "status", "completed_at", "created_at").
 		Record(a).
 		Exec()
@@ -27,14 +27,14 @@ func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
 }
 
 func (r *AssigneeRepo) Delete(todoID, userID string) error {
-	_, err := r.sess.DeleteFrom("todo_assignees").
+	_, err := r.runner.DeleteFrom("todo_assignees").
 		Where("todo_id = ? AND user_id = ?", todoID, userID).
 		Exec()
 	return err
 }
 
 func (r *AssigneeRepo) UpdateStatus(todoID, userID, status string) error {
-	stmt := r.sess.Update("todo_assignees").
+	stmt := r.runner.Update("todo_assignees").
 		Set("status", status).
 		Where("todo_id = ? AND user_id = ?", todoID, userID)
 	if status == string(model.AssigneeStatusDone) {
@@ -47,7 +47,7 @@ func (r *AssigneeRepo) UpdateStatus(todoID, userID, status string) error {
 }
 
 func (r *AssigneeRepo) MarkAllDone(todoID string) error {
-	_, err := r.sess.Update("todo_assignees").
+	_, err := r.runner.Update("todo_assignees").
 		Set("status", string(model.AssigneeStatusDone)).
 		Set("completed_at", time.Now()).
 		Where("todo_id = ?", todoID).
@@ -57,7 +57,7 @@ func (r *AssigneeRepo) MarkAllDone(todoID string) error {
 
 func (r *AssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) {
 	var assignees []*model.TodoAssignee
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("todo_assignees").
 		Where("todo_id = ?", todoID).
 		Load(&assignees)
@@ -68,7 +68,7 @@ func (r *AssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) 
 }
 
 func (r *AssigneeRepo) IsAssignee(todoID, userID string) (bool, error) {
-	count, err := r.sess.Select("COUNT(*)").
+	count, err := r.runner.Select("COUNT(*)").
 		From("todo_assignees").
 		Where("todo_id = ? AND user_id = ?", todoID, userID).
 		ReturnInt64()

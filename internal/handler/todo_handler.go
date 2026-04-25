@@ -48,15 +48,10 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
 	}
-	result, err := h.svc.CreateTodo(todo)
+	result, err := h.svc.CreateTodoWithAssignees(todo, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
 		return
-	}
-	// Best-effort assignee adds. Partial failure leaves the todo created but
-	// some assignees missing; transactional wrapping is tracked in PR3 (H4).
-	for _, assigneeID := range req.AssigneeIDs {
-		_ = h.svc.AddAssignee(result.ID, sid, userID, assigneeID)
 	}
 	created(c, result)
 }

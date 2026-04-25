@@ -11,17 +11,17 @@ import (
 )
 
 type CommentRepo struct {
-	sess *dbr.Session
+	runner dbr.SessionRunner
 }
 
 func NewCommentRepo(sess *dbr.Session) *CommentRepo {
-	return &CommentRepo{sess: sess}
+	return &CommentRepo{runner: sess}
 }
 
 func (r *CommentRepo) Create(c *model.TodoComment) error {
 	c.ID = uuid.New().String()
 	c.CreatedAt = time.Now()
-	_, err := r.sess.InsertInto("todo_comments").
+	_, err := r.runner.InsertInto("todo_comments").
 		Columns("id", "todo_id", "user_id", "content", "created_at").
 		Record(c).
 		Exec()
@@ -32,7 +32,7 @@ func (r *CommentRepo) Create(c *model.TodoComment) error {
 // responsible for validating the comment's todo lives in the caller's space.
 func (r *CommentRepo) GetByID(id string) (*model.TodoComment, error) {
 	var c model.TodoComment
-	err := r.sess.Select("*").
+	err := r.runner.Select("*").
 		From("todo_comments").
 		Where("id = ?", id).
 		LoadOne(&c)
@@ -46,7 +46,7 @@ func (r *CommentRepo) GetByID(id string) (*model.TodoComment, error) {
 }
 
 func (r *CommentRepo) Delete(id string) error {
-	_, err := r.sess.DeleteFrom("todo_comments").
+	_, err := r.runner.DeleteFrom("todo_comments").
 		Where("id = ?", id).
 		Exec()
 	return err
@@ -54,7 +54,7 @@ func (r *CommentRepo) Delete(id string) error {
 
 func (r *CommentRepo) ListByTodo(todoID string) ([]*model.TodoComment, error) {
 	var comments []*model.TodoComment
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("todo_comments").
 		Where("todo_id = ?", todoID).
 		OrderDir("created_at", true).

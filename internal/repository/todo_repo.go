@@ -25,11 +25,11 @@ type TodoFilter struct {
 }
 
 type TodoRepo struct {
-	sess *dbr.Session
+	runner dbr.SessionRunner
 }
 
 func NewTodoRepo(sess *dbr.Session) *TodoRepo {
-	return &TodoRepo{sess: sess}
+	return &TodoRepo{runner: sess}
 }
 
 func (r *TodoRepo) Create(todo *model.Todo) error {
@@ -37,7 +37,7 @@ func (r *TodoRepo) Create(todo *model.Todo) error {
 	now := time.Now()
 	todo.CreatedAt = now
 	todo.UpdatedAt = now
-	_, err := r.sess.InsertInto("todos").
+	_, err := r.runner.InsertInto("todos").
 		Columns("id", "space_id", "goal_id", "title", "description", "creator_id",
 			"status", "deadline", "remind_at", "source_channel_id", "source_channel_type",
 			"source_name", "created_at", "updated_at", "deleted_at").
@@ -50,7 +50,7 @@ func (r *TodoRepo) Create(todo *model.Todo) error {
 // if the row does not exist OR lives in another space (callers must not distinguish).
 func (r *TodoRepo) GetByID(id, spaceID string) (*model.Todo, error) {
 	var todo model.Todo
-	err := r.sess.Select("*").
+	err := r.runner.Select("*").
 		From("todos").
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		LoadOne(&todo)
@@ -69,11 +69,11 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		limit = 20
 	}
 
-	q := r.sess.Select("*").
+	q := r.runner.Select("*").
 		From("todos").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID)
 
-	countQ := r.sess.Select("COUNT(*)").
+	countQ := r.runner.Select("COUNT(*)").
 		From("todos").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID)
 
@@ -121,12 +121,21 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		return nil, 0, err
 	}
 
+	// Composite cursor: (created_at DESC, id DESC). The id break-tie is required
+	// because two todos created within the same second would otherwise skip or
+	// repeat at the page boundary. Callers decode the opaque string to Cursor
+	// and pass it in via filter.Cursor.
 	if filter.Cursor != nil && *filter.Cursor != "" {
-		q = q.Where("id < ?", *filter.Cursor)
+		cur, err := DecodeCursor(*filter.Cursor)
+		if err != nil {
+			return nil, 0, err
+		}
+		q = q.Where("(created_at < ? OR (created_at = ? AND id < ?))", cur.CreatedAt, cur.CreatedAt, cur.ID)
 	}
 
 	var todos []*model.Todo
-	_, err = q.OrderDir("id", false).
+	_, err = q.OrderBy("created_at DESC").
+		OrderBy("id DESC").
 		Limit(uint64(limit)).
 		Load(&todos)
 	if err != nil {
@@ -138,7 +147,7 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 
 func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string) (map[string][]*model.Todo, error) {
 	var todos []*model.Todo
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("todos").
 		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
 		OrderDir("created_at", false).
@@ -160,7 +169,7 @@ func (r *TodoRepo) CountByGoalStatus(spaceID, goalID string) (map[string]int, er
 		Count  int    `db:"cnt"`
 	}
 	var rows []row
-	_, err := r.sess.Select("status", "COUNT(*) AS cnt").
+	_, err := r.runner.Select("status", "COUNT(*) AS cnt").
 		From("todos").
 		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
 		GroupBy("status").
@@ -179,7 +188,7 @@ func (r *TodoRepo) CountByGoalStatus(spaceID, goalID string) (map[string]int, er
 // so a stale struct from another space cannot overwrite a row here.
 func (r *TodoRepo) Update(todo *model.Todo) error {
 	todo.UpdatedAt = time.Now()
-	_, err := r.sess.Update("todos").
+	_, err := r.runner.Update("todos").
 		Set("title", todo.Title).
 		Set("description", todo.Description).
 		Set("goal_id", todo.GoalID).
@@ -192,7 +201,7 @@ func (r *TodoRepo) Update(todo *model.Todo) error {
 }
 
 func (r *TodoRepo) UpdateStatus(id, spaceID, status string) error {
-	_, err := r.sess.Update("todos").
+	_, err := r.runner.Update("todos").
 		Set("status", status).
 		Set("updated_at", time.Now()).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
@@ -201,7 +210,7 @@ func (r *TodoRepo) UpdateStatus(id, spaceID, status string) error {
 }
 
 func (r *TodoRepo) SoftDelete(id, spaceID string) error {
-	_, err := r.sess.Update("todos").
+	_, err := r.runner.Update("todos").
 		Set("deleted_at", time.Now()).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		Exec()
@@ -210,7 +219,7 @@ func (r *TodoRepo) SoftDelete(id, spaceID string) error {
 
 func (r *TodoRepo) ListBySource(spaceID, channelID string, channelType uint8) ([]*model.Todo, error) {
 	var todos []*model.Todo
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("todos").
 		Where("space_id = ? AND source_channel_id = ? AND source_channel_type = ? AND deleted_at IS NULL",
 			spaceID, channelID, channelType).

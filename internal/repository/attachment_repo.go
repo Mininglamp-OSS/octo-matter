@@ -11,17 +11,17 @@ import (
 )
 
 type AttachmentRepo struct {
-	sess *dbr.Session
+	runner dbr.SessionRunner
 }
 
 func NewAttachmentRepo(sess *dbr.Session) *AttachmentRepo {
-	return &AttachmentRepo{sess: sess}
+	return &AttachmentRepo{runner: sess}
 }
 
 func (r *AttachmentRepo) Create(a *model.TodoAttachment) error {
 	a.ID = uuid.New().String()
 	a.CreatedAt = time.Now()
-	_, err := r.sess.InsertInto("todo_attachments").
+	_, err := r.runner.InsertInto("todo_attachments").
 		Columns("id", "todo_id", "user_id", "file_url", "file_name", "file_size", "mime_type", "created_at").
 		Record(a).
 		Exec()
@@ -32,7 +32,7 @@ func (r *AttachmentRepo) Create(a *model.TodoAttachment) error {
 // responsible for validating the attachment's todo lives in the caller's space.
 func (r *AttachmentRepo) GetByID(id string) (*model.TodoAttachment, error) {
 	var a model.TodoAttachment
-	err := r.sess.Select("*").
+	err := r.runner.Select("*").
 		From("todo_attachments").
 		Where("id = ?", id).
 		LoadOne(&a)
@@ -46,7 +46,7 @@ func (r *AttachmentRepo) GetByID(id string) (*model.TodoAttachment, error) {
 }
 
 func (r *AttachmentRepo) Delete(id string) error {
-	_, err := r.sess.DeleteFrom("todo_attachments").
+	_, err := r.runner.DeleteFrom("todo_attachments").
 		Where("id = ?", id).
 		Exec()
 	return err
@@ -54,7 +54,7 @@ func (r *AttachmentRepo) Delete(id string) error {
 
 func (r *AttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment, error) {
 	var attachments []*model.TodoAttachment
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("todo_attachments").
 		Where("todo_id = ?", todoID).
 		OrderDir("created_at", true).

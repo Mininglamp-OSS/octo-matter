@@ -11,11 +11,11 @@ import (
 )
 
 type GoalRepo struct {
-	sess *dbr.Session
+	runner dbr.SessionRunner
 }
 
 func NewGoalRepo(sess *dbr.Session) *GoalRepo {
-	return &GoalRepo{sess: sess}
+	return &GoalRepo{runner: sess}
 }
 
 func (r *GoalRepo) Create(goal *model.Goal) error {
@@ -23,7 +23,7 @@ func (r *GoalRepo) Create(goal *model.Goal) error {
 	now := time.Now()
 	goal.CreatedAt = now
 	goal.UpdatedAt = now
-	_, err := r.sess.InsertInto("goals").
+	_, err := r.runner.InsertInto("goals").
 		Columns("id", "space_id", "title", "description", "owner_id", "archived", "created_at", "updated_at").
 		Record(goal).
 		Exec()
@@ -32,7 +32,7 @@ func (r *GoalRepo) Create(goal *model.Goal) error {
 
 func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 	var goal model.Goal
-	err := r.sess.Select("*").
+	err := r.runner.Select("*").
 		From("goals").
 		Where("id = ? AND space_id = ?", id, spaceID).
 		LoadOne(&goal)
@@ -47,7 +47,7 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 
 func (r *GoalRepo) ListBySpace(spaceID string) ([]*model.Goal, error) {
 	var goals []*model.Goal
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("goals").
 		Where("space_id = ? AND archived = 0", spaceID).
 		OrderDir("created_at", false).
@@ -60,7 +60,7 @@ func (r *GoalRepo) ListBySpace(spaceID string) ([]*model.Goal, error) {
 
 func (r *GoalRepo) Update(goal *model.Goal) error {
 	goal.UpdatedAt = time.Now()
-	_, err := r.sess.Update("goals").
+	_, err := r.runner.Update("goals").
 		Set("title", goal.Title).
 		Set("description", goal.Description).
 		Set("updated_at", goal.UpdatedAt).
@@ -70,7 +70,7 @@ func (r *GoalRepo) Update(goal *model.Goal) error {
 }
 
 func (r *GoalRepo) Archive(id, spaceID string) error {
-	_, err := r.sess.Update("goals").
+	_, err := r.runner.Update("goals").
 		Set("archived", 1).
 		Set("updated_at", time.Now()).
 		Where("id = ? AND space_id = ?", id, spaceID).
@@ -79,7 +79,7 @@ func (r *GoalRepo) Archive(id, spaceID string) error {
 }
 
 func (r *GoalRepo) AddMember(goalID, userID, role string) error {
-	_, err := r.sess.InsertInto("goal_members").
+	_, err := r.runner.InsertInto("goal_members").
 		Columns("id", "goal_id", "user_id", "role", "created_at").
 		Values(uuid.New().String(), goalID, userID, role, time.Now()).
 		Exec()
@@ -87,7 +87,7 @@ func (r *GoalRepo) AddMember(goalID, userID, role string) error {
 }
 
 func (r *GoalRepo) RemoveMember(goalID, userID string) error {
-	_, err := r.sess.DeleteFrom("goal_members").
+	_, err := r.runner.DeleteFrom("goal_members").
 		Where("goal_id = ? AND user_id = ?", goalID, userID).
 		Exec()
 	return err
@@ -95,7 +95,7 @@ func (r *GoalRepo) RemoveMember(goalID, userID string) error {
 
 func (r *GoalRepo) ListMembers(goalID string) ([]*model.GoalMember, error) {
 	var members []*model.GoalMember
-	_, err := r.sess.Select("*").
+	_, err := r.runner.Select("*").
 		From("goal_members").
 		Where("goal_id = ?", goalID).
 		Load(&members)
@@ -106,7 +106,7 @@ func (r *GoalRepo) ListMembers(goalID string) ([]*model.GoalMember, error) {
 }
 
 func (r *GoalRepo) IsMember(goalID, userID string) (bool, error) {
-	count, err := r.sess.Select("COUNT(*)").
+	count, err := r.runner.Select("COUNT(*)").
 		From("goal_members").
 		Where("goal_id = ? AND user_id = ?", goalID, userID).
 		ReturnInt64()
