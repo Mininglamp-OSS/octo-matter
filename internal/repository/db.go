@@ -2,8 +2,9 @@ package repository
 
 import (
 	"database/sql"
+	"errors"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/gocraft/dbr/v2"
 )
 
@@ -21,6 +22,15 @@ func NewSession(dsn string) (*dbr.Connection, *dbr.Session, error) {
 		return nil, nil, err
 	}
 	return conn, conn.NewSession(nil), nil
+}
+
+// isDuplicateKeyErr reports whether err is a MySQL duplicate-key violation (1062).
+func isDuplicateKeyErr(err error) bool {
+	var mysqlErr *mysql.MySQLError
+	if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		return true
+	}
+	return false
 }
 
 // placeholder for dbr.I usage in conditions

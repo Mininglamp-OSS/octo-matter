@@ -3,6 +3,7 @@ package repository
 import (
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/gocraft/dbr/v2"
 	"github.com/google/uuid"
@@ -23,7 +24,13 @@ func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
 		Columns("id", "todo_id", "user_id", "status", "completed_at", "created_at").
 		Record(a).
 		Exec()
-	return err
+	if err != nil {
+		if isDuplicateKeyErr(err) {
+			return apperr.DuplicateAssignee()
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *AssigneeRepo) Delete(todoID, userID string) error {

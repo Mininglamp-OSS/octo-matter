@@ -85,7 +85,13 @@ func (r *GoalRepo) AddAssignee(goalID, userID string) error {
 		Columns("id", "goal_id", "user_id", "created_at").
 		Values(uuid.New().String(), goalID, userID, time.Now()).
 		Exec()
-	return err
+	if err != nil {
+		if isDuplicateKeyErr(err) {
+			return apperr.DuplicateAssignee()
+		}
+		return err
+	}
+	return nil
 }
 
 func (r *GoalRepo) RemoveAssignee(goalID, userID string) error {

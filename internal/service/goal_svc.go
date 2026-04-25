@@ -9,10 +9,11 @@ import (
 type GoalService struct {
 	goalRepo *repository.GoalRepo
 	todoRepo *repository.TodoRepo
+	tx       txRunner
 }
 
-func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo) *GoalService {
-	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo}
+func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo, tx txRunner) *GoalService {
+	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo, tx: tx}
 }
 
 func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *string, assigneeIDs []string) (*model.Goal, error) {
@@ -22,12 +23,19 @@ func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *
 		Description: description,
 		CreatorID:   creatorID,
 	}
-	if err := s.goalRepo.Create(goal); err != nil {
+	err := s.tx.Do(func(r *repository.TxRepos) error {
+		if err := r.Goal.Create(goal); err != nil {
+			return err
+		}
+		for _, uid := range assigneeIDs {
+			if err := r.Goal.AddAssignee(goal.ID, uid); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
-	}
-	// Add assignees
-	for _, uid := range assigneeIDs {
-		_ = s.goalRepo.AddAssignee(goal.ID, uid)
 	}
 	return goal, nil
 }
