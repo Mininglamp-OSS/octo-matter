@@ -1,0 +1,74 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+skinparam defaultFontName "Helvetica"
+skinparam componentStyle rectangle
+
+title Octo Platform Layered Architecture
+
+' ===== Business Services =====
+package "Business Services" #E8F5E9 {
+  [todo-service\nGoals / Todos / Kanban\nState Machine\n24 API endpoints] as todo
+  [knowledge-svc\n(future)] as know
+  [workflow-svc\n(future)] as wf
+}
+
+' ===== Platform SDK =====
+package "Platform SDK" #FFF3E0 {
+  [octo-auth-client\nGo SDK\nUser + Bot auth\nSpace check\nR/W cache split] as sdk
+}
+
+' ===== Platform Core =====
+package "Platform Core (dmworkim)" #E3F2FD {
+  [Identity\nUser auth (Redis)\nBot auth (DB)\nSpace membership] as identity
+  [Messaging\nWuKongIM protocol\nBot API send\nWebhook push] as msg
+  [Social Graph\nGroup / Thread\nFriend / Space\nBotFather] as social
+  [Open Platform\nOpenAPI (authcode)\nInternal Auth API\n:8091 (private)] as openplat
+}
+
+' ===== CLI =====
+package "CLI" #F3E5F5 {
+  [octo-cli\nHuman ops\nocto todo / octo goal\nocto auth login] as cli
+}
+
+' ===== Infrastructure =====
+package "Infrastructure" #EFEBE9 {
+  database "MySQL 8\n(per-service DB)" as mysql
+  database "Redis 7\n(shared)" as redis
+  [WuKongIM\nMessage Transport] as wkim
+  [Nginx / Traefik\nTLS + Routing\nInternal API isolation] as gw
+}
+
+' ===== Connections =====
+todo --> sdk : auth + space
+know ..> sdk : same SDK
+wf ..> sdk : same SDK
+
+sdk --> openplat : /internal/v1/auth/*\n(port :8091, private net)
+
+todo --> msg : Bot API\nnotifications
+todo --> mysql : dbr (octo_todo)
+
+identity --> redis : token:* lookup
+social --> mysql : dmworkim DB
+msg --> wkim : SendCMD / SendMessage
+
+cli --> todo : REST API
+cli --> openplat : octo auth login\n(authcode flow)
+
+gw --> todo : /api/v1/*
+gw --> openplat : /v1/* (public)\n/internal/* (deny public)
+
+' ===== Notes =====
+note bottom of sdk
+  **Phase A**: SDK → dmworkim :8091
+  **Phase B**: SDK → standalone auth-service
+  Config change only. Zero business code change.
+end note
+
+note right of identity
+  dmworkim = Platform Core
+  Not "another microservice"
+  It IS the platform.
+end note
+@enduml
