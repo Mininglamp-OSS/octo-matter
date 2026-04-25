@@ -1,0 +1,759 @@
+# Octo Todo — Architecture Design Document (v4)
+
+## Overview
+
+### Background
+
+Octo (dmwork) is an enterprise messaging and collaboration platform. As the platform evolves, productivity tools become essential. To-Dos — the ability to create, assign, track, and complete tasks — is a foundational productivity primitive.
+
+This document defines the architecture for **Octo Todo**: a standalone microservice integrated into the Octo ecosystem. Authentication is delegated to dmworkim via a new internal auth API (Phase A of the Octo unified auth strategy). Bot and agent automation goes through a unified `octo-cli`. The core model is **status-driven todos with optional goal-based kanban organization**.
+
+### Goals
+
+1. **Independent microservice** — `todo-service` runs standalone with its own MySQL database
+2. **Status-driven task model** — Fixed state machine (`draft -> planned -> in_progress -> done / cancelled`) with assignees (human or bot)
+3. **Goal-driven kanban (optional)** — Todos optionally associate with a goal; kanban view groups todos by status
+4. **Unified CLI** — `octo-cli` is the single CLI entry point for all Octo services (`octo todo ...`)
+5. **Unified auth via dmworkim** — Token validation through dmworkim internal API + `octo-auth-client` SDK
+6. **Source context tracking** — Every todo records where it was created (group, thread, subsystem), enabling per-conversation todo panels
+7. **Space isolation** — All data is scoped to a Space; cross-Space access is forbidden
+8. **Chat integration** — Create and update todos from dmwork chat conversations
+9. **Web interface** — `todo-web` delivers a React-based kanban board UI
+
+### Non-Goals (v1)
+
+- Recurring / repeating todos
+- Sub-tasks / checklist items within a todo
+- File editing or document collaboration
+- Real-time collaborative editing of descriptions
+- Custom workflow states beyond the fixed state machine
+
+## Unified Auth Strategy
+
+### Problem
+
+dmworkim currently has two auth mechanisms tightly coupled inside its process:
+- **User auth**: custom `token` header -> Redis lookup (`tokenPrefix + token` -> `uid@name@role`)
+- **Bot auth**: `Authorization: Bearer <bot_token>` -> `robot` table lookup
+
+External microservices (todo-service, future knowledge-service, etc.) cannot call `AuthMiddleware` or `authBot()` directly.
+
+### Solution: Phase A -> Phase B
+
+**Phase A (Now)**: Add 3 internal HTTP endpoints to dmworkim. All Octo microservices call these endpoints. Ship an `octo-auth-client` Go SDK that wraps the calls + local cache.
+
+**Phase B (Future)**: When 3+ microservices exist, extract these endpoints into a standalone `octo-auth-service`. The SDK only changes its target URL; business code untouched.
+
+### Phase A: dmworkim Internal Endpoints
+
+```
+POST /internal/v1/auth/verify
+  Request:  { "token": "<user-token>" }
+  Response: { "uid": "xxx", "name": "Merlin", "role": "admin" }
+  Error:    401 { "msg": "invalid token" }
+
+POST /internal/v1/auth/verify-bot
+  Request:  { "bot_token": "bf_xxx" }
+  Response: { "robot_id": "xxx", "robot_name": "todo-bot" }
+  Error:    401 { "msg": "invalid bot token" }
+
+POST /internal/v1/auth/space-check
+  Request:  { "space_id": "xxx", "uid": "xxx" }
+  Response: { "is_member": true }
+  Error:    403 { "msg": "not a space member" }
+```
+
+These endpoints are **internal only** (bound to internal network, not exposed to public).
+
+### octo-auth-client SDK
+
+```go
+// All Octo microservices import this package
+import "github.com/Mininglamp-OSS/octo-auth-client"
+
+client := octoauth.New(octoauth.Config{
+    AuthURL:  "http://dmworkim:8090/internal/v1",
+    CacheTTL: 60 * time.Second,
+})
+
+// Gin middleware - one line to integrate
+r.Use(client.UserAuthMiddleware())   // validates token header
+r.Use(client.SpaceMiddleware())      // validates X-Space-ID header
+
+// Bot routes
+botGroup := r.Group("/bot", client.BotAuthMiddleware())
+```
+
+The SDK handles:
+- Token validation via HTTP call to dmworkim
+- Local cache (60s TTL) to reduce round-trips
+- Unified context injection (`c.Get("uid")`, `c.Get("space_id")`, `c.Get("robot_id")`)
+- Graceful fallback when dmworkim is temporarily unreachable (serve from cache)
+
+## System Architecture
+
+### Component Diagram
+
+![System Component Diagram](./c1-component.puml)
+
+**Components:**
+
+- **todo-web** — React + TypeScript SPA. Auth tokens obtained from dmwork IM, passed via `token` header.
+- **octo-cli** — Unified Go CLI. `octo todo` sub-commands call todo-service REST API. Bot agents invoke via `exec`.
+- **todo-service** — Go (Gin + wkhttp) REST API. Uses `octo-auth-client` SDK for auth. Owns todo/goal business logic.
+- **dmworkim** — Auth provider (internal endpoints). Notification channel (Bot API for message push).
+- **WuKongIM** — Underlying message transport. todo-service sends notifications as a system Bot via dmworkim Bot API.
+
+### Technology Stack
+
+| Component | Technology | Rationale |
+|-----------|-----------|-----------|
+| todo-service | Go 1.22+, Gin (wkhttp), dbr | Aligned with dmworkim ecosystem |
+| todo-web | React 18, TypeScript, Vite, Ant Design | Modern SPA stack |
+| octo-cli | Go 1.22+, Cobra | Extensible sub-commands |
+| Database | MySQL 8 | Aligned with dmworkim (single DB infrastructure) |
+| Cache | Redis 7 | Rate limiting, auth cache, notification queue |
+| Auth | octo-auth-client SDK | Unified auth across all Octo services |
+
+## Data Model
+
+### Entity Relationship Diagram
+
+![ER Diagram](./c2-er.puml)
+
+### Core Entities
+
+#### `goals`
+
+A goal is an optional organizational container. Its kanban view shows associated todos grouped by status.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | char(36) | PK, UUID | Unique identifier |
+| space\_id | varchar(64) | NOT NULL, INDEX | Space isolation |
+| title | varchar(200) | NOT NULL | Goal name |
+| description | text | nullable | What this goal aims to achieve |
+| owner\_id | varchar(64) | NOT NULL | Creator / owner (dmwork UID) |
+| archived | tinyint(1) | NOT NULL, default 0 | Soft archive |
+| created\_at | datetime(3) | NOT NULL | Creation timestamp |
+| updated\_at | datetime(3) | NOT NULL | Last modification |
+
+#### `goal_members`
+
+Access control. Members can view the goal's kanban and create todos under it.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | char(36) | PK | Unique identifier |
+| goal\_id | char(36) | NOT NULL, FK | Parent goal |
+| user\_id | varchar(64) | NOT NULL | Member (dmwork UID) |
+| role | enum('owner','member') | NOT NULL, default 'member' | Role |
+| created\_at | datetime(3) | NOT NULL | When added |
+
+Unique key: `(goal_id, user_id)`.
+
+#### `todos`
+
+The atomic unit. Fixed status + optional goal association + Space scoping.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | char(36) | PK, UUID | Unique identifier |
+| space\_id | varchar(64) | NOT NULL, INDEX | Space isolation |
+| goal\_id | char(36) | nullable, FK | Optional goal |
+| title | varchar(500) | NOT NULL | Todo title |
+| description | text | nullable | Detailed description |
+| creator\_id | varchar(64) | NOT NULL | Creator (dmwork UID) |
+| status | enum('draft','planned','in\_progress','done','cancelled') | NOT NULL, default 'draft' | Current status |
+| deadline | datetime(3) | nullable | Due date |
+| remind\_at | datetime(3) | nullable | Reminder time |
+| source\_channel\_id | varchar(255) | nullable | Source channel ID (group\_no or group\_no\_\_\_\_short\_id) |
+| source\_channel\_type | tinyint unsigned | nullable | Source channel type (2=group, 5=thread, etc.) |
+| source\_name | varchar(200) | nullable | Display name of source |
+| created\_at | datetime(3) | NOT NULL | Creation timestamp |
+| updated\_at | datetime(3) | NOT NULL | Last modification |
+| deleted\_at | datetime(3) | nullable | Soft delete |
+
+#### `todo_assignees`
+
+Who is responsible. Supports humans and bots. Per-assignee completion tracking.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | char(36) | PK | Unique identifier |
+| todo\_id | char(36) | NOT NULL, FK | Parent todo |
+| user\_id | varchar(64) | NOT NULL | Assignee (dmwork UID) |
+| status | enum('pending','done') | NOT NULL, default 'pending' | Completion status |
+| completed\_at | datetime(3) | nullable | When marked done |
+| created\_at | datetime(3) | NOT NULL | When assigned |
+
+Unique key: `(todo_id, user_id)`.
+
+Note: `assignee_type` (human/bot) is not stored. todo-service queries dmworkim's robot table via internal API to determine type when needed for display.
+
+#### `todo_comments`
+
+Flat discussion thread on a todo.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | char(36) | PK | Unique identifier |
+| todo\_id | char(36) | NOT NULL, FK | Parent todo |
+| user\_id | varchar(64) | NOT NULL | Author |
+| content | text | NOT NULL | Comment body |
+| created\_at | datetime(3) | NOT NULL | Creation timestamp |
+
+#### `todo_attachments`
+
+File references attached to a todo.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | char(36) | PK | Unique identifier |
+| todo\_id | char(36) | NOT NULL, FK | Parent todo |
+| user\_id | varchar(64) | NOT NULL | Uploader |
+| file\_url | varchar(1024) | NOT NULL | External storage URL |
+| file\_name | varchar(255) | nullable | Original filename |
+| file\_size | bigint | nullable | Size in bytes |
+| mime\_type | varchar(100) | nullable | MIME type |
+| created\_at | datetime(3) | NOT NULL | Upload timestamp |
+
+### Indexes
+
+```sql
+-- Space + Goal indexes
+CREATE INDEX idx_goals_space_owner ON goals(space_id, owner_id);
+CREATE INDEX idx_goal_members_user ON goal_members(user_id);
+CREATE INDEX idx_goal_members_goal ON goal_members(goal_id);
+
+-- Todo indexes
+CREATE INDEX idx_todos_space_status ON todos(space_id, status);
+CREATE INDEX idx_todos_goal ON todos(goal_id);
+CREATE INDEX idx_todos_creator ON todos(space_id, creator_id);
+CREATE INDEX idx_todos_deadline ON todos(space_id, deadline);
+CREATE INDEX idx_todos_source ON todos(source_channel_id, source_channel_type);
+CREATE INDEX idx_assignees_user ON todo_assignees(user_id);
+CREATE INDEX idx_assignees_todo ON todo_assignees(todo_id);
+CREATE INDEX idx_assignees_status ON todo_assignees(user_id, status);
+CREATE INDEX idx_attachments_todo ON todo_attachments(todo_id);
+```
+
+## State Machine
+
+### Todo Status Transitions
+
+![State Machine](./c6-state.puml)
+
+**Valid transitions:**
+
+| From | To | Who can trigger |
+|------|----|-----------------|
+| draft | planned | Creator |
+| draft | cancelled | Creator |
+| planned | in\_progress | Creator or assignee |
+| planned | cancelled | Creator |
+| in\_progress | done | Creator or assignee |
+| in\_progress | cancelled | Creator |
+| cancelled | draft | Creator (reactivate) |
+
+**Rules:**
+- Forward transitions + one reactivation path (`cancelled -> draft`)
+- When todo transitions to `done`, all assignees auto-marked `done`
+- API response includes `allowed_transitions` for the current status, so clients never hardcode the state machine
+
+**Assignee status (independent):**
+- `pending` -> `done`: Assignee marks self done
+- `done` -> `pending`: Assignee reverts
+
+## API Design
+
+### Authentication
+
+All requests must include the `token` header (user) or `Authorization: Bearer <bot_token>` (bot). todo-service validates via `octo-auth-client` SDK which calls dmworkim internal endpoints.
+
+Space context is passed via `X-Space-ID` header or `space_id` query parameter.
+
+```
+token: <dmwork-user-token>
+X-Space-ID: <space-id>
+```
+
+### RESTful Endpoints
+
+Base path: `/api/v1`
+
+#### Goal CRUD
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| POST | /goals | Create goal | Required |
+| GET | /goals | List goals (in current Space) | Required |
+| GET | /goals/:id | Get goal detail (kanban: todos by status) | Required (member) |
+| PUT | /goals/:id | Update goal | Required (owner) |
+| DELETE | /goals/:id | Archive goal | Required (owner) |
+| POST | /goals/:id/members | Add members | Required (owner) |
+| DELETE | /goals/:id/members/:uid | Remove member | Required (owner) |
+
+#### Todo CRUD
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| POST | /todos | Create todo | Required |
+| GET | /todos | List todos (filterable, paginated) | Required |
+| GET | /todos/:id | Get todo detail (includes allowed\_transitions) | Required |
+| PUT | /todos/:id | Update todo | Required (creator) |
+| PUT | /todos/:id/status | Transition status | Required (creator or assignee) |
+| DELETE | /todos/:id | Soft delete | Required (creator) |
+| POST | /todos/:id/assignees | Add assignees | Required (creator) |
+| DELETE | /todos/:id/assignees/:uid | Remove assignee | Required (creator) |
+| PUT | /todos/:id/assignee-status | Update own completion | Required (assignee) |
+
+#### Comments and Attachments
+
+| Method | Path | Description | Auth |
+|--------|------|-------------|------|
+| GET | /todos/:id/comments | List comments | Required |
+| POST | /todos/:id/comments | Add comment | Required |
+| DELETE | /todos/:id/comments/:cid | Delete comment | Required (author) |
+| POST | /todos/:id/attachments | Upload attachment | Required |
+| DELETE | /todos/:id/attachments/:aid | Delete attachment | Required (uploader) |
+
+### Pagination
+
+All list endpoints support cursor-based pagination:
+
+```
+GET /api/v1/todos?limit=20&cursor=<last_id>&sort=-created_at
+```
+
+Response includes:
+```json
+{
+  "data": [...],
+  "pagination": {
+    "has_more": true,
+    "next_cursor": "t1b2c3d4"
+  }
+}
+```
+
+### Request / Response Examples
+
+#### Create Todo
+
+```
+POST /api/v1/todos
+token: <dmwork-user-token>
+X-Space-ID: sp_abc123
+
+{
+  "title": "Complete requirements document",
+  "goal_id": "g1a2b3c4-d5e6-7890-abcd-ef1234567890",
+  "assignee_ids": ["d0bb36669625432898ab339c78b8db94", "bot_reviewer_uid"],
+  "source": {
+    "channel_id": "g1234567890",
+    "channel_type": 2,
+    "name": "#product-team"
+  },
+  "deadline": "2026-04-26T18:00:00+08:00"
+}
+```
+
+Response (201):
+
+```json
+{
+  "id": "t1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "space_id": "sp_abc123",
+  "title": "Complete requirements document",
+  "status": "draft",
+  "allowed_transitions": ["planned", "cancelled"],
+  "goal": {"id": "g1a2b3c4", "title": "Q2 Product Launch"},
+  "creator": {"uid": "d0bb36669625432898ab339c78b8db94", "name": "Merlin"},
+  "assignees": [
+    {"uid": "d0bb36669625432898ab339c78b8db94", "name": "Merlin", "is_bot": false, "status": "pending"},
+    {"uid": "bot_reviewer_uid", "name": "ReviewBot", "is_bot": true, "status": "pending"}
+  ],
+  "source": {"channel_id": "g1234567890", "channel_type": 2, "name": "#product-team"},
+  "deadline": "2026-04-26T18:00:00+08:00",
+  "created_at": "2026-04-25T10:05:00+08:00"
+}
+```
+
+#### Transition Status
+
+```
+PUT /api/v1/todos/t1b2c3d4/status
+token: <dmwork-user-token>
+
+{ "status": "in_progress" }
+```
+
+Response includes updated `allowed_transitions`:
+```json
+{
+  "id": "t1b2c3d4",
+  "status": "in_progress",
+  "allowed_transitions": ["done", "cancelled"]
+}
+```
+
+Invalid transitions return `400`:
+```json
+{
+  "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "Cannot transition from 'draft' to 'done'",
+    "details": {"current": "draft", "allowed": ["planned", "cancelled"]}
+  }
+}
+```
+
+#### Get Goal (Kanban View)
+
+```
+GET /api/v1/goals/g1a2b3c4
+token: <dmwork-user-token>
+X-Space-ID: sp_abc123
+```
+
+Response — todos grouped by status for kanban rendering:
+```json
+{
+  "id": "g1a2b3c4",
+  "title": "Q2 Product Launch",
+  "description": "Ship v2.0 by June 30",
+  "columns": {
+    "draft": [...],
+    "planned": [...],
+    "in_progress": [...],
+    "done": [...],
+    "cancelled": [...]
+  },
+  "stats": {"total": 12, "done": 5, "in_progress": 3}
+}
+```
+
+#### List Todos by Source (Chat Panel Query)
+
+```
+GET /api/v1/todos?source_channel_id=g1234567890&source_channel_type=2&limit=20
+token: <dmwork-user-token>
+X-Space-ID: sp_abc123
+```
+
+This powers the per-conversation todo panel in dmwork chat windows.
+
+### Error Codes
+
+`UNAUTHORIZED`, `FORBIDDEN`, `VALIDATION_ERROR`, `GOAL_NOT_FOUND`, `TODO_NOT_FOUND`, `INVALID_TRANSITION`, `ASSIGNEE_NOT_FOUND`, `DUPLICATE_ASSIGNEE`, `SPACE_FORBIDDEN`, `RATE_LIMITED`.
+
+## Notification Design
+
+todo-service sends notifications as a **system Bot** via dmworkim's Bot API:
+
+```
+POST /v1/bot/sendMessage
+Authorization: Bearer <todo-bot-token>
+
+{
+  "channel_id": "<target_group_no>",
+  "channel_type": 2,
+  "payload": { "type": 1, "content": "Task 'Review PR' moved to in_progress by Merlin" }
+}
+```
+
+todo-service registers itself as a Bot in dmworkim (via BotFather). This Bot identity is used for all notifications.
+
+| Event | Notification target |
+|-------|-------------------|
+| TodoCreated | All assignees |
+| TodoStatusChanged | All assignees |
+| TodoCompleted (done) | Goal owner (if goal) + creator |
+| AssigneeAdded | Added user/bot |
+| DeadlineReminder | Pending assignees |
+
+Deduplication: if a user is both creator, assignee, and goal owner, they receive **one** notification per event (deduplicated by uid before send).
+
+## octo-cli Design
+
+### Authentication Flow
+
+```bash
+# Human user: OAuth-style login via dmworkim OpenAPI
+octo auth login
+# -> Opens browser -> dmwork login -> authcode -> access_token
+# -> Stored in ~/.config/octo/config.yaml
+
+# Bot: direct token configuration
+octo auth set-bot-token <bf_xxx>
+```
+
+Under the hood, `octo auth login` uses dmworkim's existing OpenAPI flow:
+1. `GET /v1/openapi/authcode?app_id=octo-cli` (authenticated)
+2. `GET /v1/openapi/access_token?authcode=xxx&app_key=xxx` (exchange)
+3. Store access\_token locally
+
+### Command Structure
+
+```
+octo <service> <command> [flags]
+
+Services:
+  auth        Authentication management
+  todo        Task management
+  goal        Goal / kanban management
+  (future)    knowledge, workflow, ...
+
+Global Flags:
+  --server    Server URL (default: from config)
+  --token     Override token
+  --space     Space ID (default: from config)
+  --format    text|json (default: text)
+  --quiet     Minimal output (scripting)
+```
+
+### Usage Examples
+
+```bash
+# Create a goal
+octo goal create "Q2 Launch" \
+  --desc "Ship v2.0 by June 30" \
+  --space sp_abc123
+
+# Create a todo under a goal
+octo todo create "Review PR #42" \
+  --goal "Q2 Launch" \
+  --assign d0bb366,bot_reviewer
+
+# Transition status
+octo todo status t1b2c3d4 in_progress
+
+# List todos in current space
+octo todo list --assignee me --status in_progress
+
+# Bot usage (JSON output)
+octo todo list --format json --assignee bot_reviewer
+```
+
+## todo-web Design
+
+### Pages
+
+| Page | Path | Description |
+|------|------|-------------|
+| My Todos | / | Cross-goal list (filterable, paginated) |
+| Goal List | /goals | Goals with progress stats |
+| Goal Board | /goals/:id | Kanban: todos by status columns |
+| Todo Detail | /todos/:id | Full detail with assignees, comments |
+
+### Kanban UX
+
+- **5 status columns**: Draft, Planned, In Progress, Done, Cancelled
+- **Drag & drop**: validates against `allowed_transitions` from API; invalid drops show error tooltip; Done/Cancelled columns cannot be dragged **out** (except Cancelled -> Draft to reactivate)
+- **Bot assignees**: robot icon distinct from human avatars
+- **Space scoping**: space selector in top nav
+
+### Chat-Embedded Todo Panel
+
+In dmwork chat windows, a toggle button opens a todo side panel:
+- Queries `GET /api/v1/todos?source_channel_id=<current>&source_channel_type=<type>`
+- Shows todos grouped by status with quick-create and status badges
+- Auto-refreshes via polling
+
+## Service Internal Architecture
+
+### Directory Layout
+
+```
+todo-service/
+|-- cmd/main.go
+|-- internal/
+|   |-- config/config.go
+|   |-- model/
+|   |   |-- goal.go
+|   |   |-- todo.go            # includes state machine
+|   |   |-- assignee.go
+|   |   |-- comment.go
+|   |   |-- attachment.go
+|   |-- repository/            # dbr-based data access
+|   |   |-- goal_repo.go
+|   |   |-- todo_repo.go
+|   |   |-- assignee_repo.go
+|   |-- service/
+|   |   |-- goal_svc.go
+|   |   |-- todo_svc.go        # state machine enforcement
+|   |   |-- notification_svc.go
+|   |-- handler/
+|   |   |-- goal_handler.go
+|   |   |-- todo_handler.go
+|   |   |-- middleware.go       # octo-auth-client integration
+|   |-- integration/
+|       |-- dmwork_bot.go       # Bot API client for notifications
+|-- migrations/                 # MySQL migrations (hand-written SQL)
+|-- Dockerfile
+|-- docker-compose.yaml
+```
+
+## Deployment
+
+### Docker Compose
+
+```yaml
+services:
+  todo-service:
+    build: ./todo-service
+    ports: ["8080:8080"]
+    environment:
+      - MYSQL_DSN=todo:todo@tcp(mysql:3306)/octo_todo?charset=utf8mb4&parseTime=true
+      - REDIS_URL=redis://redis:6379/0
+      - AUTH_URL=http://dmworkim:8090/internal/v1
+      - BOT_TOKEN=bf_todo_system_bot
+    depends_on: [mysql, redis]
+
+  todo-web:
+    build: ./todo-web
+    ports: ["3000:80"]
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: octo_todo
+      MYSQL_USER: todo
+      MYSQL_PASSWORD: todo
+      MYSQL_ROOT_PASSWORD: root
+    volumes: ["mysqldata:/var/lib/mysql"]
+
+  redis:
+    image: redis:7-alpine
+
+volumes:
+  mysqldata:
+```
+
+### Health Checks
+
+```
+GET /health        -> 200 (alive)
+GET /health/ready  -> 200 (MySQL + Redis + dmworkim auth reachable)
+```
+
+## Repository Structure
+
+```
+codex.example.com/octo/octo-todo/       # todo-service + todo-web + docs
+codex.example.com/octo/octo-cli/        # unified CLI (separate repo)
+codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
+```
+
+## Implementation Phases
+
+### Phase 1 — Auth + Core Service + CLI (Week 1-2)
+
+- dmworkim: implement 3 internal auth endpoints
+- octo-auth-client SDK (Go package)
+- MySQL schema + migrations
+- Goal CRUD API + Space isolation
+- Todo CRUD API + state machine + pagination
+- Assignee management
+- octo-cli: `octo auth` + `octo todo` + `octo goal`
+- Tests (target: 80% coverage)
+- Docker Compose
+
+### Phase 2 — Web UI (Week 2-3)
+
+- React SPA (Vite + Ant Design)
+- dmwork token auth flow
+- Goal list + Kanban board (drag-and-drop with transition validation)
+- My Todos list (cross-goal, filterable)
+- Todo detail modal
+- Responsive
+
+### Phase 3 — Chat Integration + Notifications (Week 3-4)
+
+- Register todo-system-bot in dmworkim
+- Notification service (Bot API push + deduplication)
+- Chat command support (`@todo-bot /todo create xxx`)
+- Chat-embedded todo panel (source context query)
+- Deadline reminder scheduler
+
+### Phase 4 — Hardening (Week 4)
+
+- Rate limiting (reuse dmworkim's Redis-based approach)
+- Security audit
+- Performance testing
+- CI/CD pipeline
+- Production deployment guide
+
+## Security Considerations
+
+1. **Authentication** — Delegated to dmworkim via internal API. No local token issuance.
+2. **Space isolation** — All queries filtered by `space_id`. Cross-Space access returns 403.
+3. **Authorization** — Goal owner manages members; todo creator manages todo; assignees can transition and mark completion.
+4. **Input validation** — go-playground/validator. Title max 500 chars, description max 10000 chars.
+5. **SQL injection** — dbr parameterized queries exclusively.
+6. **Rate limiting** — Redis sliding window, aligned with dmworkim's existing approach.
+7. **Soft delete** — Todos never hard-deleted; audit trail via `deleted_at`.
+8. **Internal API security** — `/internal/v1/auth/*` bound to internal network only.
+
+## Appendix
+
+### Appendix A: Comparison with Existing Tools
+
+| Feature | WeCom To-Dos | Trello / Notion | Octo Todo |
+|---------|-------------|----------------|-----------|
+| Goal-driven kanban | No | Partial | Yes |
+| Fixed state machine | No | No | Yes (5+1 states) |
+| Space isolation | N/A | Workspace | Yes |
+| Create from chat | Yes | No | Yes |
+| Assign to bots | No | No | Yes |
+| Per-user completion | Yes | No | Yes |
+| Unified CLI | No | No | Yes (octo-cli) |
+| Auth via IM platform | Yes | No | Yes (dmworkim) |
+| Self-hosted | No | No | Yes |
+
+### Appendix B: Rate Limits
+
+| Endpoint Category | Limit | Window |
+|------------------|-------|--------|
+| Goal write | 30 | 1 min |
+| Goal read | 300 | 1 min |
+| Todo write | 100 | 1 min |
+| Todo read | 300 | 1 min |
+| Comment write | 60 | 1 min |
+| Assignee update | 100 | 1 min |
+| Global per-user | 500 | 1 min |
+
+### Appendix C: State Machine
+
+```
+                 +-------+
+                 | draft |<---------+
+                 +---+---+          |
+                     |          reactivate
+                plan |              |
+                     v              |
+               +---------+    +-----------+
+               | planned  |--->| cancelled |
+               +----+----+    +-----------+
+                    |               ^
+              start |               |
+                    v               |
+             +--------------+       |
+             | in_progress  |-------+
+             +------+-------+
+                    |
+            complete|
+                    v
+                +------+
+                | done |
+                +------+
+```
+
+### Appendix D: dmworkim Channel Types Reference
+
+| Value | Type | Example channel\_id |
+|-------|------|-------------------|
+| 1 | Person (DM) | uid |
+| 2 | Group | group\_no |
+| 5 | Thread (CommunityTopic) | group\_no\_\_\_\_short\_id |
