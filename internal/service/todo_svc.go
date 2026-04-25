@@ -14,7 +14,7 @@ import (
 type todoStore interface {
 	Create(todo *model.Todo) error
 	GetByID(id, spaceID string) (*model.Todo, error)
-	ListBySpace(spaceID string, filter repository.TodoFilter) ([]*model.Todo, int, error)
+	ListBySpace(spaceID string, filter repository.TodoFilter) ([]*model.Todo, bool, error)
 	Update(todo *model.Todo) error
 	UpdateStatus(id, spaceID, status string) error
 	SoftDelete(id, spaceID string) error
@@ -50,14 +50,19 @@ func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, tx txRunner)
 // a single transaction. A failure on any assignee rolls back the todo too,
 // which is the only way to avoid orphan rows when a duplicate assignee_id or
 // a dead connection aborts the second write.
-func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []string) (*model.Todo, error) {
+//
+// Returns a fully-populated TodoDetail so the client has everything it needs
+// (assignees, allowed_transitions) without a follow-up GET.
+func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []string) (*TodoDetail, error) {
 	if todo.Status == "" {
 		todo.Status = model.TodoStatusDraft
 	}
+	var created []*model.TodoAssignee
 	err := s.tx.Do(func(r *repository.TxRepos) error {
 		if err := r.Todo.Create(todo); err != nil {
 			return err
 		}
+		created = make([]*model.TodoAssignee, 0, len(assigneeIDs))
 		for _, aid := range assigneeIDs {
 			a := &model.TodoAssignee{
 				TodoID: todo.ID,
@@ -67,31 +72,35 @@ func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []st
 			if err := r.Assignee.Create(a); err != nil {
 				return err
 			}
+			created = append(created, a)
 		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	return todo, nil
+	return &TodoDetail{
+		Todo:               todo,
+		Assignees:          created,
+		AllowedTransitions: model.AllowedTransitions(todo.Status),
+	}, nil
 }
 
 type TodoListResult struct {
 	Items      []*model.Todo `json:"items"`
-	Total      int           `json:"total"`
+	HasMore    bool          `json:"has_more"`
 	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
 func (s *TodoService) ListTodos(spaceID string, filter repository.TodoFilter) (*TodoListResult, error) {
-	todos, total, err := s.todoRepo.ListBySpace(spaceID, filter)
+	todos, hasMore, err := s.todoRepo.ListBySpace(spaceID, filter)
 	if err != nil {
 		return nil, err
 	}
 	var nextCursor string
-	// Emit a cursor only when the page was full — a short page proves no more
-	// rows exist. This can produce one empty trailing page when total is an
-	// exact multiple of limit, which clients must handle (documented).
-	if len(todos) > 0 && len(todos) == filter.Limit {
+	// Only emit next_cursor when there's a next page — repo returns the exact
+	// has_more by fetching limit+1 rows internally, so we don't have to guess.
+	if hasMore && len(todos) > 0 {
 		last := todos[len(todos)-1]
 		nextCursor = repository.EncodeCursor(repository.Cursor{
 			CreatedAt: last.CreatedAt,
@@ -100,7 +109,7 @@ func (s *TodoService) ListTodos(spaceID string, filter repository.TodoFilter) (*
 	}
 	return &TodoListResult{
 		Items:      todos,
-		Total:      total,
+		HasMore:    hasMore,
 		NextCursor: nextCursor,
 	}, nil
 }
@@ -180,18 +189,30 @@ func parseOptionalRFC3339(s string) (*time.Time, error) {
 // TransitionStatus changes a todo's status and (when moving to done) marks
 // every assignee done atomically, so the "is this todo done?" check can never
 // see status=done with assignees still pending.
+//
+// Errors split along two axes:
+//   - state machine disallows target → INVALID_TRANSITION (400) with
+//     details.current and details.allowed, so clients don't need a second GET.
+//   - state machine allows target, but caller lacks the required role →
+//     FORBIDDEN (403).
 func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.TodoStatus) (*TodoDetail, error) {
 	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
 	}
+
+	allowed := model.AllowedTransitions(todo.Status)
+	if !containsStatus(allowed, target) {
+		return nil, apperr.InvalidTransition(string(todo.Status), statusStrings(allowed))
+	}
+
 	isCreator := todo.CreatorID == userID
 	isAssignee, err := s.assigneeRepo.IsAssignee(id, userID)
 	if err != nil {
 		return nil, err
 	}
 	if !model.CanTransition(todo.Status, target, isCreator, isAssignee) {
-		return nil, apperr.ErrForbidden
+		return nil, apperr.Forbidden("caller role may not perform this transition")
 	}
 
 	if target == model.TodoStatusDone {
@@ -219,6 +240,23 @@ func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.
 		Assignees:          assignees,
 		AllowedTransitions: model.AllowedTransitions(target),
 	}, nil
+}
+
+func containsStatus(list []model.TodoStatus, target model.TodoStatus) bool {
+	for _, s := range list {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+func statusStrings(list []model.TodoStatus) []string {
+	out := make([]string, len(list))
+	for i, s := range list {
+		out[i] = string(s)
+	}
+	return out
 }
 
 func (s *TodoService) SoftDelete(id, spaceID, userID string) error {

@@ -47,14 +47,14 @@ func (f *fakeTodoRepo) GetByID(id, spaceID string) (*model.Todo, error) {
 	return t, nil
 }
 
-func (f *fakeTodoRepo) ListBySpace(spaceID string, _ repository.TodoFilter) ([]*model.Todo, int, error) {
+func (f *fakeTodoRepo) ListBySpace(spaceID string, _ repository.TodoFilter) ([]*model.Todo, bool, error) {
 	var out []*model.Todo
 	for _, t := range f.todos {
 		if t.SpaceID == spaceID && t.DeletedAt == nil {
 			out = append(out, t)
 		}
 	}
-	return out, len(out), nil
+	return out, false, nil
 }
 
 func (f *fakeTodoRepo) Update(todo *model.Todo) error {

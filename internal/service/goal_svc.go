@@ -49,10 +49,24 @@ type GoalDetail struct {
 	Todos      map[string][]*model.Todo `json:"todos"`
 }
 
-func (s *GoalService) GetGoal(id, spaceID string) (*GoalDetail, error) {
+// GetGoal returns the kanban detail for a goal. Access is restricted to goal
+// members — listing goals in a Space does not imply the right to open any of
+// them. The owner is implicitly a member (CreateGoal inserts the owner row in
+// the same transaction), but we also allow owner-id match as a belt-and-braces
+// check against any bug that drops the membership row.
+func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	goal, err := s.goalRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
+	}
+	if goal.OwnerID != userID {
+		isMember, err := s.goalRepo.IsMember(id, userID)
+		if err != nil {
+			return nil, err
+		}
+		if !isMember {
+			return nil, apperr.Forbidden("not a member of this goal")
+		}
 	}
 	members, err := s.goalRepo.ListMembers(id)
 	if err != nil {
@@ -80,7 +94,7 @@ func (s *GoalService) UpdateGoal(id, spaceID, userID, title string, description 
 		return nil, err
 	}
 	if goal.OwnerID != userID {
-		return nil, apperr.ErrForbidden
+		return nil, apperr.Forbidden("only the owner can update this goal")
 	}
 	goal.Title = title
 	goal.Description = description
@@ -96,7 +110,7 @@ func (s *GoalService) ArchiveGoal(id, spaceID, userID string) error {
 		return err
 	}
 	if goal.OwnerID != userID {
-		return apperr.ErrForbidden
+		return apperr.Forbidden("only the owner can archive this goal")
 	}
 	return s.goalRepo.Archive(id, spaceID)
 }
@@ -107,7 +121,7 @@ func (s *GoalService) AddMember(goalID, spaceID, userID, memberID, role string) 
 		return err
 	}
 	if goal.OwnerID != userID {
-		return apperr.ErrForbidden
+		return apperr.Forbidden("only the owner can add members")
 	}
 	return s.goalRepo.AddMember(goalID, memberID, role)
 }
@@ -118,10 +132,10 @@ func (s *GoalService) RemoveMember(goalID, spaceID, userID, memberID string) err
 		return err
 	}
 	if goal.OwnerID != userID {
-		return apperr.ErrForbidden
+		return apperr.Forbidden("only the owner can remove members")
 	}
 	if memberID == goal.OwnerID {
-		return apperr.ErrForbidden
+		return apperr.Forbidden("cannot remove the owner")
 	}
 	return s.goalRepo.RemoveMember(goalID, memberID)
 }

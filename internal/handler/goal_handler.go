@@ -23,7 +23,7 @@ type createGoalReq struct {
 func (h *GoalHandler) Create(c *gin.Context) {
 	var req createGoalReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	goal, err := h.svc.CreateGoal(spaceID(c), uid(c), req.Title, req.Description)
@@ -44,7 +44,7 @@ func (h *GoalHandler) List(c *gin.Context) {
 }
 
 func (h *GoalHandler) Get(c *gin.Context) {
-	detail, err := h.svc.GetGoal(c.Param("id"), spaceID(c))
+	detail, err := h.svc.GetGoal(c.Param("id"), spaceID(c), uid(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -60,7 +60,7 @@ type updateGoalReq struct {
 func (h *GoalHandler) Update(c *gin.Context) {
 	var req updateGoalReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	goal, err := h.svc.UpdateGoal(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description)
@@ -87,7 +87,7 @@ type addMemberReq struct {
 func (h *GoalHandler) AddMember(c *gin.Context) {
 	var req addMemberReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	if err := h.svc.AddMember(c.Param("id"), spaceID(c), uid(c), req.UserID, req.Role); err != nil {
@@ -100,7 +100,7 @@ func (h *GoalHandler) AddMember(c *gin.Context) {
 func (h *GoalHandler) RemoveMember(c *gin.Context) {
 	memberUID := c.Param("uid")
 	if memberUID == "" {
-		fail(c, http.StatusBadRequest, "member uid is required")
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "member uid is required", nil)
 		return
 	}
 	if err := h.svc.RemoveMember(c.Param("id"), spaceID(c), uid(c), memberUID); err != nil {

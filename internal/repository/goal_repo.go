@@ -38,7 +38,7 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 		LoadOne(&goal)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
-			return nil, apperr.ErrNotFound
+			return nil, apperr.GoalNotFound()
 		}
 		return nil, err
 	}

@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"net/http"
-
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -25,7 +23,7 @@ type createAttachmentReq struct {
 func (h *AttachmentHandler) Create(c *gin.Context) {
 	var req createAttachmentReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	att, err := h.svc.CreateAttachment(c.Param("id"), spaceID(c), uid(c), req.FileURL, req.FileName, req.FileSize, req.MimeType)

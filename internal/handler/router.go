@@ -1,9 +1,17 @@
 package handler
 
 import (
+	"net/http"
+
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/gin-gonic/gin"
 )
+
+// ReadinessCheck returns nil when the service is ready to serve traffic. Main
+// wires this to a function that Pings MySQL (and later Redis / dmworkim). A
+// non-nil error renders 503 so k8s pulls the Pod out of rotation until
+// dependencies recover.
+type ReadinessCheck func() error
 
 // SetupRouter wires handlers to routes. The userAuth middleware is injected so
 // main.go can construct the right variant for the configured AuthMode.
@@ -13,12 +21,29 @@ func SetupRouter(
 	commentH *CommentHandler,
 	attachmentH *AttachmentHandler,
 	userAuth gin.HandlerFunc,
+	ready ReadinessCheck,
 ) *gin.Engine {
 	r := gin.Default()
 
-	// Health
-	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
-	r.GET("/health/ready", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ready"}) })
+	// Liveness: cheap, no I/O. Only signals "process is up".
+	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+
+	// Readiness: probes dependencies. Fails to 503 when any check errors.
+	r.GET("/health/ready", func(c *gin.Context) {
+		if ready != nil {
+			if err := ready(); err != nil {
+				c.JSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{
+						"code":    "NOT_READY",
+						"message": "dependencies not reachable",
+						"details": gin.H{"reason": err.Error()},
+					},
+				})
+				return
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ready"})
+	})
 
 	api := r.Group("/api/v1")
 	api.Use(userAuth, auth.SpaceMiddleware())

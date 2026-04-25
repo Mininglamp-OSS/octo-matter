@@ -1,4 +1,17 @@
-# Octo Todo — Architecture Design Document (v4)
+# Octo Todo — Architecture Design Document (v5)
+
+> **v5 changelog** — consolidates lessons from the v1 implementation:
+> - REST-style response envelope (bare object on success, `{error:{code,message,details}}` on failure) — replaces the `{code,msg,data}` wrapper.
+> - Cursor pagination returns `has_more` + `next_cursor`; `total` dropped to avoid O(N) COUNT on every list.
+> - Composite cursor `(created_at, id)` spelled out — a plain `last_id` cursor is not safe under same-second inserts.
+> - `X-Space-ID` header only; query-string alternative removed (leaks into access logs / Referer).
+> - Flat `source_channel_id / source_channel_type / source_name` fields on both request and response — matches the DB and list-filter query shape.
+> - Enumerated error codes carry `details` (e.g. `INVALID_TRANSITION.details.allowed`).
+> - `GET /goals/:id` requires goal membership, not just space membership.
+> - `POST /todos` response includes `allowed_transitions` so clients skip a follow-up `GET`.
+> - `PUT /todos/:id` field semantics: absent = unchanged, `""` = clear, non-empty = set.
+> - `/health/ready` probes MySQL (and Redis / dmworkim when wired). `/health` stays a cheap liveness check.
+> - `AUTH_MODE=stub` + `APP_ENV=prod` is a startup error; `AUTH_MODE=remote` panics until the SDK is wired (no silent fallback).
 
 ## Overview
 
@@ -258,8 +271,9 @@ CREATE INDEX idx_attachments_todo ON todo_attachments(todo_id);
 
 **Rules:**
 - Forward transitions + one reactivation path (`cancelled -> draft`)
-- When todo transitions to `done`, all assignees auto-marked `done`
-- API response includes `allowed_transitions` for the current status, so clients never hardcode the state machine
+- When todo transitions to `done`, all assignees auto-marked `done` **atomically in the same transaction** — a partial state (status=done with pending assignees) must never be observable.
+- API response includes `allowed_transitions` for the current status on `POST /todos`, `GET /todos/:id`, and `PUT /todos/:id/status`, so clients never hardcode the state machine.
+- Illegal transitions return `INVALID_TRANSITION` (400) with `details.current` and `details.allowed` — the client does not need a second round-trip to learn what is allowed.
 
 **Assignee status (independent):**
 - `pending` -> `done`: Assignee marks self done
@@ -271,12 +285,32 @@ CREATE INDEX idx_attachments_todo ON todo_attachments(todo_id);
 
 All requests must include the `token` header (user) or `Authorization: Bearer <bot_token>` (bot). todo-service validates via `octo-auth-client` SDK which calls dmworkim internal endpoints.
 
-Space context is passed via `X-Space-ID` header or `space_id` query parameter.
+Space context is passed via the `X-Space-ID` header **only**. The query-string alternative (`?space_id=...`) is rejected — space IDs must not leak into access logs or Referer headers.
 
 ```
 token: <dmwork-user-token>
 X-Space-ID: <space-id>
 ```
+
+During Phase A, `AUTH_MODE=stub` parses `token` as `uid@name@role` without cryptographic verification — it is refused at startup when `APP_ENV=prod`. `AUTH_MODE=remote` points at the SDK path; until the SDK is wired it panics on construction so a production deploy cannot silently fall back to stub.
+
+### Response Envelope
+
+**Success** responses return the resource as a bare JSON object (or array) — no wrapper. HTTP status code (`200`, `201`, `204`) carries success. Clients read fields directly: `response.status`, not `response.data.status`.
+
+**Error** responses always take the shape:
+
+```json
+{
+  "error": {
+    "code": "INVALID_TRANSITION",
+    "message": "Cannot transition from 'draft' to 'done'",
+    "details": { "current": "draft", "allowed": ["planned", "cancelled"] }
+  }
+}
+```
+
+`code` is a stable machine-readable enum (see Error Codes below). `message` is a human-readable string safe to render verbatim. `details` is optional and only populated for codes where it is specified (currently `INVALID_TRANSITION`; may extend).
 
 ### RESTful Endpoints
 
@@ -287,26 +321,38 @@ Base path: `/api/v1`
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
 | POST | /goals | Create goal | Required |
-| GET | /goals | List goals (in current Space) | Required |
-| GET | /goals/:id | Get goal detail (kanban: todos by status) | Required (member) |
+| GET | /goals | List goals (in current Space) | Required (space member) |
+| GET | /goals/:id | Get goal detail (kanban: todos by status) | Required (goal member) |
 | PUT | /goals/:id | Update goal | Required (owner) |
 | DELETE | /goals/:id | Archive goal | Required (owner) |
 | POST | /goals/:id/members | Add members | Required (owner) |
 | DELETE | /goals/:id/members/:uid | Remove member | Required (owner) |
 
+Goal detail (`GET /goals/:id`) returns the kanban view and is scoped to goal members. Non-members in the same Space receive `403 FORBIDDEN` — listing goals does **not** imply permission to open any of them.
+
 #### Todo CRUD
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| POST | /todos | Create todo | Required |
-| GET | /todos | List todos (filterable, paginated) | Required |
-| GET | /todos/:id | Get todo detail (includes allowed\_transitions) | Required |
-| PUT | /todos/:id | Update todo | Required (creator) |
+| POST | /todos | Create todo (response includes `allowed_transitions`) | Required |
+| GET | /todos | List todos (filterable, cursor-paginated) | Required |
+| GET | /todos/:id | Get todo detail (includes `allowed_transitions`) | Required |
+| PUT | /todos/:id | Update todo (see field semantics below) | Required (creator) |
 | PUT | /todos/:id/status | Transition status | Required (creator or assignee) |
 | DELETE | /todos/:id | Soft delete | Required (creator) |
 | POST | /todos/:id/assignees | Add assignees | Required (creator) |
 | DELETE | /todos/:id/assignees/:uid | Remove assignee | Required (creator) |
 | PUT | /todos/:id/assignee-status | Update own completion | Required (assignee) |
+
+**`PUT /todos/:id` field semantics** (applies to `description`, `goal_id`, `deadline`, `remind_at`):
+
+| Request body form | Meaning |
+|-------------------|---------|
+| field absent | leave current value unchanged |
+| `"field": null` or `"field": ""` | clear the field (set column to NULL) |
+| `"field": "<value>"` | set to that value |
+
+`title` is required on update and does not support clearing (it is `NOT NULL`).
 
 #### Comments and Attachments
 
@@ -320,22 +366,28 @@ Base path: `/api/v1`
 
 ### Pagination
 
-All list endpoints support cursor-based pagination:
+All list endpoints use **cursor-based** pagination. A composite cursor `(created_at, id)` is encoded as an opaque base64 string — a plain `last_id` cursor would skip or repeat rows when two items share the same creation second. The server sorts `ORDER BY created_at DESC, id DESC` and applies `WHERE (created_at < ?C OR (created_at = ?C AND id < ?I))`.
 
 ```
-GET /api/v1/todos?limit=20&cursor=<last_id>&sort=-created_at
+GET /api/v1/todos?limit=20&cursor=<opaque>
 ```
 
-Response includes:
+Response:
+
 ```json
 {
-  "data": [...],
+  "data": [ /* resource objects */ ],
   "pagination": {
     "has_more": true,
-    "next_cursor": "t1b2c3d4"
+    "next_cursor": "eyJjIjoiMjAyNi0wNC0yNVQxMDowNTowMFoiLCJpIjoidDFiMmMzZDQifQ=="
   }
 }
 ```
+
+- `limit` defaults to 20 and is clamped to `[1, 100]`.
+- The server fetches `limit + 1` rows internally; if the extra row exists, `has_more=true` and it is stripped from `data`. This means `has_more` is exact — clients stop paging as soon as it is `false`.
+- `next_cursor` is only emitted when `has_more=true`.
+- **No `total` field.** Cursor-paginated lists do not carry a row count — computing it would require an O(N) COUNT on every page. Clients that need a count use a dedicated stats endpoint (e.g. `GET /goals/:id` returns `stats` for a goal's kanban).
 
 ### Request / Response Examples
 
@@ -350,61 +402,65 @@ X-Space-ID: sp_abc123
   "title": "Complete requirements document",
   "goal_id": "g1a2b3c4-d5e6-7890-abcd-ef1234567890",
   "assignee_ids": ["d0bb36669625432898ab339c78b8db94", "bot_reviewer_uid"],
-  "source": {
-    "channel_id": "g1234567890",
-    "channel_type": 2,
-    "name": "#product-team"
-  },
+  "source_channel_id": "g1234567890",
+  "source_channel_type": 2,
+  "source_name": "#product-team",
   "deadline": "2026-04-26T18:00:00+08:00"
 }
 ```
 
-Response (201):
+Response (`201 Created`) — bare object, includes the computed `allowed_transitions`:
 
 ```json
 {
   "id": "t1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "space_id": "sp_abc123",
+  "goal_id": "g1a2b3c4-d5e6-7890-abcd-ef1234567890",
   "title": "Complete requirements document",
+  "creator_id": "d0bb36669625432898ab339c78b8db94",
   "status": "draft",
   "allowed_transitions": ["planned", "cancelled"],
-  "goal": {"id": "g1a2b3c4", "title": "Q2 Product Launch"},
-  "creator": {"uid": "d0bb36669625432898ab339c78b8db94", "name": "Merlin"},
   "assignees": [
-    {"uid": "d0bb36669625432898ab339c78b8db94", "name": "Merlin", "is_bot": false, "status": "pending"},
-    {"uid": "bot_reviewer_uid", "name": "ReviewBot", "is_bot": true, "status": "pending"}
+    {"user_id": "d0bb36669625432898ab339c78b8db94", "status": "pending"},
+    {"user_id": "bot_reviewer_uid", "status": "pending"}
   ],
-  "source": {"channel_id": "g1234567890", "channel_type": 2, "name": "#product-team"},
+  "source_channel_id": "g1234567890",
+  "source_channel_type": 2,
+  "source_name": "#product-team",
   "deadline": "2026-04-26T18:00:00+08:00",
   "created_at": "2026-04-25T10:05:00+08:00"
 }
 ```
+
+The `assignees[].user_id` is the raw dmwork UID. Display-time enrichment (name, `is_bot`) is the web/CLI client's responsibility — todo-service does not couple itself to dmworkim's user/robot tables at read time.
 
 #### Transition Status
 
 ```
 PUT /api/v1/todos/t1b2c3d4/status
 token: <dmwork-user-token>
+X-Space-ID: sp_abc123
 
 { "status": "in_progress" }
 ```
 
-Response includes updated `allowed_transitions`:
+Success (`200 OK`):
 ```json
 {
   "id": "t1b2c3d4",
   "status": "in_progress",
-  "allowed_transitions": ["done", "cancelled"]
+  "allowed_transitions": ["done", "cancelled"],
+  "assignees": [ /* ... */ ]
 }
 ```
 
-Invalid transitions return `400`:
+Invalid transition (`400 Bad Request`):
 ```json
 {
   "error": {
     "code": "INVALID_TRANSITION",
     "message": "Cannot transition from 'draft' to 'done'",
-    "details": {"current": "draft", "allowed": ["planned", "cancelled"]}
+    "details": { "current": "draft", "allowed": ["planned", "cancelled"] }
   }
 }
 ```
@@ -446,7 +502,23 @@ This powers the per-conversation todo panel in dmwork chat windows.
 
 ### Error Codes
 
-`UNAUTHORIZED`, `FORBIDDEN`, `VALIDATION_ERROR`, `GOAL_NOT_FOUND`, `TODO_NOT_FOUND`, `INVALID_TRANSITION`, `ASSIGNEE_NOT_FOUND`, `DUPLICATE_ASSIGNEE`, `SPACE_FORBIDDEN`, `RATE_LIMITED`.
+All error responses carry a stable `code`. Clients should branch on `code`, not on `message` (which is human-readable and may change).
+
+| Code | HTTP | When | `details` |
+|------|------|------|-----------|
+| `UNAUTHORIZED` | 401 | Missing or invalid `token` / `Authorization` | — |
+| `FORBIDDEN` | 403 | Authenticated but lacks the required role (non-creator edit, non-owner goal update, non-member goal detail) | — |
+| `VALIDATION_ERROR` | 400 | Request body / params failed binding or field validation | `{field, reason}` when available |
+| `GOAL_NOT_FOUND` | 404 | Goal id does not exist in the current Space | — |
+| `TODO_NOT_FOUND` | 404 | Todo id does not exist in the current Space (or is soft-deleted) | — |
+| `ASSIGNEE_NOT_FOUND` | 404 | Assignee row does not exist for the specified `(todo_id, user_id)` | — |
+| `INVALID_TRANSITION` | 400 | Status transition not permitted for current state or caller role | `{current, allowed}` |
+| `DUPLICATE_ASSIGNEE` | 409 | `(todo_id, user_id)` already exists | — |
+| `SPACE_FORBIDDEN` | 403 | Caller is not a member of the target Space (enforced by SpaceMiddleware once Phase A auth is wired) | — |
+| `RATE_LIMITED` | 429 | Per-endpoint or global limit exceeded | `{retry_after_sec}` |
+| `INTERNAL_ERROR` | 500 | Unhandled server error | — |
+
+Cross-Space access to a resource returns `TODO_NOT_FOUND` / `GOAL_NOT_FOUND`, never `FORBIDDEN` — clients cannot distinguish "wrong space" from "does not exist", closing a tenancy information-leak.
 
 ## Notification Design
 
@@ -634,9 +706,12 @@ volumes:
 ### Health Checks
 
 ```
-GET /health        -> 200 (alive)
-GET /health/ready  -> 200 (MySQL + Redis + dmworkim auth reachable)
+GET /health        -> 200 {"status":"ok"}        # liveness: process is up, no I/O
+GET /health/ready  -> 200 {"status":"ready"}     # readiness: MySQL Ping succeeds (Redis + dmworkim auth added when wired)
+                   -> 503 {"error":{"code":"NOT_READY","message":"...","details":{"mysql":"<err>"}}}
 ```
+
+`/health` must stay cheap (no DB I/O) so a saturated DB doesn't restart-loop healthy pods. `/health/ready` is what k8s readiness probes should target — failing it pulls the Pod out of the Service's endpoints until dependencies recover.
 
 ## Repository Structure
 
