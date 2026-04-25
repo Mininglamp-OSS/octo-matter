@@ -6,13 +6,32 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
 
+// goalStore is the subset of GoalRepo the service depends on.
+type goalStore interface {
+	Create(goal *model.Goal) error
+	GetByID(id, spaceID string) (*model.Goal, error)
+	ListByUser(spaceID, userID string) ([]*model.Goal, error)
+	Update(goal *model.Goal) error
+	Archive(id, spaceID string) error
+	AddAssignee(goalID, userID string) error
+	RemoveAssignee(goalID, userID string) error
+	ListAssignees(goalID string) ([]*model.GoalAssignee, error)
+	IsAssignee(goalID, userID string) (bool, error)
+}
+
+// goalTodoStore is the subset of TodoRepo needed for kanban view.
+type goalTodoStore interface {
+	CountByGoalStatus(spaceID, goalID string) (map[string]int, error)
+	ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLimit int) (map[string][]*model.Todo, error)
+}
+
 type GoalService struct {
-	goalRepo *repository.GoalRepo
-	todoRepo *repository.TodoRepo
+	goalRepo goalStore
+	todoRepo goalTodoStore
 	tx       txRunner
 }
 
-func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo, tx txRunner) *GoalService {
+func NewGoalService(goalRepo goalStore, todoRepo goalTodoStore, tx txRunner) *GoalService {
 	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo, tx: tx}
 }
 
@@ -69,7 +88,7 @@ func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	todos, err := s.todoRepo.ListByGoalGroupedByStatus(spaceID, id)
+	todos, err := s.todoRepo.ListByGoalGroupedByStatus(spaceID, id, 50)
 	if err != nil {
 		return nil, err
 	}

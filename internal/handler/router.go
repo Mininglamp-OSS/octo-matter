@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
+	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -24,6 +25,7 @@ func SetupRouter(
 	ready ReadinessCheck,
 ) *gin.Engine {
 	r := gin.Default()
+	r.Use(middleware.RequestID())
 
 	// Liveness: cheap, no I/O. Only signals "process is up".
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
