@@ -1,0 +1,96 @@
+@startuml
+!theme plain
+skinparam backgroundColor white
+skinparam defaultFontName "Helvetica"
+skinparam componentStyle rectangle
+
+title Octo Ecosystem Architecture (v5)
+
+' ===== Client Layer =====
+package "Clients" {
+  [dmwork Web\n(React SPA)] as web
+  [dmwork App\n(iOS/Android)] as app
+  [octo-cli\n(Go Binary)\nHuman ops] as cli
+  [Bot Agent\n(OpenClaw etc.)\nDirect REST API] as bot
+}
+
+' ===== Gateway =====
+package "Gateway (Nginx/Traefik)" {
+  [Public Routes\n:443 → :8080/:8090\n/api/v1/* → todo-service\n/v1/* → dmworkim] as pubgw
+  [Internal Routes\n:8091 (internal only)\nallow 192.0.2.0/24\ndeny all\n/internal/v1/* → dmworkim] as intgw
+}
+
+' ===== Services =====
+package "todo-service :8080" as todopkg {
+  [Goals API\nTodos API\nComments\nAttachments] as todoapi
+  [State Machine\nVisibility\nSpace Isolation] as todocore
+}
+
+package "dmworkim :8090 / :8091" as dmworkpkg {
+  [Public API :8090\nUser / Group / Thread\nBotFather / Space\nOpenAPI (authcode)] as dmpub
+  [Internal API :8091\nPOST /internal/v1/auth/verify\nPOST /internal/v1/auth/verify-bot\nPOST /internal/v1/auth/space-check] as dmint
+  [Bot API\nPOST /v1/bot/sendMessage] as botapi
+}
+
+package "octo-auth-client SDK" as authsdk {
+  [Read: cache 60s\nWrite: realtime verify\nUser: token header\nBot: Authorization Bearer bf_*] as sdkcore
+}
+
+package "Future" as future {
+  [octo-auth-service\n(Phase B)] as authsvc
+  [knowledge-svc\nworkflow-svc] as futuresvc
+}
+
+' ===== Data Layer =====
+database "MySQL 8\nocto_todo" as tododb
+database "MySQL 8\ndmworkim" as dmworkdb
+database "Redis 7\n(shared)" as redis
+
+' ===== Message Layer =====
+[WuKongIM] as wukong
+
+' ===== Connections =====
+web --> pubgw : HTTPS
+app --> pubgw : WuKongIM
+cli --> pubgw : HTTPS
+bot --> pubgw : HTTPS
+
+pubgw --> todoapi : /api/v1/*
+pubgw --> dmpub : /v1/*
+
+todoapi --> todocore
+todocore --> sdkcore : auth check
+sdkcore --> intgw : verify token
+intgw --> dmint
+
+todocore --> tododb : dbr (MySQL)
+todocore --> botapi : notifications\n(as system Bot)
+
+dmpub --> dmworkdb : dbr
+dmint --> redis : token lookup
+dmint --> dmworkdb : robot table
+
+botapi --> wukong : push
+
+cli ..> dmpub : octo auth login\n(OpenAPI authcode)
+
+sdkcore ..> authsvc : Phase B
+futuresvc ..> sdkcore : same SDK
+
+' ===== Notes =====
+note right of intgw #ffcccc
+  **P0 SECURITY**
+  /internal/v1/* MUST NOT
+  be exposed to public.
+  Nginx deny + separate port.
+end note
+
+note right of sdkcore
+  **Cache policy:**
+  GET → 60s local cache
+  PUT/POST/DELETE → realtime verify
+  **Token routing:**
+  token header → user verify
+  Bearer bf_* → bot verify
+end note
+@enduml

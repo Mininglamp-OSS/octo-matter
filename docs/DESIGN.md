@@ -98,10 +98,11 @@ botGroup := r.Group("/bot", client.BotAuthMiddleware())
 ```
 
 The SDK handles:
-- Token validation via HTTP call to dmworkim
-- Local cache (60s TTL) to reduce round-trips
+- Token validation via HTTP call to dmworkim internal port (:8091)
+- Dual token routing: `token` header → user verify, `Authorization: Bearer bf_*` → bot verify
+- Read/write split caching: GET requests use 60s local cache, write requests bypass cache for realtime verify
 - Unified context injection (`c.Get("uid")`, `c.Get("space_id")`, `c.Get("robot_id")`)
-- Graceful fallback when dmworkim is temporarily unreachable (serve from cache)
+- Graceful fallback when dmworkim is temporarily unreachable (serve from cache for reads only)
 
 ## System Architecture
 
@@ -769,7 +770,18 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 5. **SQL injection** — dbr parameterized queries exclusively.
 6. **Rate limiting** — Redis sliding window, aligned with dmworkim's existing approach.
 7. **Soft delete** — Todos never hard-deleted; audit trail via `deleted_at`.
-8. **Internal API security** — `/internal/v1/auth/*` bound to internal network only.
+8. **Internal API security** — `/internal/v1/auth/*` bound to internal network only. Two-layer enforcement:
+   - **Nginx layer**: `location /internal/ { allow 192.0.2.0/24; allow 198.51.100.0/24; deny all; }`
+   - **dmworkim layer**: Internal routes bind to separate port `:8091` (not `:8090`), accessible only from internal network.
+   Public port `:8090` does NOT serve `/internal/*` paths.
+9. **Auth cache policy** — octo-auth-client SDK uses read/write split caching:
+   - Read operations (GET): 60s local cache TTL
+   - Write operations (PUT/POST/DELETE): realtime verify, no cache
+   This prevents stale-token phantom writes while keeping read performance high.
+10. **Dual token routing** — SDK middleware detects token type automatically:
+    - `token` header present → user auth path (`/internal/v1/auth/verify`)
+    - `Authorization: Bearer bf_*` → bot auth path (`/internal/v1/auth/verify-bot`)
+    Both paths set `uid` + `role` ("user" or "bot") in gin context uniformly.
 
 ## Appendix
 
