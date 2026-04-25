@@ -39,11 +39,17 @@ type txRunner interface {
 type TodoService struct {
 	todoRepo     todoStore
 	assigneeRepo assigneeStore
+	goalRepo     goalAccessChecker
 	tx           txRunner
 }
 
-func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, tx txRunner) *TodoService {
-	return &TodoService{todoRepo: todoRepo, assigneeRepo: assigneeRepo, tx: tx}
+// goalAccessChecker is the subset of GoalRepo needed for visibility checks.
+type goalAccessChecker interface {
+	IsAssignee(goalID, userID string) (bool, error)
+}
+
+func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, goalRepo goalAccessChecker, tx txRunner) *TodoService {
+	return &TodoService{todoRepo: todoRepo, assigneeRepo: assigneeRepo, goalRepo: goalRepo, tx: tx}
 }
 
 // CreateTodoWithAssignees creates the todo and all its initial assignees inside
@@ -120,10 +126,14 @@ type TodoDetail struct {
 	AllowedTransitions []model.TodoStatus    `json:"allowed_transitions"`
 }
 
-func (s *TodoService) GetTodo(id, spaceID string) (*TodoDetail, error) {
+func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
 	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
+	}
+	// Visibility check: creator, assignee, or goal assignee
+	if !s.canAccessTodo(todo, userID) {
+		return nil, apperr.Forbidden("not authorized to view this todo")
 	}
 	assignees, err := s.assigneeRepo.ListByTodo(id)
 	if err != nil {
@@ -134,6 +144,22 @@ func (s *TodoService) GetTodo(id, spaceID string) (*TodoDetail, error) {
 		Assignees:          assignees,
 		AllowedTransitions: model.AllowedTransitions(todo.Status),
 	}, nil
+}
+
+// canAccessTodo checks if user can view a todo: creator, assignee, or goal assignee.
+func (s *TodoService) canAccessTodo(todo *model.Todo, userID string) bool {
+	if todo.CreatorID == userID {
+		return true
+	}
+	if ok, _ := s.assigneeRepo.IsAssignee(todo.ID, userID); ok {
+		return true
+	}
+	if todo.GoalID != nil && *todo.GoalID != "" {
+		if ok, _ := s.goalRepo.IsAssignee(*todo.GoalID, userID); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateTodo applies editable fields. Deadline and RemindAt arrive as optional

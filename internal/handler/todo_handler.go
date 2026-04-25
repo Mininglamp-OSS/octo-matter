@@ -71,7 +71,8 @@ func (h *TodoHandler) List(c *gin.Context) {
 	sourceChannelTypeStr := c.Query("source_channel_type")
 
 	filter := repository.TodoFilter{
-		Limit: limit,
+		CallerID: uid(c),
+		Limit:    limit,
 	}
 	if cursor != "" {
 		filter.Cursor = &cursor
@@ -110,7 +111,7 @@ func (h *TodoHandler) List(c *gin.Context) {
 }
 
 func (h *TodoHandler) Get(c *gin.Context) {
-	detail, err := h.svc.GetTodo(c.Param("id"), spaceID(c))
+	detail, err := h.svc.GetTodo(c.Param("id"), spaceID(c), uid(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -166,12 +167,12 @@ func (h *TodoHandler) Delete(c *gin.Context) {
 	ok(c, nil)
 }
 
-type addAssigneeReq struct {
+type addTodoAssigneeReq struct {
 	UserID string `json:"user_id" binding:"required"`
 }
 
 func (h *TodoHandler) AddAssignee(c *gin.Context) {
-	var req addAssigneeReq
+	var req addTodoAssigneeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
