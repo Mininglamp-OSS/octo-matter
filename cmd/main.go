@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
@@ -11,6 +12,10 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("invalid configuration: %v", err)
+	}
+	log.Printf("starting todo-service env=%s auth_mode=%s", cfg.AppEnv, cfg.AuthMode)
 
 	sess, err := repository.NewSession(cfg.MySQLDSN)
 	if err != nil {
@@ -37,9 +42,10 @@ func main() {
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
 	// Router
-	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH)
+	userAuth := auth.NewUserAuthMiddleware(cfg.AuthMode)
+	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth)
 
-	log.Printf("starting server on :%s", cfg.ServerPort)
+	log.Printf("listening on :%s", cfg.ServerPort)
 	if err := r.Run(":" + cfg.ServerPort); err != nil {
 		log.Fatalf("server failed: %v", err)
 	}

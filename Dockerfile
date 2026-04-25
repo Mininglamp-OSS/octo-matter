@@ -1,13 +1,25 @@
-FROM golang:1.22-alpine AS builder
+# syntax=docker/dockerfile:1
+
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
+
+# Cache module downloads as a separate layer so code edits don't bust the dep cache.
 COPY go.mod go.sum ./
 RUN go mod download
+
 COPY . .
-RUN CGO_ENABLED=0 go build -o /todo-service ./cmd/main.go
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /todo-service ./cmd/main.go
 
 FROM alpine:3.19
-RUN apk add --no-cache ca-certificates tzdata
-COPY --from=builder /todo-service /todo-service
-COPY migrations/ /migrations/
+RUN apk add --no-cache ca-certificates tzdata wget \
+  && adduser -D -u 10001 appuser
+
+COPY --from=builder /todo-service /usr/local/bin/todo-service
+
+USER appuser
 EXPOSE 8080
-CMD ["/todo-service"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/health >/dev/null 2>&1 || exit 1
+
+ENTRYPOINT ["/usr/local/bin/todo-service"]

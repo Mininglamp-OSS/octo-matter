@@ -3,8 +3,8 @@
 Goal-driven kanban task microservice. Full context: README.md, docs/DESIGN.md.
 
 ## Tech Stack
-- Go 1.22+, Gin, gocraft/dbr/v2 (MySQL — NOT GORM)
-- MySQL 8, Redis 7, google/uuid, go-playground/validator/v10
+- Go 1.25+, Gin, gocraft/dbr/v2 (MySQL — NOT GORM)
+- MySQL 8, Redis 7 (declared but not yet wired), google/uuid, go-playground/validator/v10
 
 ## Commands
 ```bash
@@ -29,7 +29,7 @@ Layers (strict direction, no skipping):
 - **Space scoping**: every query MUST filter by `space_id` from `X-Space-ID` header. Missing it = cross-tenant leak.
 - **Todo state machine** (model/todo.go `ValidTransitions`): `draft->planned->in_progress->done|cancelled`, plus `cancelled->draft`. Use `CanTransition` in services; never mutate status directly in repos.
 - **Permissions**: creator can do all transitions + edits; assignees only `planned->in_progress` and `in_progress->done`. Enforce in service layer.
-- **Auth is stubbed** — `internal/auth/middleware.go` parses `uid@name@role` tokens; do not replace without coordination (octo-auth-client SDK is the planned path).
+- **Auth is stubbed** — `internal/auth/middleware.go` parses `uid@name@role` tokens when `AUTH_MODE=stub` (logs a startup WARN). `AUTH_MODE=remote` is the planned octo-auth-client SDK path and currently panics at startup. `APP_ENV=prod` rejects `AUTH_MODE=stub`.
 - **UUIDs** generated in app (google/uuid), not DB.
 - **dbr usage**: use `sess.Select(...).Where(...)` builders; never string-concat user input. See repository/*.go for patterns.
 
