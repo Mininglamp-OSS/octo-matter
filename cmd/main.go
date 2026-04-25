@@ -17,7 +17,7 @@ func main() {
 	}
 	log.Printf("starting todo-service env=%s auth_mode=%s", cfg.AppEnv, cfg.AuthMode)
 
-	sess, err := repository.NewSession(cfg.MySQLDSN)
+	conn, sess, err := repository.NewSession(cfg.MySQLDSN)
 	if err != nil {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
@@ -42,9 +42,13 @@ func main() {
 	commentH := handler.NewCommentHandler(commentSvc)
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
+	// Readiness probe: MySQL Ping. Redis + dmworkim auth are added here when
+	// those dependencies are wired (Phase 2/3 in DESIGN.md).
+	readiness := func() error { return conn.Ping() }
+
 	// Router
 	userAuth := auth.NewUserAuthMiddleware(cfg.AuthMode)
-	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth)
+	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth, readiness)
 
 	log.Printf("listening on :%s", cfg.ServerPort)
 	if err := r.Run(":" + cfg.ServerPort); err != nil {

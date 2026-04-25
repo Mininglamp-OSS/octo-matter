@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"net/http"
-
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -22,7 +20,7 @@ type createCommentReq struct {
 func (h *CommentHandler) Create(c *gin.Context) {
 	var req createCommentReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	comment, err := h.svc.CreateComment(c.Param("id"), spaceID(c), uid(c), req.Content)

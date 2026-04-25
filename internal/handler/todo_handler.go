@@ -33,7 +33,7 @@ type createTodoReq struct {
 func (h *TodoHandler) Create(c *gin.Context) {
 	var req createTodoReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	sid := spaceID(c)
@@ -48,12 +48,12 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
 	}
-	result, err := h.svc.CreateTodoWithAssignees(todo, req.AssigneeIDs)
+	detail, err := h.svc.CreateTodoWithAssignees(todo, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
-	created(c, result)
+	created(c, detail)
 }
 
 func (h *TodoHandler) List(c *gin.Context) {
@@ -106,7 +106,7 @@ func (h *TodoHandler) List(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	ok(c, result)
+	paginated(c, result.Items, result.HasMore, result.NextCursor)
 }
 
 func (h *TodoHandler) Get(c *gin.Context) {
@@ -129,7 +129,7 @@ type updateTodoReq struct {
 func (h *TodoHandler) Update(c *gin.Context) {
 	var req updateTodoReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	todo, err := h.svc.UpdateTodo(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description, req.GoalID, req.Deadline, req.RemindAt)
@@ -147,7 +147,7 @@ type transitionReq struct {
 func (h *TodoHandler) Transition(c *gin.Context) {
 	var req transitionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	detail, err := h.svc.TransitionStatus(c.Param("id"), spaceID(c), uid(c), model.TodoStatus(req.Status))
@@ -173,7 +173,7 @@ type addAssigneeReq struct {
 func (h *TodoHandler) AddAssignee(c *gin.Context) {
 	var req addAssigneeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	if err := h.svc.AddAssignee(c.Param("id"), spaceID(c), uid(c), req.UserID); err != nil {
@@ -186,7 +186,7 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
 	assigneeUID := c.Param("uid")
 	if assigneeUID == "" {
-		fail(c, http.StatusBadRequest, "assignee uid is required")
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "assignee uid is required", nil)
 		return
 	}
 	if err := h.svc.RemoveAssignee(c.Param("id"), spaceID(c), uid(c), assigneeUID); err != nil {
@@ -203,7 +203,7 @@ type updateAssigneeStatusReq struct {
 func (h *TodoHandler) UpdateAssigneeStatus(c *gin.Context) {
 	var req updateAssigneeStatusReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+		bindJSONErr(c, err)
 		return
 	}
 	if err := h.svc.UpdateAssigneeStatus(c.Param("id"), spaceID(c), uid(c), model.AssigneeStatus(req.Status)); err != nil {

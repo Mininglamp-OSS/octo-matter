@@ -9,6 +9,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// writeAuthErr renders the REST error envelope directly (handler package can't
+// be imported here — it depends on us). Keep the shape identical to
+// handler.respondErr so clients see one format everywhere.
+func writeAuthErr(c *gin.Context, status int, code, msg string) {
+	c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": code, "message": msg}})
+}
+
 // NewUserAuthMiddleware returns the correct auth middleware for the configured
 // AuthMode. In stub mode it logs a loud startup WARN so the operator can see
 // the service is accepting unsigned "uid@name@role" tokens. Remote mode is not
@@ -33,13 +40,13 @@ func stubUserAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := c.GetHeader("token")
 		if token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"msg": "missing token header"})
+			writeAuthErr(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing token header")
 			return
 		}
 
 		parts := strings.SplitN(token, "@", 3)
 		if len(parts) != 3 {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"msg": "invalid token format"})
+			writeAuthErr(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid token format")
 			return
 		}
 
@@ -51,13 +58,13 @@ func stubUserAuth() gin.HandlerFunc {
 }
 
 // SpaceMiddleware reads the X-Space-ID header and stores it in the gin context.
-// The query-string fallback has been removed: query strings leak into access
-// logs and referrer headers, so space IDs must travel via a request header only.
+// Header-only: query strings leak into access logs and Referer headers, so
+// space IDs must travel via a request header exclusively (DESIGN.md v5).
 func SpaceMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		spaceID := c.GetHeader("X-Space-ID")
 		if spaceID == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"msg": "missing X-Space-ID header"})
+			writeAuthErr(c, http.StatusBadRequest, "VALIDATION_ERROR", "missing X-Space-ID header")
 			return
 		}
 		c.Set("space_id", spaceID)

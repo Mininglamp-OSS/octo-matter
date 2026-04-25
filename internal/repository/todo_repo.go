@@ -46,8 +46,9 @@ func (r *TodoRepo) Create(todo *model.Todo) error {
 	return err
 }
 
-// GetByID loads a non-deleted todo that belongs to spaceID. Returns apperr.ErrNotFound
-// if the row does not exist OR lives in another space (callers must not distinguish).
+// GetByID loads a non-deleted todo that belongs to spaceID. Returns
+// apperr.TodoNotFound() if the row does not exist OR lives in another space
+// (callers must not distinguish — same-code response closes the tenancy leak).
 func (r *TodoRepo) GetByID(id, spaceID string) (*model.Todo, error) {
 	var todo model.Todo
 	err := r.runner.Select("*").
@@ -56,14 +57,20 @@ func (r *TodoRepo) GetByID(id, spaceID string) (*model.Todo, error) {
 		LoadOne(&todo)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
-			return nil, apperr.ErrNotFound
+			return nil, apperr.TodoNotFound()
 		}
 		return nil, err
 	}
 	return &todo, nil
 }
 
-func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo, int, error) {
+// ListBySpace returns the page of todos matching filter plus an exact has_more
+// flag. Pagination uses composite cursor (created_at, id) — a plain last-id
+// cursor would skip or repeat rows when two todos share the same creation
+// second. We fetch limit+1 rows and trim: if the extra row exists, has_more
+// is true and the caller can stop as soon as it sees false. There is no
+// COUNT(*) — cursor pagination intentionally drops row counts (O(N) per page).
+func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo, bool, error) {
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 20
@@ -73,76 +80,59 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		From("todos").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID)
 
-	countQ := r.runner.Select("COUNT(*)").
-		From("todos").
-		Where("space_id = ? AND deleted_at IS NULL", spaceID)
-
 	if filter.GoalID != nil {
 		q = q.Where("goal_id = ?", *filter.GoalID)
-		countQ = countQ.Where("goal_id = ?", *filter.GoalID)
 	}
 	if filter.Status != nil {
 		q = q.Where("status = ?", *filter.Status)
-		countQ = countQ.Where("status = ?", *filter.Status)
 	}
 	if filter.AssigneeID != nil {
-		sub := "id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?)"
-		q = q.Where(sub, *filter.AssigneeID)
-		countQ = countQ.Where(sub, *filter.AssigneeID)
+		q = q.Where("id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?)", *filter.AssigneeID)
 	}
 	if filter.CreatorID != nil {
 		q = q.Where("creator_id = ?", *filter.CreatorID)
-		countQ = countQ.Where("creator_id = ?", *filter.CreatorID)
 	}
 	if filter.SourceChannelID != nil {
 		q = q.Where("source_channel_id = ?", *filter.SourceChannelID)
-		countQ = countQ.Where("source_channel_id = ?", *filter.SourceChannelID)
 	}
 	if filter.SourceChannelType != nil {
 		q = q.Where("source_channel_type = ?", *filter.SourceChannelType)
-		countQ = countQ.Where("source_channel_type = ?", *filter.SourceChannelType)
 	}
 	if filter.DeadlineBefore != nil {
 		q = q.Where("deadline < ?", *filter.DeadlineBefore)
-		countQ = countQ.Where("deadline < ?", *filter.DeadlineBefore)
 	}
 	if filter.DeadlineAfter != nil {
 		q = q.Where("deadline > ?", *filter.DeadlineAfter)
-		countQ = countQ.Where("deadline > ?", *filter.DeadlineAfter)
 	}
 	if filter.Query != nil && *filter.Query != "" {
-		like := "%" + *filter.Query + "%"
-		q = q.Where("title LIKE ?", like)
-		countQ = countQ.Where("title LIKE ?", like)
+		q = q.Where("title LIKE ?", "%"+*filter.Query+"%")
 	}
 
-	total, err := countQ.ReturnInt64()
-	if err != nil {
-		return nil, 0, err
-	}
-
-	// Composite cursor: (created_at DESC, id DESC). The id break-tie is required
+	// Composite cursor: (created_at DESC, id DESC). The id tie-break is required
 	// because two todos created within the same second would otherwise skip or
-	// repeat at the page boundary. Callers decode the opaque string to Cursor
-	// and pass it in via filter.Cursor.
+	// repeat at the page boundary.
 	if filter.Cursor != nil && *filter.Cursor != "" {
 		cur, err := DecodeCursor(*filter.Cursor)
 		if err != nil {
-			return nil, 0, err
+			return nil, false, err
 		}
 		q = q.Where("(created_at < ? OR (created_at = ? AND id < ?))", cur.CreatedAt, cur.CreatedAt, cur.ID)
 	}
 
 	var todos []*model.Todo
-	_, err = q.OrderBy("created_at DESC").
+	_, err := q.OrderBy("created_at DESC").
 		OrderBy("id DESC").
-		Limit(uint64(limit)).
+		Limit(uint64(limit + 1)).
 		Load(&todos)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, err
 	}
 
-	return todos, int(total), nil
+	hasMore := len(todos) > limit
+	if hasMore {
+		todos = todos[:limit]
+	}
+	return todos, hasMore, nil
 }
 
 func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string) (map[string][]*model.Todo, error) {
