@@ -83,7 +83,8 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		Where(
 			"(creator_id = ? OR id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?) OR goal_id IN (SELECT goal_id FROM goal_assignees WHERE user_id = ?))",
 			filter.CallerID, filter.CallerID, filter.CallerID,
-		)
+		).
+		Where("(goal_id IS NULL OR goal_id NOT IN (SELECT id FROM goals WHERE archived = 1))")
 
 	if filter.GoalID != nil {
 		q = q.Where("goal_id = ?", *filter.GoalID)
@@ -140,7 +141,10 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 	return todos, hasMore, nil
 }
 
-func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string) (map[string][]*model.Todo, error) {
+func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLimit int) (map[string][]*model.Todo, error) {
+	if perColumnLimit <= 0 {
+		perColumnLimit = 50
+	}
 	var todos []*model.Todo
 	_, err := r.runner.Select("*").
 		From("todos").
@@ -153,7 +157,9 @@ func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string) (map[string
 	grouped := make(map[string][]*model.Todo)
 	for _, t := range todos {
 		key := string(t.Status)
-		grouped[key] = append(grouped[key], t)
+		if len(grouped[key]) < perColumnLimit {
+			grouped[key] = append(grouped[key], t)
+		}
 	}
 	return grouped, nil
 }

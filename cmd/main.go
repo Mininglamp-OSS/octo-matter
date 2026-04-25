@@ -1,7 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
@@ -42,16 +48,35 @@ func main() {
 	commentH := handler.NewCommentHandler(commentSvc)
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
-	// Readiness probe: MySQL Ping. Redis + dmworkim auth are added here when
-	// those dependencies are wired (Phase 2/3 in DESIGN.md).
+	// Readiness probe: MySQL Ping via embedded *sql.DB.
 	readiness := func() error { return conn.Ping() }
 
 	// Router
 	userAuth := auth.NewUserAuthMiddleware(cfg.AuthMode)
 	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth, readiness)
 
-	log.Printf("listening on :%s", cfg.ServerPort)
-	if err := r.Run(":" + cfg.ServerPort); err != nil {
-		log.Fatalf("server failed: %v", err)
+	// Graceful shutdown: drain in-flight requests on SIGINT/SIGTERM.
+	srv := &http.Server{
+		Addr:    ":" + cfg.ServerPort,
+		Handler: r,
 	}
+
+	go func() {
+		log.Printf("listening on :%s", cfg.ServerPort)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server failed: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Println("shutting down, draining requests (10s timeout)...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("forced shutdown: %v", err)
+	}
+	log.Println("server exited cleanly")
 }
