@@ -87,20 +87,36 @@ func (s *TodoService) UpdateTodo(id, userID string, title string, description *s
 	return todo, nil
 }
 
-func (s *TodoService) TransitionStatus(id, userID string, target model.TodoStatus) error {
+func (s *TodoService) TransitionStatus(id, userID string, target model.TodoStatus) (*TodoDetail, error) {
 	todo, err := s.todoRepo.GetByID(id)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	isCreator := todo.CreatorID == userID
 	isAssignee, err := s.assigneeRepo.IsAssignee(id, userID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !model.CanTransition(todo.Status, target, isCreator, isAssignee) {
-		return errors.New("transition not allowed")
+		return nil, errors.New("transition not allowed")
 	}
-	return s.todoRepo.UpdateStatus(id, string(target))
+	if err := s.todoRepo.UpdateStatus(id, string(target)); err != nil {
+		return nil, err
+	}
+	// When transitioning to done, mark all assignees as done
+	if target == model.TodoStatusDone {
+		if err := s.assigneeRepo.MarkAllDone(id); err != nil {
+			return nil, err
+		}
+	}
+	// Return updated detail with new allowed_transitions
+	todo.Status = target
+	assignees, _ := s.assigneeRepo.ListByTodo(id)
+	return &TodoDetail{
+		Todo:               todo,
+		Assignees:          assignees,
+		AllowedTransitions: model.AllowedTransitions(target),
+	}, nil
 }
 
 func (s *TodoService) SoftDelete(id, userID string) error {

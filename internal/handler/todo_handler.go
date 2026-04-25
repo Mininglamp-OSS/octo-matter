@@ -19,14 +19,15 @@ func NewTodoHandler(svc *service.TodoService) *TodoHandler {
 }
 
 type createTodoReq struct {
-	Title             string  `json:"title" binding:"required"`
-	Description       *string `json:"description"`
-	GoalID            *string `json:"goal_id"`
-	Deadline          *string `json:"deadline"`
-	RemindAt          *string `json:"remind_at"`
-	SourceChannelID   *string `json:"source_channel_id"`
-	SourceChannelType *uint8  `json:"source_channel_type"`
-	SourceName        *string `json:"source_name"`
+	Title             string   `json:"title" binding:"required"`
+	Description       *string  `json:"description"`
+	GoalID            *string  `json:"goal_id"`
+	AssigneeIDs       []string `json:"assignee_ids"`
+	Deadline          *string  `json:"deadline"`
+	RemindAt          *string  `json:"remind_at"`
+	SourceChannelID   *string  `json:"source_channel_id"`
+	SourceChannelType *uint8   `json:"source_channel_type"`
+	SourceName        *string  `json:"source_name"`
 }
 
 func (h *TodoHandler) Create(c *gin.Context) {
@@ -50,6 +51,10 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Add assignees if provided
+	for _, assigneeID := range req.AssigneeIDs {
+		_ = h.svc.AddAssignee(result.ID, uid(c), assigneeID)
+	}
 	created(c, result)
 }
 
@@ -64,6 +69,8 @@ func (h *TodoHandler) List(c *gin.Context) {
 	assigneeID := c.Query("assignee_id")
 	creatorID := c.Query("creator_id")
 	query := c.Query("q")
+	sourceChannelID := c.Query("source_channel_id")
+	sourceChannelTypeStr := c.Query("source_channel_type")
 
 	filter := repository.TodoFilter{
 		Limit: limit,
@@ -85,6 +92,15 @@ func (h *TodoHandler) List(c *gin.Context) {
 	}
 	if query != "" {
 		filter.Query = &query
+	}
+	if sourceChannelID != "" {
+		filter.SourceChannelID = &sourceChannelID
+	}
+	if sourceChannelTypeStr != "" {
+		if v, err := strconv.ParseUint(sourceChannelTypeStr, 10, 8); err == nil {
+			u8 := uint8(v)
+			filter.SourceChannelType = &u8
+		}
 	}
 
 	result, err := h.svc.ListTodos(spaceID(c), filter)
@@ -136,11 +152,12 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.svc.TransitionStatus(c.Param("id"), uid(c), model.TodoStatus(req.Status)); err != nil {
+	detail, err := h.svc.TransitionStatus(c.Param("id"), uid(c), model.TodoStatus(req.Status))
+	if err != nil {
 		fail(c, http.StatusForbidden, err.Error())
 		return
 	}
-	ok(c, nil)
+	ok(c, detail)
 }
 
 func (h *TodoHandler) Delete(c *gin.Context) {
@@ -173,12 +190,12 @@ type removeAssigneeReq struct {
 }
 
 func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
-	var req removeAssigneeReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	assigneeUID := c.Param("uid")
+	if assigneeUID == "" {
+		fail(c, http.StatusBadRequest, "assignee uid is required")
 		return
 	}
-	if err := h.svc.RemoveAssignee(c.Param("id"), uid(c), req.UserID); err != nil {
+	if err := h.svc.RemoveAssignee(c.Param("id"), uid(c), assigneeUID); err != nil {
 		fail(c, http.StatusForbidden, err.Error())
 		return
 	}

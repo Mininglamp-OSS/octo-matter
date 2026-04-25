@@ -26,8 +26,8 @@ func (s *GoalService) CreateGoal(spaceID, ownerID, title string, description *st
 	if err := s.goalRepo.Create(goal); err != nil {
 		return nil, err
 	}
-	// add owner as admin member
-	_ = s.goalRepo.AddMember(goal.ID, ownerID, "admin")
+	// add owner as owner member
+	_ = s.goalRepo.AddMember(goal.ID, ownerID, "owner")
 	return goal, nil
 }
 

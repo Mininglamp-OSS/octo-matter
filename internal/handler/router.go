@@ -13,6 +13,10 @@ func SetupRouter(
 ) *gin.Engine {
 	r := gin.Default()
 
+	// Health
+	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	r.GET("/health/ready", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ready"}) })
+
 	api := r.Group("/api/v1")
 	api.Use(auth.UserAuthMiddleware(), auth.SpaceMiddleware())
 
@@ -23,9 +27,9 @@ func SetupRouter(
 		goals.GET("", goalH.List)
 		goals.GET("/:id", goalH.Get)
 		goals.PUT("/:id", goalH.Update)
-		goals.POST("/:id/archive", goalH.Archive)
+		goals.DELETE("/:id", goalH.Archive)
 		goals.POST("/:id/members", goalH.AddMember)
-		goals.DELETE("/:id/members", goalH.RemoveMember)
+		goals.DELETE("/:id/members/:uid", goalH.RemoveMember)
 	}
 
 	// Todos
@@ -35,10 +39,10 @@ func SetupRouter(
 		todos.GET("", todoH.List)
 		todos.GET("/:id", todoH.Get)
 		todos.PUT("/:id", todoH.Update)
-		todos.POST("/:id/transition", todoH.Transition)
+		todos.PUT("/:id/status", todoH.Transition)
 		todos.DELETE("/:id", todoH.Delete)
 		todos.POST("/:id/assignees", todoH.AddAssignee)
-		todos.DELETE("/:id/assignees", todoH.RemoveAssignee)
+		todos.DELETE("/:id/assignees/:uid", todoH.RemoveAssignee)
 		todos.PUT("/:id/assignee-status", todoH.UpdateAssigneeStatus)
 
 		// Comments

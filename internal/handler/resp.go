@@ -15,7 +15,12 @@ func created(c *gin.Context, data interface{}) {
 }
 
 func fail(c *gin.Context, status int, msg string) {
-	c.JSON(status, gin.H{"code": -1, "msg": msg})
+	c.JSON(status, gin.H{
+		"error": gin.H{
+			"code":    http.StatusText(status),
+			"message": msg,
+		},
+	})
 }
 
 func uid(c *gin.Context) string {

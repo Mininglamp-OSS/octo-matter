@@ -102,12 +102,12 @@ type removeMemberReq struct {
 }
 
 func (h *GoalHandler) RemoveMember(c *gin.Context) {
-	var req removeMemberReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		fail(c, http.StatusBadRequest, err.Error())
+	memberUID := c.Param("uid")
+	if memberUID == "" {
+		fail(c, http.StatusBadRequest, "member uid is required")
 		return
 	}
-	if err := h.svc.RemoveMember(c.Param("id"), spaceID(c), uid(c), req.UserID); err != nil {
+	if err := h.svc.RemoveMember(c.Param("id"), spaceID(c), uid(c), memberUID); err != nil {
 		fail(c, http.StatusForbidden, err.Error())
 		return
 	}
