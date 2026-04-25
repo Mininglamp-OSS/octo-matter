@@ -9,66 +9,51 @@ import (
 type GoalService struct {
 	goalRepo *repository.GoalRepo
 	todoRepo *repository.TodoRepo
-	tx       txRunner
 }
 
-func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo, tx txRunner) *GoalService {
-	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo, tx: tx}
+func NewGoalService(goalRepo *repository.GoalRepo, todoRepo *repository.TodoRepo) *GoalService {
+	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo}
 }
 
-// CreateGoal atomically inserts the goal and its owner membership row.
-// Without the transaction a failed AddMember would leave a goal with no
-// owner, which no other code path can fix (owner is required to add members).
-func (s *GoalService) CreateGoal(spaceID, ownerID, title string, description *string) (*model.Goal, error) {
+func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *string, assigneeIDs []string) (*model.Goal, error) {
 	goal := &model.Goal{
 		SpaceID:     spaceID,
 		Title:       title,
 		Description: description,
-		OwnerID:     ownerID,
+		CreatorID:   creatorID,
 	}
-	err := s.tx.Do(func(r *repository.TxRepos) error {
-		if err := r.Goal.Create(goal); err != nil {
-			return err
-		}
-		return r.Goal.AddMember(goal.ID, ownerID, "owner")
-	})
-	if err != nil {
+	if err := s.goalRepo.Create(goal); err != nil {
 		return nil, err
+	}
+	// Add assignees
+	for _, uid := range assigneeIDs {
+		_ = s.goalRepo.AddAssignee(goal.ID, uid)
 	}
 	return goal, nil
 }
 
-func (s *GoalService) ListGoals(spaceID string) ([]*model.Goal, error) {
-	return s.goalRepo.ListBySpace(spaceID)
+// ListGoals returns goals where the user is creator or assignee.
+func (s *GoalService) ListGoals(spaceID, userID string) ([]*model.Goal, error) {
+	return s.goalRepo.ListByUser(spaceID, userID)
 }
 
 type GoalDetail struct {
 	*model.Goal
-	Members    []*model.GoalMember      `json:"members"`
+	Assignees  []*model.GoalAssignee    `json:"assignees"`
 	TodoCounts map[string]int           `json:"todo_counts"`
 	Todos      map[string][]*model.Todo `json:"todos"`
 }
 
-// GetGoal returns the kanban detail for a goal. Access is restricted to goal
-// members — listing goals in a Space does not imply the right to open any of
-// them. The owner is implicitly a member (CreateGoal inserts the owner row in
-// the same transaction), but we also allow owner-id match as a belt-and-braces
-// check against any bug that drops the membership row.
+// GetGoal returns goal detail. Only creator or assignee can access.
 func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	goal, err := s.goalRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if goal.OwnerID != userID {
-		isMember, err := s.goalRepo.IsMember(id, userID)
-		if err != nil {
-			return nil, err
-		}
-		if !isMember {
-			return nil, apperr.Forbidden("not a member of this goal")
-		}
+	if !s.canAccessGoal(goal, userID) {
+		return nil, apperr.Forbidden("not a creator or assignee of this goal")
 	}
-	members, err := s.goalRepo.ListMembers(id)
+	assignees, err := s.goalRepo.ListAssignees(id)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +67,7 @@ func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	}
 	return &GoalDetail{
 		Goal:       goal,
-		Members:    members,
+		Assignees:  assignees,
 		TodoCounts: counts,
 		Todos:      todos,
 	}, nil
@@ -93,8 +78,8 @@ func (s *GoalService) UpdateGoal(id, spaceID, userID, title string, description 
 	if err != nil {
 		return nil, err
 	}
-	if goal.OwnerID != userID {
-		return nil, apperr.Forbidden("only the owner can update this goal")
+	if goal.CreatorID != userID {
+		return nil, apperr.Forbidden("only the creator can update this goal")
 	}
 	goal.Title = title
 	goal.Description = description
@@ -109,33 +94,42 @@ func (s *GoalService) ArchiveGoal(id, spaceID, userID string) error {
 	if err != nil {
 		return err
 	}
-	if goal.OwnerID != userID {
-		return apperr.Forbidden("only the owner can archive this goal")
+	if goal.CreatorID != userID {
+		return apperr.Forbidden("only the creator can archive this goal")
 	}
 	return s.goalRepo.Archive(id, spaceID)
 }
 
-func (s *GoalService) AddMember(goalID, spaceID, userID, memberID, role string) error {
+func (s *GoalService) AddAssignee(goalID, spaceID, userID, targetUID string) error {
 	goal, err := s.goalRepo.GetByID(goalID, spaceID)
 	if err != nil {
 		return err
 	}
-	if goal.OwnerID != userID {
-		return apperr.Forbidden("only the owner can add members")
+	if goal.CreatorID != userID {
+		return apperr.Forbidden("only the creator can add assignees")
 	}
-	return s.goalRepo.AddMember(goalID, memberID, role)
+	return s.goalRepo.AddAssignee(goalID, targetUID)
 }
 
-func (s *GoalService) RemoveMember(goalID, spaceID, userID, memberID string) error {
+func (s *GoalService) RemoveAssignee(goalID, spaceID, userID, targetUID string) error {
 	goal, err := s.goalRepo.GetByID(goalID, spaceID)
 	if err != nil {
 		return err
 	}
-	if goal.OwnerID != userID {
-		return apperr.Forbidden("only the owner can remove members")
+	if goal.CreatorID != userID {
+		return apperr.Forbidden("only the creator can remove assignees")
 	}
-	if memberID == goal.OwnerID {
-		return apperr.Forbidden("cannot remove the owner")
+	return s.goalRepo.RemoveAssignee(goalID, targetUID)
+}
+
+// canAccessGoal checks if user is creator or assignee of the goal.
+func (s *GoalService) canAccessGoal(goal *model.Goal, userID string) bool {
+	if goal.CreatorID == userID {
+		return true
 	}
-	return s.goalRepo.RemoveMember(goalID, memberID)
+	isAssignee, err := s.goalRepo.IsAssignee(goal.ID, userID)
+	if err != nil {
+		return false
+	}
+	return isAssignee
 }

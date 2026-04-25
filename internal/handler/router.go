@@ -56,8 +56,8 @@ func SetupRouter(
 		goals.GET("/:id", goalH.Get)
 		goals.PUT("/:id", goalH.Update)
 		goals.DELETE("/:id", goalH.Archive)
-		goals.POST("/:id/members", goalH.AddMember)
-		goals.DELETE("/:id/members/:uid", goalH.RemoveMember)
+		goals.POST("/:id/assignees", goalH.AddAssignee)
+		goals.DELETE("/:id/assignees/:uid", goalH.RemoveAssignee)
 	}
 
 	// Todos

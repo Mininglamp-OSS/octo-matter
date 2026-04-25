@@ -24,7 +24,7 @@ func (r *GoalRepo) Create(goal *model.Goal) error {
 	goal.CreatedAt = now
 	goal.UpdatedAt = now
 	_, err := r.runner.InsertInto("goals").
-		Columns("id", "space_id", "title", "description", "owner_id", "archived", "created_at", "updated_at").
+		Columns("id", "space_id", "title", "description", "creator_id", "archived", "created_at", "updated_at").
 		Record(goal).
 		Exec()
 	return err
@@ -45,12 +45,14 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 	return &goal, nil
 }
 
-func (r *GoalRepo) ListBySpace(spaceID string) ([]*model.Goal, error) {
+// ListByUser returns non-archived goals where user is creator or assignee.
+func (r *GoalRepo) ListByUser(spaceID, userID string) ([]*model.Goal, error) {
 	var goals []*model.Goal
-	_, err := r.runner.Select("*").
-		From("goals").
-		Where("space_id = ? AND archived = 0", spaceID).
-		OrderDir("created_at", false).
+	_, err := r.runner.Select("DISTINCT g.*").
+		From(dbr.I("goals").As("g")).
+		LeftJoin(dbr.I("goal_assignees").As("ga"), "ga.goal_id = g.id").
+		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id = ? OR ga.user_id = ?)", spaceID, userID, userID).
+		OrderDir("g.created_at", false).
 		Load(&goals)
 	if err != nil {
 		return nil, err
@@ -78,36 +80,36 @@ func (r *GoalRepo) Archive(id, spaceID string) error {
 	return err
 }
 
-func (r *GoalRepo) AddMember(goalID, userID, role string) error {
-	_, err := r.runner.InsertInto("goal_members").
-		Columns("id", "goal_id", "user_id", "role", "created_at").
-		Values(uuid.New().String(), goalID, userID, role, time.Now()).
+func (r *GoalRepo) AddAssignee(goalID, userID string) error {
+	_, err := r.runner.InsertInto("goal_assignees").
+		Columns("id", "goal_id", "user_id", "created_at").
+		Values(uuid.New().String(), goalID, userID, time.Now()).
 		Exec()
 	return err
 }
 
-func (r *GoalRepo) RemoveMember(goalID, userID string) error {
-	_, err := r.runner.DeleteFrom("goal_members").
+func (r *GoalRepo) RemoveAssignee(goalID, userID string) error {
+	_, err := r.runner.DeleteFrom("goal_assignees").
 		Where("goal_id = ? AND user_id = ?", goalID, userID).
 		Exec()
 	return err
 }
 
-func (r *GoalRepo) ListMembers(goalID string) ([]*model.GoalMember, error) {
-	var members []*model.GoalMember
+func (r *GoalRepo) ListAssignees(goalID string) ([]*model.GoalAssignee, error) {
+	var assignees []*model.GoalAssignee
 	_, err := r.runner.Select("*").
-		From("goal_members").
+		From("goal_assignees").
 		Where("goal_id = ?", goalID).
-		Load(&members)
+		Load(&assignees)
 	if err != nil {
 		return nil, err
 	}
-	return members, nil
+	return assignees, nil
 }
 
-func (r *GoalRepo) IsMember(goalID, userID string) (bool, error) {
+func (r *GoalRepo) IsAssignee(goalID, userID string) (bool, error) {
 	count, err := r.runner.Select("COUNT(*)").
-		From("goal_members").
+		From("goal_assignees").
 		Where("goal_id = ? AND user_id = ?", goalID, userID).
 		ReturnInt64()
 	if err != nil {

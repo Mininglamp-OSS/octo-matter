@@ -16,8 +16,9 @@ func NewGoalHandler(svc *service.GoalService) *GoalHandler {
 }
 
 type createGoalReq struct {
-	Title       string  `json:"title" binding:"required"`
-	Description *string `json:"description"`
+	Title       string   `json:"title" binding:"required"`
+	Description *string  `json:"description"`
+	AssigneeIDs []string `json:"assignee_ids"`
 }
 
 func (h *GoalHandler) Create(c *gin.Context) {
@@ -26,7 +27,7 @@ func (h *GoalHandler) Create(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	goal, err := h.svc.CreateGoal(spaceID(c), uid(c), req.Title, req.Description)
+	goal, err := h.svc.CreateGoal(spaceID(c), uid(c), req.Title, req.Description, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -35,7 +36,7 @@ func (h *GoalHandler) Create(c *gin.Context) {
 }
 
 func (h *GoalHandler) List(c *gin.Context) {
-	goals, err := h.svc.ListGoals(spaceID(c))
+	goals, err := h.svc.ListGoals(spaceID(c), uid(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -79,31 +80,30 @@ func (h *GoalHandler) Archive(c *gin.Context) {
 	ok(c, nil)
 }
 
-type addMemberReq struct {
+type addAssigneeReq struct {
 	UserID string `json:"user_id" binding:"required"`
-	Role   string `json:"role" binding:"required"`
 }
 
-func (h *GoalHandler) AddMember(c *gin.Context) {
-	var req addMemberReq
+func (h *GoalHandler) AddAssignee(c *gin.Context) {
+	var req addAssigneeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
-	if err := h.svc.AddMember(c.Param("id"), spaceID(c), uid(c), req.UserID, req.Role); err != nil {
+	if err := h.svc.AddAssignee(c.Param("id"), spaceID(c), uid(c), req.UserID); err != nil {
 		respondErr(c, err)
 		return
 	}
 	ok(c, nil)
 }
 
-func (h *GoalHandler) RemoveMember(c *gin.Context) {
-	memberUID := c.Param("uid")
-	if memberUID == "" {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "member uid is required", nil)
+func (h *GoalHandler) RemoveAssignee(c *gin.Context) {
+	assigneeUID := c.Param("uid")
+	if assigneeUID == "" {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "assignee uid is required", nil)
 		return
 	}
-	if err := h.svc.RemoveMember(c.Param("id"), spaceID(c), uid(c), memberUID); err != nil {
+	if err := h.svc.RemoveAssignee(c.Param("id"), spaceID(c), uid(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}

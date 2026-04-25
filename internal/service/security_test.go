@@ -97,10 +97,15 @@ func (panickingTxRunner) Do(fn func(r *repository.TxRepos) error) error {
 	panic("tx runner invoked in a non-tx test")
 }
 
+// fakeGoalAccessChecker stubs goalAccessChecker for tests.
+type fakeGoalAccessChecker struct{}
+
+func (fakeGoalAccessChecker) IsAssignee(goalID, userID string) (bool, error) { return false, nil }
+
 // newTodoSvc builds a TodoService wired with the panickingTxRunner. Use this
 // for tests that don't need the tx path.
 func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
-	return NewTodoService(todoRepo, assigneeRepo, panickingTxRunner{})
+	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, panickingTxRunner{})
 }
 
 type fakeAssigneeRepo struct {
@@ -246,7 +251,7 @@ func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
-	_, err := svc.GetTodo("t1", "space-B")
+	_, err := svc.GetTodo("t1", "space-B", "caller")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space GetTodo: got %v, want ErrNotFound", err)
 	}
