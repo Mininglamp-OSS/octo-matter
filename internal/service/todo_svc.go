@@ -43,9 +43,10 @@ type TodoService struct {
 	tx           txRunner
 }
 
-// goalAccessChecker is the subset of GoalRepo needed for visibility checks.
+// goalAccessChecker is the subset of GoalRepo needed for visibility + validation checks.
 type goalAccessChecker interface {
 	IsAssignee(goalID, userID string) (bool, error)
+	GetByID(id, spaceID string) (*model.Goal, error)
 }
 
 func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, goalRepo goalAccessChecker, tx txRunner) *TodoService {
@@ -139,14 +140,21 @@ func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
 	if err != nil {
 		return nil, err
 	}
+	isCreator := todo.CreatorID == userID
+	isAssignee, _ := s.assigneeRepo.IsAssignee(id, userID)
 	return &TodoDetail{
 		Todo:               todo,
 		Assignees:          assignees,
-		AllowedTransitions: model.AllowedTransitions(todo.Status),
+		AllowedTransitions: model.AllowedTransitionsForRole(todo.Status, isCreator, isAssignee),
 	}, nil
 }
 
-// canAccessTodo checks if user can view a todo: creator, assignee, or goal assignee.
+// CanAccessTodo checks if user can view a todo: creator, assignee, or goal assignee.
+// Implements TodoAccessChecker interface.
+func (s *TodoService) CanAccessTodo(todo *model.Todo, userID string) bool {
+	return s.canAccessTodo(todo, userID)
+}
+
 func (s *TodoService) canAccessTodo(todo *model.Todo, userID string) bool {
 	if todo.CreatorID == userID {
 		return true
@@ -177,6 +185,18 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, descr
 	}
 	todo.Title = title
 	todo.Description = description
+	// Validate new goal: must exist in same space + caller has access
+	if goalID != nil && *goalID != "" {
+		goal, err := s.goalRepo.GetByID(*goalID, todo.SpaceID)
+		if err != nil {
+			return nil, apperr.InvalidInput("goal not found in this space")
+		}
+		if goal.CreatorID != userID {
+			if ok, _ := s.goalRepo.IsAssignee(*goalID, userID); !ok {
+				return nil, apperr.Forbidden("not authorized to use this goal")
+			}
+		}
+	}
 	todo.GoalID = goalID
 	if deadline != nil {
 		t, err := parseOptionalRFC3339(*deadline)

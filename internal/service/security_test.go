@@ -101,6 +101,13 @@ func (panickingTxRunner) Do(fn func(r *repository.TxRepos) error) error {
 type fakeGoalAccessChecker struct{}
 
 func (fakeGoalAccessChecker) IsAssignee(goalID, userID string) (bool, error) { return false, nil }
+func (fakeGoalAccessChecker) GetByID(id, spaceID string) (*model.Goal, error) {
+	return nil, apperr.GoalNotFound()
+}
+
+// fakeAccessChecker always grants access for test simplicity.
+type fakeAccessChecker struct{}
+func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { return true }
 
 // newTodoSvc builds a TodoService wired with the panickingTxRunner. Use this
 // for tests that don't need the tx path.
@@ -289,7 +296,7 @@ func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 
 func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo))
+	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
 
 	_, err := svc.CreateComment("t1", "space-B", "u2", "hi")
 	if !errors.Is(err, apperr.ErrNotFound) {
@@ -299,9 +306,9 @@ func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 
 func TestCommentService_List_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo))
+	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
 
-	_, err := svc.ListComments("t1", "space-B")
+	_, err := svc.ListComments("t1", "space-B", "caller")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space ListComments: got %v, want ErrNotFound", err)
 	}
@@ -310,7 +317,7 @@ func TestCommentService_List_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
-	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo))
+	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
 
 	err := svc.DeleteComment("c1", "space-A", "u2") // u2 is not the author
 	if !errors.Is(err, apperr.ErrForbidden) {
@@ -321,7 +328,7 @@ func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 func TestCommentService_Delete_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
-	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo))
+	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
 
 	err := svc.DeleteComment("c1", "space-B", "u1") // author but wrong space
 	if !errors.Is(err, apperr.ErrNotFound) {
@@ -332,7 +339,7 @@ func TestCommentService_Delete_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestAttachmentService_Delete_NonUploaderReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	att := &model.TodoAttachment{ID: "a1", TodoID: "t1", UserID: "u1", FileURL: "http://x"}
-	svc := NewAttachmentService(newFakeAttachmentRepo(att), newFakeTodoRepo(todo))
+	svc := NewAttachmentService(newFakeAttachmentRepo(att), newFakeTodoRepo(todo), fakeAccessChecker{})
 
 	err := svc.DeleteAttachment("a1", "space-A", "u2") // u2 didn't upload it
 	if !errors.Is(err, apperr.ErrForbidden) {
@@ -342,7 +349,7 @@ func TestAttachmentService_Delete_NonUploaderReturnsForbidden(t *testing.T) {
 
 func TestAttachmentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewAttachmentService(newFakeAttachmentRepo(), newFakeTodoRepo(todo))
+	svc := NewAttachmentService(newFakeAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
 
 	_, err := svc.CreateAttachment("t1", "space-B", "u1", "http://x", nil, nil, nil)
 	if !errors.Is(err, apperr.ErrNotFound) {

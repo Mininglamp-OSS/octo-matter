@@ -35,7 +35,7 @@ func (h *AttachmentHandler) Create(c *gin.Context) {
 }
 
 func (h *AttachmentHandler) List(c *gin.Context) {
-	attachments, err := h.svc.ListAttachments(c.Param("id"), spaceID(c))
+	attachments, err := h.svc.ListAttachments(c.Param("id"), spaceID(c), uid(c))
 	if err != nil {
 		respondErr(c, err)
 		return
