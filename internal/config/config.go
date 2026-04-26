@@ -18,7 +18,7 @@ const (
 	// AuthModeJWT validates RS256 JWTs issued by octo-auth-server.
 	// Requires JWKS_URL to be set.
 	AuthModeJWT AuthMode = "jwt"
-	// AuthModeRemote calls the dmworkim internal auth API. Deprecated in favor
+	// AuthModeRemote calls the Octo IM internal auth API. Deprecated in favor
 	// of AuthModeJWT. Kept for backward compatibility; panics on startup.
 	AuthModeRemote AuthMode = "remote"
 )
@@ -55,7 +55,7 @@ func Load() *Config {
 		RedisURL:   envOrDefault("REDIS_URL", "redis://127.0.0.1:6379/0"),
 		AuthURL:    devDefault(env, "AUTH_URL", "http://127.0.0.1:8090/internal/v1"),
 		JWKSURL:    envOrDefault("JWKS_URL", "http://127.0.0.1:8080/.well-known/jwks.json"),
-		Audience:   envOrDefault("AUDIENCE", "dmwork"),
+		Audience:   envOrDefault("AUDIENCE", "octo"),
 		ServerPort: envOrDefault("SERVER_PORT", "8080"),
 	}
 }

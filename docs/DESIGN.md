@@ -10,16 +10,16 @@
 > - `GET /goals/:id` requires goal assignment, not just space membership.
 > - `POST /todos` response includes `allowed_transitions` so clients skip a follow-up `GET`.
 > - `PUT /todos/:id` field semantics: absent = unchanged, `""` = clear, non-empty = set.
-> - `/health/ready` probes MySQL (and Redis / dmworkim when wired). `/health` stays a cheap liveness check.
+> - `/health/ready` probes MySQL (and Redis / Octo IM server when wired). `/health` stays a cheap liveness check.
 > - `AUTH_MODE=stub` + `APP_ENV=prod` is a startup error; `AUTH_MODE=remote` panics until the SDK is wired (no silent fallback).
 
 ## Overview
 
 ### Background
 
-Octo (dmwork) is an enterprise messaging and collaboration platform. As the platform evolves, productivity tools become essential. To-Dos — the ability to create, assign, track, and complete tasks — is a foundational productivity primitive.
+Octo  is an enterprise messaging and collaboration platform. As the platform evolves, productivity tools become essential. To-Dos — the ability to create, assign, track, and complete tasks — is a foundational productivity primitive.
 
-This document defines the architecture for **Octo Todo**: a standalone microservice integrated into the Octo ecosystem. Authentication is delegated to dmworkim via a new internal auth API (Phase A of the Octo unified auth strategy). Bot and agent automation goes through a unified `octo-cli`. The core model is **status-driven todos with optional goal-based kanban organization**.
+This document defines the architecture for **Octo Todo**: a standalone microservice integrated into the Octo ecosystem. Authentication is delegated to Octo IM server via a new internal auth API (Phase A of the Octo unified auth strategy). Bot and agent automation goes through a unified `octo-cli`. The core model is **status-driven todos with optional goal-based kanban organization**.
 
 ### Goals
 
@@ -27,10 +27,10 @@ This document defines the architecture for **Octo Todo**: a standalone microserv
 2. **Status-driven task model** — Fixed state machine (`draft -> planned -> in_progress -> done / cancelled`) with assignees (human or bot)
 3. **Goal-driven kanban (optional)** — Todos optionally associate with a goal; kanban view groups todos by status
 4. **Unified CLI** — `octo-cli` is the single CLI entry point for all Octo services (`octo todo ...`)
-5. **Unified auth via dmworkim** — Token validation through dmworkim internal API + `octo-auth-client` SDK
+5. **Unified auth via Octo IM server** — Token validation through Octo IM server internal API + `octo-auth-client` SDK
 6. **Source context tracking** — Every todo records where it was created (group, thread, subsystem), enabling per-conversation todo panels
 7. **Space isolation** — All data is scoped to a Space; cross-Space access is forbidden
-8. **Chat integration** — Create and update todos from dmwork chat conversations
+8. **Chat integration** — Create and update todos from Octo chat conversations
 9. **Web interface** — `todo-web` delivers a React-based kanban board UI
 
 ### Non-Goals (v1)
@@ -45,7 +45,7 @@ This document defines the architecture for **Octo Todo**: a standalone microserv
 
 ### Problem
 
-dmworkim currently has two auth mechanisms tightly coupled inside its process:
+Octo IM server currently has two auth mechanisms tightly coupled inside its process:
 - **User auth**: custom `token` header -> Redis lookup (`tokenPrefix + token` -> `uid@name@role`)
 - **Bot auth**: `Authorization: Bearer <bot_token>` -> `robot` table lookup
 
@@ -53,11 +53,11 @@ External microservices (todo-service, future knowledge-service, etc.) cannot cal
 
 ### Solution: Phase A -> Phase B
 
-**Phase A (Now)**: Add 3 internal HTTP endpoints to dmworkim. All Octo microservices call these endpoints. Ship an `octo-auth-client` Go SDK that wraps the calls + local cache.
+**Phase A (Now)**: Add 3 internal HTTP endpoints to Octo IM server. All Octo microservices call these endpoints. Ship an `octo-auth-client` Go SDK that wraps the calls + local cache.
 
 **Phase B (Future)**: When 3+ microservices exist, extract these endpoints into a standalone `octo-auth-service`. The SDK only changes its target URL; business code untouched.
 
-### Phase A: dmworkim Internal Endpoints
+### Phase A: Octo IM server Internal Endpoints
 
 ```
 POST /internal/v1/auth/verify
@@ -85,7 +85,7 @@ These endpoints are **internal only** (bound to internal network, not exposed to
 import "github.com/Mininglamp-OSS/octo-auth-client"
 
 client := octoauth.New(octoauth.Config{
-    AuthURL:  "http://dmworkim:8090/internal/v1",
+    AuthURL:  "http://Octo IM server:8090/internal/v1",
     CacheTTL: 60 * time.Second,
 })
 
@@ -98,11 +98,11 @@ botGroup := r.Group("/bot", client.BotAuthMiddleware())
 ```
 
 The SDK handles:
-- Token validation via HTTP call to dmworkim internal port (:8091)
+- Token validation via HTTP call to Octo IM server internal port (:8091)
 - Dual token routing: `token` header → user verify, `Authorization: Bearer bf_*` → bot verify
 - Read/write split caching: GET requests use 60s local cache, write requests bypass cache for realtime verify
 - Unified context injection (`c.Get("uid")`, `c.Get("space_id")`, `c.Get("robot_id")`)
-- Graceful fallback when dmworkim is temporarily unreachable (serve from cache for reads only)
+- Graceful fallback when Octo IM server is temporarily unreachable (serve from cache for reads only)
 
 ## System Architecture
 
@@ -112,20 +112,20 @@ The SDK handles:
 
 **Components:**
 
-- **todo-web** — React + TypeScript SPA. Auth tokens obtained from dmwork IM, passed via `token` header.
+- **todo-web** — React + TypeScript SPA. Auth tokens obtained from Octo IM, passed via `token` header.
 - **octo-cli** — Unified Go CLI. `octo todo` sub-commands call todo-service REST API. Bot agents invoke via `exec`.
 - **todo-service** — Go (Gin + wkhttp) REST API. Uses `octo-auth-client` SDK for auth. Owns todo/goal business logic.
-- **dmworkim** — Auth provider (internal endpoints). Notification channel (Bot API for message push).
-- **WuKongIM** — Underlying message transport. todo-service sends notifications as a system Bot via dmworkim Bot API.
+- **Octo IM server** — Auth provider (internal endpoints). Notification channel (Bot API for message push).
+- **WuKongIM** — Underlying message transport. todo-service sends notifications as a system Bot via Octo IM server Bot API.
 
 ### Technology Stack
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| todo-service | Go 1.22+, Gin (wkhttp), dbr | Aligned with dmworkim ecosystem |
+| todo-service | Go 1.22+, Gin (wkhttp), dbr | Aligned with Octo IM server ecosystem |
 | todo-web | React 18, TypeScript, Vite, Ant Design | Modern SPA stack |
 | octo-cli | Go 1.22+, Cobra | Extensible sub-commands |
-| Database | MySQL 8 | Aligned with dmworkim (single DB infrastructure) |
+| Database | MySQL 8 | Aligned with Octo IM server (single DB infrastructure) |
 | Cache | Redis 7 | Rate limiting, auth cache, notification queue |
 | Auth | octo-auth-client SDK | Unified auth across all Octo services |
 
@@ -147,7 +147,7 @@ A goal is an optional organizational container. Its kanban view shows associated
 | space\_id | varchar(64) | NOT NULL, INDEX | Space isolation |
 | title | varchar(200) | NOT NULL | Goal name |
 | description | text | nullable | What this goal aims to achieve |
-| creator\_id | varchar(64) | NOT NULL | Creator (dmwork UID) |
+| creator\_id | varchar(64) | NOT NULL | Creator (Octo UID) |
 | archived | tinyint(1) | NOT NULL, default 0 | Soft archive |
 | created\_at | datetime(3) | NOT NULL | Creation timestamp |
 | updated\_at | datetime(3) | NOT NULL | Last modification |
@@ -160,7 +160,7 @@ Access control. Assignees can view the goal's kanban and create todos under it.
 |--------|------|-------------|-------------|
 | id | char(36) | PK | Unique identifier |
 | goal\_id | char(36) | NOT NULL, FK → goals | Parent goal |
-| user\_id | varchar(64) | NOT NULL | Assignee (dmwork UID) |
+| user\_id | varchar(64) | NOT NULL | Assignee (Octo UID) |
 | created\_at | datetime(3) | NOT NULL | When added |
 
 Unique key: `(goal_id, user_id)`.
@@ -176,7 +176,7 @@ The atomic unit. Fixed status + optional goal association + Space scoping.
 | goal\_id | char(36) | nullable, FK | Optional goal |
 | title | varchar(500) | NOT NULL | Todo title |
 | description | text | nullable | Detailed description |
-| creator\_id | varchar(64) | NOT NULL | Creator (dmwork UID) |
+| creator\_id | varchar(64) | NOT NULL | Creator (Octo UID) |
 | status | enum('draft','planned','in\_progress','done','cancelled') | NOT NULL, default 'draft' | Current status |
 | deadline | datetime(3) | nullable | Due date |
 | remind\_at | datetime(3) | nullable | Reminder time |
@@ -195,14 +195,14 @@ Who is responsible. Supports humans and bots. Per-assignee completion tracking.
 |--------|------|-------------|-------------|
 | id | char(36) | PK | Unique identifier |
 | todo\_id | char(36) | NOT NULL, FK | Parent todo |
-| user\_id | varchar(64) | NOT NULL | Assignee (dmwork UID) |
+| user\_id | varchar(64) | NOT NULL | Assignee (Octo UID) |
 | status | enum('pending','done') | NOT NULL, default 'pending' | Completion status |
 | completed\_at | datetime(3) | nullable | When marked done |
 | created\_at | datetime(3) | NOT NULL | When assigned |
 
 Unique key: `(todo_id, user_id)`.
 
-Note: `assignee_type` (human/bot) is not stored. todo-service queries dmworkim's robot table via internal API to determine type when needed for display.
+Note: `assignee_type` (human/bot) is not stored. todo-service queries Octo IM server's robot table via internal API to determine type when needed for display.
 
 #### `todo_comments`
 
@@ -283,12 +283,12 @@ CREATE INDEX idx_attachments_todo ON todo_attachments(todo_id);
 
 ### Authentication
 
-All requests must include the `token` header (user) or `Authorization: Bearer <bot_token>` (bot). todo-service validates via `octo-auth-client` SDK which calls dmworkim internal endpoints.
+All requests must include the `token` header (user) or `Authorization: Bearer <bot_token>` (bot). todo-service validates via `octo-auth-client` SDK which calls Octo IM server internal endpoints.
 
 Space context is passed via the `X-Space-ID` header **only**. The query-string alternative (`?space_id=...`) is rejected — space IDs must not leak into access logs or Referer headers.
 
 ```
-token: <dmwork-user-token>
+token: <octo-user-token>
 X-Space-ID: <space-id>
 ```
 
@@ -395,7 +395,7 @@ Response:
 
 ```
 POST /api/v1/todos
-token: <dmwork-user-token>
+token: <octo-user-token>
 X-Space-ID: sp_abc123
 
 {
@@ -432,13 +432,13 @@ Response (`201 Created`) — bare object, includes the computed `allowed_transit
 }
 ```
 
-The `assignees[].user_id` is the raw dmwork UID. Display-time enrichment (name, `is_bot`) is the web/CLI client's responsibility — todo-service does not couple itself to dmworkim's user/robot tables at read time.
+The `assignees[].user_id` is the raw Octo UID. Display-time enrichment (name, `is_bot`) is the web/CLI client's responsibility — todo-service does not couple itself to Octo IM server's user/robot tables at read time.
 
 #### Transition Status
 
 ```
 PUT /api/v1/todos/t1b2c3d4/status
-token: <dmwork-user-token>
+token: <octo-user-token>
 X-Space-ID: sp_abc123
 
 { "status": "in_progress" }
@@ -469,7 +469,7 @@ Invalid transition (`400 Bad Request`):
 
 ```
 GET /api/v1/goals/g1a2b3c4
-token: <dmwork-user-token>
+token: <octo-user-token>
 X-Space-ID: sp_abc123
 ```
 
@@ -494,11 +494,11 @@ Response — todos grouped by status for kanban rendering:
 
 ```
 GET /api/v1/todos?source_channel_id=g1234567890&source_channel_type=2&limit=20
-token: <dmwork-user-token>
+token: <octo-user-token>
 X-Space-ID: sp_abc123
 ```
 
-This powers the per-conversation todo panel in dmwork chat windows.
+This powers the per-conversation todo panel in Octo chat windows.
 
 ### Error Codes
 
@@ -522,7 +522,7 @@ Cross-Space access to a resource returns `TODO_NOT_FOUND` / `GOAL_NOT_FOUND`, ne
 
 ## Notification Design
 
-todo-service sends notifications as a **system Bot** via dmworkim's Bot API:
+todo-service sends notifications as a **system Bot** via Octo IM server's Bot API:
 
 ```
 POST /v1/bot/sendMessage
@@ -535,7 +535,7 @@ Authorization: Bearer <todo-bot-token>
 }
 ```
 
-todo-service registers itself as a Bot in dmworkim (via BotFather). This Bot identity is used for all notifications.
+todo-service registers itself as a Bot in Octo IM server (via BotFather). This Bot identity is used for all notifications.
 
 | Event | Notification target |
 |-------|-------------------|
@@ -552,16 +552,16 @@ Deduplication: if a user is both creator, assignee, and goal owner, they receive
 ### Authentication Flow
 
 ```bash
-# Human user: OAuth-style login via dmworkim OpenAPI
+# Human user: OAuth-style login via Octo IM server OpenAPI
 octo auth login
-# -> Opens browser -> dmwork login -> authcode -> access_token
+# -> Opens browser -> Octo login -> authcode -> access_token
 # -> Stored in ~/.config/octo/config.yaml
 
 # Bot: direct token configuration
 octo auth set-bot-token <bf_xxx>
 ```
 
-Under the hood, `octo auth login` uses dmworkim's existing OpenAPI flow:
+Under the hood, `octo auth login` uses Octo IM server's existing OpenAPI flow:
 1. `GET /v1/openapi/authcode?app_id=octo-cli` (authenticated)
 2. `GET /v1/openapi/access_token?authcode=xxx&app_key=xxx` (exchange)
 3. Store access\_token locally
@@ -628,7 +628,7 @@ octo todo list --format json --assignee bot_reviewer
 
 ### Chat-Embedded Todo Panel
 
-In dmwork chat windows, a toggle button opens a todo side panel:
+In Octo chat windows, a toggle button opens a todo side panel:
 - Queries `GET /api/v1/todos?source_channel_id=<current>&source_channel_type=<type>`
 - Shows todos grouped by status with quick-create and status badges
 - Auto-refreshes via polling
@@ -661,7 +661,7 @@ todo-service/
 |   |   |-- todo_handler.go
 |   |   |-- middleware.go       # octo-auth-client integration
 |   |-- integration/
-|       |-- dmwork_bot.go       # Bot API client for notifications
+|       |-- octo_bot.go       # Bot API client for notifications
 |-- migrations/                 # MySQL migrations (hand-written SQL)
 |-- Dockerfile
 |-- docker-compose.yaml
@@ -679,7 +679,7 @@ services:
     environment:
       - MYSQL_DSN=todo:todo@tcp(mysql:3306)/octo_todo?charset=utf8mb4&parseTime=true
       - REDIS_URL=redis://redis:6379/0
-      - AUTH_URL=http://dmworkim:8090/internal/v1
+      - AUTH_URL=http://Octo IM server:8090/internal/v1
       - BOT_TOKEN=bf_todo_system_bot
     depends_on: [mysql, redis]
 
@@ -707,7 +707,7 @@ volumes:
 
 ```
 GET /health        -> 200 {"status":"ok"}        # liveness: process is up, no I/O
-GET /health/ready  -> 200 {"status":"ready"}     # readiness: MySQL Ping succeeds (Redis + dmworkim auth added when wired)
+GET /health/ready  -> 200 {"status":"ready"}     # readiness: MySQL Ping succeeds (Redis + Octo IM server auth added when wired)
                    -> 503 {"error":{"code":"NOT_READY","message":"...","details":{"mysql":"<err>"}}}
 ```
 
@@ -725,7 +725,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 ### Phase 1 — Auth + Core Service + CLI (Week 1-2)
 
-- dmworkim: implement 3 internal auth endpoints
+- Octo IM server: implement 3 internal auth endpoints
 - octo-auth-client SDK (Go package)
 - MySQL schema + migrations
 - Goal CRUD API + Space isolation
@@ -738,7 +738,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 ### Phase 2 — Web UI (Week 2-3)
 
 - React SPA (Vite + Ant Design)
-- dmwork token auth flow
+- Octo token auth flow
 - Goal list + Kanban board (drag-and-drop with transition validation)
 - My Todos list (cross-goal, filterable)
 - Todo detail modal
@@ -746,7 +746,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 ### Phase 3 — Chat Integration + Notifications (Week 3-4)
 
-- Register todo-system-bot in dmworkim
+- Register todo-system-bot in Octo IM server
 - Notification service (Bot API push + deduplication)
 - Chat command support (`@todo-bot /todo create xxx`)
 - Chat-embedded todo panel (source context query)
@@ -754,7 +754,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 ### Phase 4 — Hardening (Week 4)
 
-- Rate limiting (reuse dmworkim's Redis-based approach)
+- Rate limiting (reuse Octo IM server's Redis-based approach)
 - Security audit
 - Performance testing
 - CI/CD pipeline
@@ -762,16 +762,16 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 ## Security Considerations
 
-1. **Authentication** — Delegated to dmworkim via internal API. No local token issuance.
+1. **Authentication** — Delegated to Octo IM server via internal API. No local token issuance.
 2. **Space isolation** — All queries filtered by `space_id`. Cross-Space access returns 403.
 3. **Authorization** — Goal creator manages assignees; todo creator manages todo; assignees can transition and mark completion.
 4. **Input validation** — go-playground/validator. Title max 500 chars, description max 10000 chars.
 5. **SQL injection** — dbr parameterized queries exclusively.
-6. **Rate limiting** — Redis sliding window, aligned with dmworkim's existing approach.
+6. **Rate limiting** — Redis sliding window, aligned with Octo IM server's existing approach.
 7. **Soft delete** — Todos never hard-deleted; audit trail via `deleted_at`.
 8. **Internal API security** — `/internal/v1/auth/*` bound to internal network only. Two-layer enforcement:
    - **Nginx layer**: `location /internal/ { allow 192.0.2.0/24; allow 198.51.100.0/24; deny all; }`
-   - **dmworkim layer**: Internal routes bind to separate port `:8091` (not `:8090`), accessible only from internal network.
+   - **Octo IM server layer**: Internal routes bind to separate port `:8091` (not `:8090`), accessible only from internal network.
    Public port `:8090` does NOT serve `/internal/*` paths.
 9. **Auth cache policy** — octo-auth-client SDK uses read/write split caching:
    - Read operations (GET): 60s local cache TTL
@@ -795,7 +795,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 | Assign to bots | No | No | Yes |
 | Per-user completion | Yes | No | Yes |
 | Unified CLI | No | No | Yes (octo-cli) |
-| Auth via IM platform | Yes | No | Yes (dmworkim) |
+| Auth via IM platform | Yes | No | Yes (Octo IM server) |
 | Self-hosted | No | No | Yes |
 
 ### Appendix B: Rate Limits
@@ -836,7 +836,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
                 +------+
 ```
 
-### Appendix D: dmworkim Channel Types Reference
+### Appendix D: Octo IM server Channel Types Reference
 
 | Value | Type | Example channel\_id |
 |-------|------|-------------------|

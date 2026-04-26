@@ -9,7 +9,7 @@ import (
 )
 
 // ReadinessCheck returns nil when the service is ready to serve traffic. Main
-// wires this to a function that Pings MySQL (and later Redis / dmworkim). A
+// wires this to a function that Pings MySQL (and later Redis / Octo IM). A
 // non-nil error renders 503 so k8s pulls the Pod out of rotation until
 // dependencies recover.
 type ReadinessCheck func() error

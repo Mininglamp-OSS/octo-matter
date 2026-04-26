@@ -1,6 +1,6 @@
 # Octo Todo Service
 
-Goal-driven kanban task management microservice for the Octo (dmwork) ecosystem.
+Goal-driven kanban task management microservice for the Octo  ecosystem.
 
 ## Core Concepts
 
@@ -13,7 +13,7 @@ Goal-driven kanban task management microservice for the Octo (dmwork) ecosystem.
 
 ```
 ┌──────────┐  ┌──────────┐  ┌──────────┐
-│ todo-web │  │ octo-cli │  │ dmwork   │
+│ todo-web │  │ octo-cli │  │ octo     │
 │ (React)  │  │ (Go CLI) │  │ Bot      │
 └────┬─────┘  └────┬─────┘  └────┬─────┘
      │             │              │
@@ -21,7 +21,7 @@ Goal-driven kanban task management microservice for the Octo (dmwork) ecosystem.
             │  token header + X-Space-ID
             v
      ┌──────────────┐     ┌──────────────┐
-     │ todo-service  │────>│  dmworkim    │
+     │ todo-service  │────>│  Octo IM    │
      │ (Go/Gin/dbr) │     │ internal API │
      └──────┬───────┘     └──────────────┘
             │
@@ -35,14 +35,14 @@ Goal-driven kanban task management microservice for the Octo (dmwork) ecosystem.
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| Language | Go 1.22+ | Aligned with dmworkim |
-| HTTP | Gin | Aligned with dmworkim (wkhttp) |
-| ORM | gocraft/dbr/v2 | Aligned with dmworkim |
-| Database | MySQL 8 | Aligned with dmworkim |
+| Language | Go 1.22+ | Aligned with Octo IM |
+| HTTP | Gin | Aligned with Octo IM (wkhttp) |
+| ORM | gocraft/dbr/v2 | Aligned with Octo IM |
+| Database | MySQL 8 | Aligned with Octo IM |
 | Cache | Redis 7 | Rate limiting, auth cache |
 | UUID | google/uuid | Application-layer generation |
 | Validation | go-playground/validator/v10 | Request validation |
-| Auth | octo-auth-client SDK (planned) | Unified auth via dmworkim internal API |
+| Auth | octo-auth-client SDK (planned) | Unified auth via Octo IM internal API |
 
 ## Project Structure
 
@@ -137,7 +137,7 @@ go test ./... -v
 ## API Reference
 
 All endpoints require:
-- `token` header — dmwork user token for authentication
+- `token` header — Octo user token for authentication
 - `X-Space-ID` header — Space ID for data isolation
 
 ### Health
@@ -256,7 +256,7 @@ GET /api/v1/todos?status=in_progress&assignee_id=xxx&goal_id=xxx&source_channel_
 
 ## Authentication
 
-todo-service uses dmworkim's internal auth API (Phase A of Octo unified auth strategy):
+todo-service uses Octo IM's internal auth API (Phase A of Octo unified auth strategy):
 
 ```
 POST /internal/v1/auth/verify        → {uid, name, role}
@@ -278,8 +278,8 @@ Full architecture design (v4) with data model, API specification, auth strategy,
 |-----------|-------------|
 | [Mininglamp-OSS/octo-matter](https://github.com/Mininglamp-OSS/octo-matter) | This service (todo-service) |
 | [Mininglamp-OSS/octo-cli](https://github.com/Mininglamp-OSS/octo-cli) | Unified Octo CLI |
-| [Mininglamp-OSS/octo-server](https://github.com/Mininglamp-OSS/octo-server) | Core IM platform |
+| [Mininglamp-OSS/Octo IM](https://github.com/Mininglamp-OSS/Octo IM) | Core IM platform |
 
 ## License
 
-Proprietary — Octo / dmwork
+Proprietary — Octo
