@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -134,45 +133,34 @@ func botAuth(authURL string) gin.HandlerFunc {
 		}
 
 		// Bot is authenticated. Set identity in context.
-		// robot_id is the bot's username (uid equivalent).
 		c.Set("uid", robotID)
-		c.Set("name", robotID) // Bot name defaults to robot_id
+		c.Set("name", robotID)
 		c.Set("role", "bot")
 
-		// Try to get space_id from Octo IM response or from a separate call.
-		// For MVP, we read X-Space-ID from the request header (set by octo-cli from config).
-		// Space validation is done by the repo layer (every query includes space_id).
-		c.Next()
-	}
-}
-
-// BotSpaceMiddleware reads X-Space-ID from the request header for Bot auth mode.
-// In JWT mode, space_id comes from the token claims.
-// In Bot mode, it comes from the environment (OCTO_SPACE_ID injected by agent runtime).
-func BotSpaceMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Check if space_id is already set (by JWT middleware)
-		if _, exists := c.Get("space_id"); exists {
-			c.Next()
-			return
-		}
-
-		// Fall back to header
+		// Bot space resolution:
+		// 1. X-Space-ID header (injected by agent runtime from conversation context)
+		// 2. Future: auto-resolve from Octo IM /v1/robots/:id/:key/info endpoint
 		spaceID := c.GetHeader("X-Space-ID")
 		if spaceID == "" {
-			writeAuthErr(c, http.StatusBadRequest, "VALIDATION_ERROR", "missing X-Space-ID header")
+			writeAuthErr(c, http.StatusBadRequest, "SPACE_REQUIRED",
+				"X-Space-ID header is required for bot auth (set OCTO_SPACE_ID in agent runtime)")
 			return
 		}
 		c.Set("space_id", spaceID)
+
 		c.Next()
 	}
 }
 
 // SpaceMiddleware reads the X-Space-ID header and stores it in the gin context.
-// Header-only: query strings leak into access logs and Referer headers, so
-// space IDs must travel via a request header exclusively (DESIGN.md v5).
+// Used for user auth (JWT mode). Bot auth mode handles space_id internally.
 func SpaceMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Skip if space_id is already set (bot auth sets it from X-Space-ID)
+		if _, exists := c.Get("space_id"); exists {
+			c.Next()
+			return
+		}
 		spaceID := c.GetHeader("X-Space-ID")
 		if spaceID == "" {
 			writeAuthErr(c, http.StatusBadRequest, "VALIDATION_ERROR", "missing X-Space-ID header")
@@ -181,27 +169,4 @@ func SpaceMiddleware() gin.HandlerFunc {
 		c.Set("space_id", spaceID)
 		c.Next()
 	}
-}
-
-// botInfoFromIM tries to fetch bot info (including space) from Octo IM.
-// Not used in MVP — space comes from X-Space-ID header.
-func botInfoFromIM(baseURL, robotID, appKey string) (string, string, error) {
-	url := fmt.Sprintf("%s/v1/robots/%s/%s/events", baseURL, robotID, appKey)
-	resp, err := http.Get(url)
-	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("bot validation failed: %d", resp.StatusCode)
-	}
-
-	var result struct {
-		SpaceID string `json:"space_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return robotID, "", nil // no space info available
-	}
-	return robotID, result.SpaceID, nil
 }
