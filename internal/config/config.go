@@ -18,6 +18,9 @@ const (
 	// AuthModeJWT validates RS256 JWTs issued by octo-auth-server.
 	// Requires JWKS_URL to be set.
 	AuthModeJWT AuthMode = "jwt"
+	// AuthModeBot validates Bot tokens (robot_id/app_key) against Octo IM server.
+	// Requires AUTH_URL to be set.
+	AuthModeBot AuthMode = "bot"
 	// AuthModeRemote calls the Octo IM internal auth API. Deprecated in favor
 	// of AuthModeJWT. Kept for backward compatibility; panics on startup.
 	AuthModeRemote AuthMode = "remote"
@@ -66,8 +69,8 @@ func (c *Config) Validate() error {
 	if c.AppEnv != AppEnvDev && c.AppEnv != AppEnvProd {
 		return fmt.Errorf("APP_ENV must be 'dev' or 'prod', got %q", c.AppEnv)
 	}
-	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeJWT && c.AuthMode != AuthModeRemote {
-		return fmt.Errorf("AUTH_MODE must be 'stub', 'jwt', or 'remote', got %q", c.AuthMode)
+	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeJWT && c.AuthMode != AuthModeBot && c.AuthMode != AuthModeRemote {
+		return fmt.Errorf("AUTH_MODE must be 'stub', 'jwt', 'bot', or 'remote', got %q", c.AuthMode)
 	}
 	if c.MySQLDSN == "" {
 		return fmt.Errorf("MYSQL_DSN is required")
@@ -78,8 +81,11 @@ func (c *Config) Validate() error {
 	if c.AuthMode == AuthModeJWT && c.JWKSURL == "" {
 		return fmt.Errorf("JWKS_URL is required when AUTH_MODE=jwt")
 	}
+	if c.AuthMode == AuthModeBot && c.AuthURL == "" {
+		return fmt.Errorf("AUTH_URL is required when AUTH_MODE=bot")
+	}
 	if c.AppEnv == AppEnvProd && c.AuthMode == AuthModeStub {
-		return fmt.Errorf("AUTH_MODE=stub is not permitted when APP_ENV=prod; use 'jwt'")
+		return fmt.Errorf("AUTH_MODE=stub is not permitted when APP_ENV=prod; use 'jwt' or 'bot'")
 	}
 	if c.ServerPort == "" {
 		return fmt.Errorf("SERVER_PORT is required")
