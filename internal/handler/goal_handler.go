@@ -16,7 +16,7 @@ func NewGoalHandler(svc *service.GoalService) *GoalHandler {
 }
 
 type createGoalReq struct {
-	Title       string   `json:"title" binding:"required"`
+	Title       string   `json:"title" binding:"required,max=200"`
 	Description *string  `json:"description"`
 	AssigneeIDs []string `json:"assignee_ids"`
 }
@@ -54,7 +54,7 @@ func (h *GoalHandler) Get(c *gin.Context) {
 }
 
 type updateGoalReq struct {
-	Title       string  `json:"title" binding:"required"`
+	Title       string  `json:"title" binding:"required,max=200"`
 	Description *string `json:"description"`
 }
 

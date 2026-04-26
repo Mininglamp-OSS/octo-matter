@@ -1,28 +1,28 @@
--- 001_init.up.sql: Create all tables for Octo Todo
+-- 001_init.up.sql: Create all tables for Octo Todo (v1 MVP)
 
 CREATE TABLE IF NOT EXISTS goals (
     id              CHAR(36)        NOT NULL,
     space_id        VARCHAR(64)     NOT NULL,
     title           VARCHAR(200)    NOT NULL,
     description     TEXT            NULL,
-    owner_id        VARCHAR(64)     NOT NULL,
+    creator_id      VARCHAR(64)     NOT NULL,
     archived        TINYINT(1)      NOT NULL DEFAULT 0,
     created_at      DATETIME(3)     NOT NULL,
     updated_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
-    INDEX idx_goals_space_owner (space_id, owner_id)
+    INDEX idx_goals_space_creator (space_id, creator_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS goal_members (
+CREATE TABLE IF NOT EXISTS goal_assignees (
     id              CHAR(36)        NOT NULL,
     goal_id         CHAR(36)        NOT NULL,
     user_id         VARCHAR(64)     NOT NULL,
-    role            ENUM('owner','member') NOT NULL DEFAULT 'member',
     created_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_goal_user (goal_id, user_id),
-    INDEX idx_goal_members_user (user_id),
-    INDEX idx_goal_members_goal (goal_id)
+    INDEX idx_goal_assignees_user (user_id),
+    INDEX idx_goal_assignees_goal (goal_id),
+    CONSTRAINT fk_goal_assignees_goal FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS todos (
@@ -45,8 +45,10 @@ CREATE TABLE IF NOT EXISTS todos (
     INDEX idx_todos_space_status (space_id, status),
     INDEX idx_todos_goal (goal_id),
     INDEX idx_todos_creator (space_id, creator_id),
+    INDEX idx_todos_creator_space (space_id, creator_id),
     INDEX idx_todos_deadline (space_id, deadline),
-    INDEX idx_todos_source (source_channel_id, source_channel_type)
+    INDEX idx_todos_source (source_channel_id, source_channel_type),
+    CONSTRAINT fk_todos_goal FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS todo_assignees (
@@ -60,7 +62,8 @@ CREATE TABLE IF NOT EXISTS todo_assignees (
     UNIQUE KEY uk_todo_user (todo_id, user_id),
     INDEX idx_assignees_user (user_id),
     INDEX idx_assignees_todo (todo_id),
-    INDEX idx_assignees_status (user_id, status)
+    INDEX idx_assignees_status (user_id, status),
+    CONSTRAINT fk_todo_assignees_todo FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS todo_comments (
@@ -70,7 +73,8 @@ CREATE TABLE IF NOT EXISTS todo_comments (
     content         TEXT            NOT NULL,
     created_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
-    INDEX idx_comments_todo (todo_id)
+    INDEX idx_comments_todo (todo_id),
+    CONSTRAINT fk_todo_comments_todo FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS todo_attachments (
@@ -83,5 +87,6 @@ CREATE TABLE IF NOT EXISTS todo_attachments (
     mime_type       VARCHAR(100)    NULL,
     created_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
-    INDEX idx_attachments_todo (todo_id)
+    INDEX idx_attachments_todo (todo_id),
+    CONSTRAINT fk_todo_attachments_todo FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

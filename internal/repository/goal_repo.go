@@ -54,6 +54,7 @@ func (r *GoalRepo) ListByUser(spaceID, userID string) ([]*model.Goal, error) {
 		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id = ? OR ga.user_id = ?)", spaceID, userID, userID).
 		GroupBy("g.id").
 		OrderDir("g.created_at", false).
+		Limit(200).
 		Load(&goals)
 	if err != nil {
 		return nil, err
@@ -96,10 +97,20 @@ func (r *GoalRepo) AddAssignee(goalID, userID string) error {
 }
 
 func (r *GoalRepo) RemoveAssignee(goalID, userID string) error {
-	_, err := r.runner.DeleteFrom("goal_assignees").
+	result, err := r.runner.DeleteFrom("goal_assignees").
 		Where("goal_id = ? AND user_id = ?", goalID, userID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.AssigneeNotFound()
+	}
+	return nil
 }
 
 func (r *GoalRepo) ListAssignees(goalID string) ([]*model.GoalAssignee, error) {

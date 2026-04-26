@@ -19,7 +19,7 @@ func NewTodoHandler(svc *service.TodoService) *TodoHandler {
 }
 
 type createTodoReq struct {
-	Title             string   `json:"title" binding:"required"`
+	Title             string   `json:"title" binding:"required,max=500"`
 	Description       *string  `json:"description"`
 	GoalID            *string  `json:"goal_id"`
 	AssigneeIDs       []string `json:"assignee_ids"`
@@ -120,7 +120,7 @@ func (h *TodoHandler) Get(c *gin.Context) {
 }
 
 type updateTodoReq struct {
-	Title       string  `json:"title" binding:"required"`
+	Title       string  `json:"title" binding:"required,max=500"`
 	Description *string `json:"description"`
 	GoalID      *string `json:"goal_id"`
 	Deadline    *string `json:"deadline"`

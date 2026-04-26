@@ -7,7 +7,7 @@
 > - `X-Space-ID` header only; query-string alternative removed (leaks into access logs / Referer).
 > - Flat `source_channel_id / source_channel_type / source_name` fields on both request and response — matches the DB and list-filter query shape.
 > - Enumerated error codes carry `details` (e.g. `INVALID_TRANSITION.details.allowed`).
-> - `GET /goals/:id` requires goal membership, not just space membership.
+> - `GET /goals/:id` requires goal assignment, not just space membership.
 > - `POST /todos` response includes `allowed_transitions` so clients skip a follow-up `GET`.
 > - `PUT /todos/:id` field semantics: absent = unchanged, `""` = clear, non-empty = set.
 > - `/health/ready` probes MySQL (and Redis / dmworkim when wired). `/health` stays a cheap liveness check.
@@ -147,21 +147,20 @@ A goal is an optional organizational container. Its kanban view shows associated
 | space\_id | varchar(64) | NOT NULL, INDEX | Space isolation |
 | title | varchar(200) | NOT NULL | Goal name |
 | description | text | nullable | What this goal aims to achieve |
-| owner\_id | varchar(64) | NOT NULL | Creator / owner (dmwork UID) |
+| creator\_id | varchar(64) | NOT NULL | Creator (dmwork UID) |
 | archived | tinyint(1) | NOT NULL, default 0 | Soft archive |
 | created\_at | datetime(3) | NOT NULL | Creation timestamp |
 | updated\_at | datetime(3) | NOT NULL | Last modification |
 
-#### `goal_members`
+#### `goal_assignees`
 
-Access control. Members can view the goal's kanban and create todos under it.
+Access control. Assignees can view the goal's kanban and create todos under it.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | char(36) | PK | Unique identifier |
-| goal\_id | char(36) | NOT NULL, FK | Parent goal |
-| user\_id | varchar(64) | NOT NULL | Member (dmwork UID) |
-| role | enum('owner','member') | NOT NULL, default 'member' | Role |
+| goal\_id | char(36) | NOT NULL, FK → goals | Parent goal |
+| user\_id | varchar(64) | NOT NULL | Assignee (dmwork UID) |
 | created\_at | datetime(3) | NOT NULL | When added |
 
 Unique key: `(goal_id, user_id)`.
@@ -236,9 +235,9 @@ File references attached to a todo.
 
 ```sql
 -- Space + Goal indexes
-CREATE INDEX idx_goals_space_owner ON goals(space_id, owner_id);
-CREATE INDEX idx_goal_members_user ON goal_members(user_id);
-CREATE INDEX idx_goal_members_goal ON goal_members(goal_id);
+CREATE INDEX idx_goals_space_creator ON goals(space_id, creator_id);
+CREATE INDEX idx_goal_assignees_user ON goal_assignees(user_id);
+CREATE INDEX idx_goal_assignees_goal ON goal_assignees(goal_id);
 
 -- Todo indexes
 CREATE INDEX idx_todos_space_status ON todos(space_id, status);
@@ -326,10 +325,10 @@ Base path: `/api/v1`
 | GET | /goals/:id | Get goal detail (kanban: todos by status) | Required (goal member) |
 | PUT | /goals/:id | Update goal | Required (owner) |
 | DELETE | /goals/:id | Archive goal | Required (owner) |
-| POST | /goals/:id/members | Add members | Required (owner) |
-| DELETE | /goals/:id/members/:uid | Remove member | Required (owner) |
+| POST | /goals/:id/assignees | Add assignees | Required (creator) |
+| DELETE | /goals/:id/assignees/:uid | Remove assignee | Required (creator) |
 
-Goal detail (`GET /goals/:id`) returns the kanban view and is scoped to goal members. Non-members in the same Space receive `403 FORBIDDEN` — listing goals does **not** imply permission to open any of them.
+Goal detail (`GET /goals/:id`) returns the kanban view and is scoped to goal assignees. Non-assignees in the same Space receive `403 FORBIDDEN` — listing goals does **not** imply permission to open any of them.
 
 #### Todo CRUD
 
@@ -508,7 +507,7 @@ All error responses carry a stable `code`. Clients should branch on `code`, not 
 | Code | HTTP | When | `details` |
 |------|------|------|-----------|
 | `UNAUTHORIZED` | 401 | Missing or invalid `token` / `Authorization` | — |
-| `FORBIDDEN` | 403 | Authenticated but lacks the required role (non-creator edit, non-owner goal update, non-member goal detail) | — |
+| `FORBIDDEN` | 403 | Authenticated but lacks the required role (non-creator edit, non-creator goal update, non-assignee goal detail) | — |
 | `VALIDATION_ERROR` | 400 | Request body / params failed binding or field validation | `{field, reason}` when available |
 | `GOAL_NOT_FOUND` | 404 | Goal id does not exist in the current Space | — |
 | `TODO_NOT_FOUND` | 404 | Todo id does not exist in the current Space (or is soft-deleted) | — |
@@ -765,7 +764,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 1. **Authentication** — Delegated to dmworkim via internal API. No local token issuance.
 2. **Space isolation** — All queries filtered by `space_id`. Cross-Space access returns 403.
-3. **Authorization** — Goal owner manages members; todo creator manages todo; assignees can transition and mark completion.
+3. **Authorization** — Goal creator manages assignees; todo creator manages todo; assignees can transition and mark completion.
 4. **Input validation** — go-playground/validator. Title max 500 chars, description max 10000 chars.
 5. **SQL injection** — dbr parameterized queries exclusively.
 6. **Rate limiting** — Redis sliding window, aligned with dmworkim's existing approach.

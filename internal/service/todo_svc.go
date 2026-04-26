@@ -89,7 +89,7 @@ func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []st
 	return &TodoDetail{
 		Todo:               todo,
 		Assignees:          created,
-		AllowedTransitions: model.AllowedTransitions(todo.Status),
+		AllowedTransitions: model.AllowedTransitionsForRole(todo.Status, true, false),
 	}, nil
 }
 
@@ -284,7 +284,7 @@ func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.
 	return &TodoDetail{
 		Todo:               todo,
 		Assignees:          assignees,
-		AllowedTransitions: model.AllowedTransitions(target),
+		AllowedTransitions: model.AllowedTransitionsForRole(target, isCreator, isAssignee),
 	}, nil
 }
 

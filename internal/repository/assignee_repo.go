@@ -34,10 +34,20 @@ func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
 }
 
 func (r *AssigneeRepo) Delete(todoID, userID string) error {
-	_, err := r.runner.DeleteFrom("todo_assignees").
+	result, err := r.runner.DeleteFrom("todo_assignees").
 		Where("todo_id = ? AND user_id = ?", todoID, userID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.AssigneeNotFound()
+	}
+	return nil
 }
 
 func (r *AssigneeRepo) UpdateStatus(todoID, userID, status string) error {

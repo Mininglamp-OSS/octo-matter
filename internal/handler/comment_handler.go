@@ -14,7 +14,7 @@ func NewCommentHandler(svc *service.CommentService) *CommentHandler {
 }
 
 type createCommentReq struct {
-	Content string `json:"content" binding:"required"`
+	Content string `json:"content" binding:"required,max=10000"`
 }
 
 func (h *CommentHandler) Create(c *gin.Context) {

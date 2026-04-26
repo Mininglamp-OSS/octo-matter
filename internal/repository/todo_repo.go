@@ -2,6 +2,7 @@ package repository
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
@@ -111,7 +112,8 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		q = q.Where("deadline > ?", *filter.DeadlineAfter)
 	}
 	if filter.Query != nil && *filter.Query != "" {
-		q = q.Where("title LIKE ?", "%"+*filter.Query+"%")
+		escaped := escapeLikePattern(*filter.Query)
+		q = q.Where("title LIKE ?", "%"+escaped+"%")
 	}
 
 	// Composite cursor: (created_at DESC, id DESC). The id tie-break is required
@@ -145,20 +147,21 @@ func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLi
 	if perColumnLimit <= 0 {
 		perColumnLimit = 50
 	}
-	var todos []*model.Todo
-	_, err := r.runner.Select("*").
-		From("todos").
-		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
-		OrderDir("created_at", false).
-		Load(&todos)
-	if err != nil {
-		return nil, err
-	}
+	statuses := []string{"draft", "planned", "in_progress", "done", "cancelled"}
 	grouped := make(map[string][]*model.Todo)
-	for _, t := range todos {
-		key := string(t.Status)
-		if len(grouped[key]) < perColumnLimit {
-			grouped[key] = append(grouped[key], t)
+	for _, status := range statuses {
+		var todos []*model.Todo
+		_, err := r.runner.Select("*").
+			From("todos").
+			Where("space_id = ? AND goal_id = ? AND status = ? AND deleted_at IS NULL", spaceID, goalID, status).
+			OrderDir("created_at", false).
+			Limit(uint64(perColumnLimit)).
+			Load(&todos)
+		if err != nil {
+			return nil, err
+		}
+		if len(todos) > 0 {
+			grouped[status] = todos
 		}
 	}
 	return grouped, nil
@@ -230,4 +233,11 @@ func (r *TodoRepo) ListBySource(spaceID, channelID string, channelType uint8) ([
 		return nil, err
 	}
 	return todos, nil
+}
+
+// escapeLikePattern escapes SQL LIKE wildcards (% and _) in user input.
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
 }
