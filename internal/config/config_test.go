@@ -68,6 +68,19 @@ func TestValidate_HappyPath_DevStub(t *testing.T) {
 	}
 }
 
+func TestValidate_HappyPath_ProdJWT(t *testing.T) {
+	c := &Config{
+		AppEnv:     AppEnvProd,
+		AuthMode:   AuthModeJWT,
+		MySQLDSN:   "dsn",
+		JWKSURL:    "http://octo-auth:8080/.well-known/jwks.json",
+		ServerPort: "8080",
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("prod+jwt+dsn+jwks should pass, got %v", err)
+	}
+}
+
 func TestValidate_HappyPath_ProdRemote(t *testing.T) {
 	c := &Config{
 		AppEnv:     AppEnvProd,

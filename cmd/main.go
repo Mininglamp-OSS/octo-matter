@@ -52,7 +52,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	userAuth := auth.NewUserAuthMiddleware(cfg.AuthMode)
+	userAuth := auth.NewUserAuthMiddleware(cfg)
 	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth, readiness)
 
 	// Graceful shutdown: drain in-flight requests on SIGINT/SIGTERM.

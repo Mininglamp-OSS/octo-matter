@@ -15,9 +15,11 @@ const (
 	// AuthModeStub parses "uid@name@role" tokens directly. Only safe for local
 	// development — the service logs a loud WARN on startup when this is set.
 	AuthModeStub AuthMode = "stub"
-	// AuthModeRemote calls the dmworkim internal auth API. Not yet implemented;
-	// startup currently fails fast when this is selected so the stub cannot
-	// silently handle production traffic.
+	// AuthModeJWT validates RS256 JWTs issued by octo-auth-server.
+	// Requires JWKS_URL to be set.
+	AuthModeJWT AuthMode = "jwt"
+	// AuthModeRemote calls the dmworkim internal auth API. Deprecated in favor
+	// of AuthModeJWT. Kept for backward compatibility; panics on startup.
 	AuthModeRemote AuthMode = "remote"
 )
 
@@ -36,6 +38,8 @@ type Config struct {
 	MySQLDSN   string
 	RedisURL   string
 	AuthURL    string
+	JWKSURL    string
+	Audience   string
 	ServerPort string
 }
 
@@ -50,6 +54,8 @@ func Load() *Config {
 		MySQLDSN:   devDefault(env, "MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
 		RedisURL:   envOrDefault("REDIS_URL", "redis://127.0.0.1:6379/0"),
 		AuthURL:    devDefault(env, "AUTH_URL", "http://127.0.0.1:8090/internal/v1"),
+		JWKSURL:    envOrDefault("JWKS_URL", "http://127.0.0.1:8080/.well-known/jwks.json"),
+		Audience:   envOrDefault("AUDIENCE", "dmwork"),
 		ServerPort: envOrDefault("SERVER_PORT", "8080"),
 	}
 }
@@ -60,8 +66,8 @@ func (c *Config) Validate() error {
 	if c.AppEnv != AppEnvDev && c.AppEnv != AppEnvProd {
 		return fmt.Errorf("APP_ENV must be 'dev' or 'prod', got %q", c.AppEnv)
 	}
-	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeRemote {
-		return fmt.Errorf("AUTH_MODE must be 'stub' or 'remote', got %q", c.AuthMode)
+	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeJWT && c.AuthMode != AuthModeRemote {
+		return fmt.Errorf("AUTH_MODE must be 'stub', 'jwt', or 'remote', got %q", c.AuthMode)
 	}
 	if c.MySQLDSN == "" {
 		return fmt.Errorf("MYSQL_DSN is required")
@@ -69,8 +75,11 @@ func (c *Config) Validate() error {
 	if c.AuthMode == AuthModeRemote && c.AuthURL == "" {
 		return fmt.Errorf("AUTH_URL is required when AUTH_MODE=remote")
 	}
+	if c.AuthMode == AuthModeJWT && c.JWKSURL == "" {
+		return fmt.Errorf("JWKS_URL is required when AUTH_MODE=jwt")
+	}
 	if c.AppEnv == AppEnvProd && c.AuthMode == AuthModeStub {
-		return fmt.Errorf("AUTH_MODE=stub is not permitted when APP_ENV=prod")
+		return fmt.Errorf("AUTH_MODE=stub is not permitted when APP_ENV=prod; use 'jwt'")
 	}
 	if c.ServerPort == "" {
 		return fmt.Errorf("SERVER_PORT is required")
