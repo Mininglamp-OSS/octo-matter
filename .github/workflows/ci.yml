@@ -19,7 +19,13 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: go.mod
+          cache: true
+
+      - name: Configure private modules
+        run: git config --global url."https://x-access-token:${{ secrets.GH_PAT }}@github.com/".insteadOf "https://github.com/"
+        env:
+          GOPRIVATE: github.com/Mininglamp-OSS/*
 
       - name: Go vet
         run: go vet ./...
