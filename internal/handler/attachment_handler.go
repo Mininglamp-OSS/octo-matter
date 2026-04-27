@@ -14,7 +14,7 @@ func NewAttachmentHandler(svc *service.AttachmentService) *AttachmentHandler {
 }
 
 type createAttachmentReq struct {
-	FileURL  string  `json:"file_url" binding:"required,url"`
+	FileURL  string  `json:"file_url" binding:"required,http_url"`
 	FileName *string `json:"file_name"`
 	FileSize *int64  `json:"file_size"`
 	MimeType *string `json:"mime_type"`

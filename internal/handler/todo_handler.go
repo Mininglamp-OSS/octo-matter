@@ -20,7 +20,7 @@ func NewTodoHandler(svc *service.TodoService) *TodoHandler {
 
 type createTodoReq struct {
 	Title             string   `json:"title" binding:"required,max=500"`
-	Description       *string  `json:"description"`
+	Description       *string  `json:"description" binding:"omitempty,max=10000"`
 	GoalID            *string  `json:"goal_id"`
 	AssigneeIDs       []string `json:"assignee_ids"`
 	Deadline          *string  `json:"deadline"`
@@ -98,7 +98,13 @@ func (h *TodoHandler) List(c *gin.Context) {
 		filter.GoalID = &goalID
 	}
 	if status != "" {
-		filter.Status = &status
+		switch model.TodoStatus(status) {
+		case model.TodoStatusDraft, model.TodoStatusPlanned, model.TodoStatusInProgress, model.TodoStatusDone, model.TodoStatusCancelled:
+			filter.Status = &status
+		default:
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid status filter value", nil)
+			return
+		}
 	}
 	if assigneeID != "" {
 		if assigneeID == "me" {
@@ -107,6 +113,9 @@ func (h *TodoHandler) List(c *gin.Context) {
 		filter.AssigneeID = &assigneeID
 	}
 	if creatorID != "" {
+		if creatorID == "me" {
+			creatorID = uid(c)
+		}
 		filter.CreatorID = &creatorID
 	}
 	if query != "" {
@@ -141,7 +150,7 @@ func (h *TodoHandler) Get(c *gin.Context) {
 
 type updateTodoReq struct {
 	Title       string  `json:"title" binding:"required,max=500"`
-	Description *string `json:"description"`
+	Description *string `json:"description" binding:"omitempty,max=10000"`
 	GoalID      *string `json:"goal_id"`
 	Deadline    *string `json:"deadline"`
 	RemindAt    *string `json:"remind_at"`

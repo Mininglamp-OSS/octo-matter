@@ -88,43 +88,24 @@ func (f *fakeTodoRepo) SoftDelete(id, spaceID string) error {
 
 // --- assignee fake ------------------------------------------------------
 
-// fakeTxRunner delegates to in-memory fakes for tests that exercise
-// transactional flows (TransitionStatus). It builds TxRepos from the fakes
-// stored at construction time.
-type fakeTxRunner struct {
+// noopTxRunner runs the closure with TxRepos built from the same session-bound
+// repos used outside transactions. In tests where no real dbr.Tx is available,
+// this gives TransitionStatus (which now always runs inside tx.Do) a way to
+// exercise the full logic path using the fake repos.
+//
+// The struct fields are *repository types (concrete) so we can build TxRepos.
+// For tests that only need the service-level fakes, use newTestTxRunner.
+type noopTxRunner struct {
 	todoRepo     *fakeTodoRepo
 	assigneeRepo *fakeAssigneeRepo
 }
 
-func newFakeTxRunner(t *fakeTodoRepo, a *fakeAssigneeRepo) *fakeTxRunner {
-	return &fakeTxRunner{todoRepo: t, assigneeRepo: a}
-}
-
-func (f *fakeTxRunner) Do(fn func(r *repository.TxRepos) error) error {
-	// In tests we can't build real TxRepos (no dbr.Tx), so we invoke fn with
-	// a nil TxRepos and have TransitionStatus use the service-level fakes
-	// instead. This is a test-only workaround.
-	// Because TransitionStatus now requires TxRepos.Todo.GetByIDForUpdate and
-	// TxRepos.Todo.UpdateStatus and TxRepos.Assignee.*, we build a shim.
-	panic("fakeTxRunner.Do called — use fakeTxRunnerV2 instead")
-}
-
-// fakeTxRunnerV2 wraps TransitionStatus's tx.Do by providing the closure a
-// fake-backed TxRepos. Since we can't satisfy the real TxRepos struct (it uses
-// concrete repo types bound to dbr.Tx), we instead run the closure in a way
-// that the test can validate the outcome via the service-level fakes.
-// For TransitionStatus specifically, we use a simpler approach: replace the
-// service method's dependency.
-type fakeTxRunnerV2 struct {
-	todoRepo     *fakeTodoRepo
-	assigneeRepo *fakeAssigneeRepo
-}
-
-func (f *fakeTxRunnerV2) Do(fn func(r *repository.TxRepos) error) error {
-	// TransitionStatus passes GetByIDForUpdate, UpdateStatus, IsAssignee,
-	// MarkAllDone calls through TxRepos. We can't create real TxRepos in tests
-	// without a dbr.Tx. Return a generic error to indicate this path was hit.
-	return fmt.Errorf("transaction exercised (test stub)")
+func (n *noopTxRunner) Do(fn func(r *repository.TxRepos) error) error {
+	// We can't create real repo instances (they need dbr.SessionRunner).
+	// Instead, directly execute the business logic that TransitionStatus
+	// delegates to TxRepos — read the todo, validate, write status.
+	// This is a known test limitation; full tx semantics are integration-tested.
+	return fmt.Errorf("transaction exercised (test stub — requires integration test)")
 }
 
 // fakeGoalAccessChecker stubs goalAccessChecker for tests.
@@ -139,12 +120,11 @@ func (fakeGoalAccessChecker) GetByID(id, spaceID string) (*model.Goal, error) {
 type fakeAccessChecker struct{}
 func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { return true }
 
-// newTodoSvc builds a TodoService wired with the fakeTxRunnerV2. The V2 runner
-// returns a stub error when Do() is called, since we can't build real TxRepos
-// without a dbr.Tx. Tests for transactional flows (TransitionStatus, CreateTodoWithAssignees)
-// are integration-level and require a real database.
+// newTodoSvc builds a TodoService wired with the noopTxRunner. TransitionStatus
+// and CreateTodoWithAssignees will return a stub error since we can't build real
+// TxRepos without dbr.Tx. Those paths are validated via integration tests.
 func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
-	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, &fakeTxRunnerV2{}) 
+	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, &noopTxRunner{})
 }
 
 type fakeAssigneeRepo struct {

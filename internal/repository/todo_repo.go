@@ -167,6 +167,7 @@ func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLi
 			grouped[key] = append(grouped[key], t)
 		}
 	}
+	// Ensure non-nil map (empty kanban returns {} not null)
 	return grouped, nil
 }
 

@@ -59,8 +59,18 @@ func (r *AssigneeRepo) UpdateStatus(todoID, userID, status string) error {
 	} else {
 		stmt = stmt.Set("completed_at", nil)
 	}
-	_, err := stmt.Exec()
-	return err
+	result, err := stmt.Exec()
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.AssigneeNotFound()
+	}
+	return nil
 }
 
 func (r *AssigneeRepo) MarkAllDone(todoID string) error {
