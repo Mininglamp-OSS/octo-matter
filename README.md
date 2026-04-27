@@ -74,7 +74,6 @@ The following features are **designed** in `docs/DESIGN.md` but **not yet implem
 - **Redis caching** — declared in docker-compose and config but not wired
 - **Rate limiting** — sliding window design exists but no middleware
 - **Chat notifications** — Bot API push designed but not built
-- **octo-auth-client SDK** — `AUTH_MODE=remote` panics; use `stub` (dev) or `jwt`/`bot` (prod)
 
 ## Quick Start
 
@@ -114,7 +113,7 @@ go test ./... -v
 ## API Reference
 
 All endpoints require:
-- Authentication header (varies by `AUTH_MODE`)
+- Authentication header (token for users, Authorization: Bot for bots)
 - `X-Space-ID` header — Space ID for data isolation (user auth; bot auth resolves automatically)
 
 ### Health
@@ -148,7 +147,6 @@ All endpoints require:
 | DELETE | `/api/v1/todos/:id` | Soft delete (creator only) |
 | POST | `/api/v1/todos/:id/assignees` | Add assignee (creator only) |
 | DELETE | `/api/v1/todos/:id/assignees/:uid` | Remove assignee (creator only) |
-| PUT | `/api/v1/todos/:id/assignee-status` | Update own completion (assignee only) |
 
 #### List Filters
 
@@ -175,7 +173,7 @@ PUT /api/v1/todos/:id/status
 { "status": "closed" }
 ```
 
-Creator or assignee can set status to `open` or `closed`. Idempotent — setting the current status is a no-op. Closing a todo marks all assignees as done.
+Creator or assignee can set status to `open` or `closed`. Idempotent — setting the current status is a no-op. 
 
 ### Comments & Attachments
 
@@ -201,15 +199,14 @@ Creator or assignee can set status to `open` or `closed`. Idempotent — setting
 
 ## Authentication
 
-Three modes, selected by `AUTH_MODE` environment variable:
+Dual-path via octo-auth — auto-routes based on request header:
 
-| Mode | Header | Use case |
-|------|--------|----------|
-| `stub` | `token: uid@name@role` | Development only |
-| `jwt` | RS256 JWT via JWKS | User authentication |
-| `bot` | `Authorization: Bot robot_id/app_key` | Bot/agent authentication |
+| Header | Path | Use case |
+|--------|------|----------|
+| `token` | User verification via octo-auth | Human users (dmwork-web) |
+| `Authorization: Bot <id>/<key>` | Bot verification via octo-auth | Bot/agent automation |
 
-`APP_ENV=prod` rejects `AUTH_MODE=stub`.
+Config: `AUTH_URL` (octo-auth base URL) + `AUTH_INTERNAL_KEY` (pre-shared key).
 
 ## Design Document
 
@@ -227,4 +224,4 @@ Full architecture design with data model, API specification, auth strategy:
 
 ## License
 
-Proprietary — Octo
+Apache-2.0
