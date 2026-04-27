@@ -21,7 +21,7 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid configuration: %v", err)
 	}
-	log.Printf("starting todo-service env=%s auth_mode=%s", cfg.AppEnv, cfg.AuthMode)
+	log.Printf("starting todo-service env=%s auth=%s", cfg.AppEnv, cfg.AuthURL)
 
 	conn, sess, err := repository.NewSession(cfg.MySQLDSN)
 	if err != nil {
@@ -52,7 +52,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	userAuth := auth.NewUserAuthMiddleware(cfg)
+	userAuth := auth.NewAuthMiddleware(cfg)
 	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth, readiness)
 
 	// Graceful shutdown: drain in-flight requests on SIGINT/SIGTERM.
