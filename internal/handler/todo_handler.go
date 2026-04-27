@@ -147,7 +147,7 @@ func (h *TodoHandler) Get(c *gin.Context) {
 }
 
 type updateTodoReq struct {
-	Title       string  `json:"title" binding:"required,max=500"`
+	Title       *string `json:"title" binding:"omitempty,max=500"`
 	Description *string `json:"description" binding:"omitempty,max=10000"`
 	GoalID      *string `json:"goal_id"`
 	Deadline    *string `json:"deadline"`

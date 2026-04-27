@@ -242,7 +242,7 @@ func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestTodoService_UpdateTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-	_, err := svc.UpdateTodo("t1", "space-B", "u1", "new title", nil, nil, nil, nil)
+	_, err := svc.UpdateTodo("t1", "space-B", "u1", strPtr("new title"), nil, nil, nil, nil)
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space UpdateTodo: got %v, want ErrNotFound", err)
 	}
@@ -251,7 +251,7 @@ func TestTodoService_UpdateTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestTodoService_UpdateTodo_NonCreatorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-	_, err := svc.UpdateTodo("t1", "space-A", "u2", "new", nil, nil, nil, nil)
+	_, err := svc.UpdateTodo("t1", "space-A", "u2", strPtr("new"), nil, nil, nil, nil)
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-creator UpdateTodo: got %v, want ErrForbidden", err)
 	}
@@ -303,3 +303,5 @@ func TestSetStatus_RejectsInvalidStatus(t *testing.T) {
 		t.Fatalf("invalid status should return ErrInvalidInput, got %v", err)
 	}
 }
+
+func strPtr(s string) *string { return &s }
