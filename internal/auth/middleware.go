@@ -27,8 +27,9 @@ func writeAuthErr(c *gin.Context, status int, code, msg string) {
 // AuthMode.
 //   - stub: accepts unsigned "uid@name@role" tokens (dev only, logs WARN)
 //   - jwt: validates RS256 JWTs from octo-auth-server via JWKS
-//   - bot: validates Bot tokens (robot_id:app_key) against Octo IM server
-//   - remote: deprecated, panics on startup
+//   - bot: validates Bot tokens (robot_id:app_key) against octo-auth
+//   - remote: validates IM user tokens via octo-auth verify-user endpoint
+//   - mixed: auto-routes based on header ("Authorization: Bot" → bot, "token" → remote)
 func NewUserAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 	switch cfg.AuthMode {
 	case config.AuthModeStub:
@@ -37,9 +38,11 @@ func NewUserAuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 	case config.AuthModeJWT:
 		return jwtAuth(cfg.JWKSURL, cfg.Audience)
 	case config.AuthModeBot:
-		return botAuth(cfg.AuthURL)
+		return botAuth(cfg.AuthURL, cfg.InternalKey)
 	case config.AuthModeRemote:
-		panic("auth: remote mode is deprecated — use AUTH_MODE=jwt or AUTH_MODE=bot")
+		return remoteUserAuth(cfg.AuthURL, cfg.InternalKey)
+	case config.AuthModeMixed:
+		return mixedAuth(cfg.AuthURL, cfg.InternalKey)
 	default:
 		panic("auth: unknown AuthMode " + string(cfg.AuthMode))
 	}
@@ -98,7 +101,7 @@ type botVerifyResponse struct {
 // Token format: "Authorization: Bot <robot_id>/<app_key>"
 // The middleware posts {"bot_token":"bf_<robot_id>_<app_key>"} to the auth server.
 // Only HTTP 200 is treated as success; the response body provides robot info and space_id.
-func botAuth(authURL string) gin.HandlerFunc {
+func botAuth(authURL, internalKey string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 10 * time.Second}
 	baseURL := strings.TrimRight(authURL, "/")
 
@@ -135,6 +138,9 @@ func botAuth(authURL string) gin.HandlerFunc {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if internalKey != "" {
+			req.Header.Set("X-Internal-Key", internalKey)
+		}
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -186,6 +192,88 @@ func botAuth(authURL string) gin.HandlerFunc {
 // TODO: Phase B: implement mixed auth middleware that routes based on header
 // presence (Authorization: Bot ... → botAuth, Authorization: Bearer ... → jwtAuth)
 // to serve both user and bot simultaneously on the same service instance.
+
+// userVerifyRequest is the JSON body sent to POST /internal/v1/auth/verify-user.
+type userVerifyRequest struct {
+	Token string `json:"token"`
+}
+
+// userVerifyResponse is the parsed JSON from a successful verify-user call.
+type userVerifyResponse struct {
+	UID  string `json:"uid"`
+	Name string `json:"name"`
+	Role string `json:"role"`
+}
+
+// remoteUserAuth validates IM user tokens by calling octo-auth's verify-user endpoint.
+func remoteUserAuth(authURL, internalKey string) gin.HandlerFunc {
+	client := &http.Client{Timeout: 10 * time.Second}
+	baseURL := strings.TrimRight(authURL, "/")
+
+	log.Printf("INFO: auth running in REMOTE mode — verifying user tokens via %s", baseURL)
+
+	return func(c *gin.Context) {
+		token := c.GetHeader("token")
+		if token == "" {
+			writeAuthErr(c, http.StatusUnauthorized, "UNAUTHORIZED", "missing token header")
+			return
+		}
+
+		verifyURL := baseURL + "/internal/v1/auth/verify-user"
+		body, _ := json.Marshal(userVerifyRequest{Token: token})
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, verifyURL, bytes.NewReader(body))
+		if err != nil {
+			writeAuthErr(c, http.StatusInternalServerError, "AUTH_ERROR", "failed to create validation request")
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if internalKey != "" {
+			req.Header.Set("X-Internal-Key", internalKey)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			writeAuthErr(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", "failed to reach auth server")
+			return
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
+			writeAuthErr(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid token")
+			return
+		}
+
+		var userResp userVerifyResponse
+		if err := json.NewDecoder(resp.Body).Decode(&userResp); err != nil {
+			writeAuthErr(c, http.StatusInternalServerError, "AUTH_ERROR", "failed to parse auth response")
+			return
+		}
+
+		c.Set("uid", userResp.UID)
+		c.Set("name", userResp.Name)
+		c.Set("role", userResp.Role)
+		c.Next()
+	}
+}
+
+// mixedAuth routes requests to the correct auth handler based on headers:
+//   - "Authorization: Bot ..." → bot auth (verify-bot)
+//   - "token" header → remote user auth (verify-user)
+func mixedAuth(authURL, internalKey string) gin.HandlerFunc {
+	botHandler := botAuth(authURL, internalKey)
+	userHandler := remoteUserAuth(authURL, internalKey)
+
+	log.Printf("INFO: auth running in MIXED mode — user (token header) + bot (Authorization: Bot)")
+
+	return func(c *gin.Context) {
+		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bot ") {
+			botHandler(c)
+			return
+		}
+		userHandler(c)
+	}
+}
 
 // SpaceMiddleware reads the X-Space-ID header and stores it in the gin context.
 // Used for user auth (JWT mode). Bot auth mode handles space_id internally.

@@ -24,6 +24,8 @@ const (
 	// AuthModeRemote calls the Octo IM internal auth API. Deprecated in favor
 	// of AuthModeJWT. Kept for backward compatibility; panics on startup.
 	AuthModeRemote AuthMode = "remote"
+	// AuthModeMixed routes based on header: "Authorization: Bot" → bot, "token" → remote user.
+	AuthModeMixed AuthMode = "mixed"
 )
 
 // AppEnv distinguishes development from production for validation strictness.
@@ -44,6 +46,7 @@ type Config struct {
 	JWKSURL    string
 	Audience   string
 	ServerPort string
+	InternalKey string // pre-shared key for calling octo-auth internal endpoints
 }
 
 // Load reads configuration from environment. It does NOT validate — call
@@ -59,7 +62,8 @@ func Load() *Config {
 		AuthURL:    devDefault(env, "AUTH_URL", "http://127.0.0.1:8090/internal/v1"),
 		JWKSURL:    envOrDefault("JWKS_URL", "http://127.0.0.1:8080/.well-known/jwks.json"),
 		Audience:   envOrDefault("AUDIENCE", "octo"),
-		ServerPort: envOrDefault("SERVER_PORT", "8080"),
+		ServerPort:  envOrDefault("SERVER_PORT", "8080"),
+		InternalKey: os.Getenv("AUTH_INTERNAL_KEY"),
 	}
 }
 
@@ -69,14 +73,17 @@ func (c *Config) Validate() error {
 	if c.AppEnv != AppEnvDev && c.AppEnv != AppEnvProd {
 		return fmt.Errorf("APP_ENV must be 'dev' or 'prod', got %q", c.AppEnv)
 	}
-	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeJWT && c.AuthMode != AuthModeBot && c.AuthMode != AuthModeRemote {
-		return fmt.Errorf("AUTH_MODE must be 'stub', 'jwt', 'bot', or 'remote', got %q", c.AuthMode)
+	if c.AuthMode != AuthModeStub && c.AuthMode != AuthModeJWT && c.AuthMode != AuthModeBot && c.AuthMode != AuthModeRemote && c.AuthMode != AuthModeMixed {
+		return fmt.Errorf("AUTH_MODE must be 'stub', 'jwt', 'bot', 'remote', or 'mixed', got %q", c.AuthMode)
 	}
 	if c.MySQLDSN == "" {
 		return fmt.Errorf("MYSQL_DSN is required")
 	}
 	if c.AuthMode == AuthModeRemote && c.AuthURL == "" {
 		return fmt.Errorf("AUTH_URL is required when AUTH_MODE=remote")
+	}
+	if c.AuthMode == AuthModeMixed && c.AuthURL == "" {
+		return fmt.Errorf("AUTH_URL is required when AUTH_MODE=mixed")
 	}
 	if c.AuthMode == AuthModeJWT && c.JWKSURL == "" {
 		return fmt.Errorf("JWKS_URL is required when AUTH_MODE=jwt")
