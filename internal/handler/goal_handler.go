@@ -2,7 +2,9 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -36,12 +38,24 @@ func (h *GoalHandler) Create(c *gin.Context) {
 }
 
 func (h *GoalHandler) List(c *gin.Context) {
-	goals, err := h.svc.ListGoals(spaceID(c), uid(c))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	cursor := c.Query("cursor")
+	filter := repository.GoalFilter{
+		CallerID: uid(c),
+		Limit:    limit,
+	}
+	if cursor != "" {
+		filter.Cursor = &cursor
+	}
+	result, err := h.svc.ListGoals(spaceID(c), filter)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
-	ok(c, goals)
+	paginated(c, result.Items, result.HasMore, result.NextCursor)
 }
 
 func (h *GoalHandler) Get(c *gin.Context) {

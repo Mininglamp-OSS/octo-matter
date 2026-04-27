@@ -78,5 +78,6 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Fatalf("forced shutdown: %v", err)
 	}
+	conn.Close()
 	log.Println("server exited cleanly")
 }

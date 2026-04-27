@@ -94,6 +94,15 @@ todos/
 └── README.md                     # This file
 ```
 
+## Current Implementation Status
+
+The following features are **designed** in `docs/DESIGN.md` but **not yet implemented**:
+
+- **Redis caching** — declared in docker-compose and config but not wired in application code
+- **Rate limiting** — sliding window design exists but no middleware implemented
+- **Chat notifications** — Bot API push + deduplication designed but not built
+- **octo-auth-client SDK integration** — `AUTH_MODE=remote` panics; use `stub` (dev) or `jwt`/`bot` (prod)
+
 ## Quick Start
 
 ### Docker Compose (recommended)

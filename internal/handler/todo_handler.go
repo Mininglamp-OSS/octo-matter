@@ -48,6 +48,23 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
 	}
+	// Parse optional deadline and remind_at (P1-7 fix).
+	if req.Deadline != nil {
+		t, err := service.ParseOptionalRFC3339(*req.Deadline)
+		if err != nil {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "deadline must be RFC3339 or empty", nil)
+			return
+		}
+		todo.Deadline = t
+	}
+	if req.RemindAt != nil {
+		t, err := service.ParseOptionalRFC3339(*req.RemindAt)
+		if err != nil {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "remind_at must be RFC3339 or empty", nil)
+			return
+		}
+		todo.RemindAt = t
+	}
 	detail, err := h.svc.CreateTodoWithAssignees(todo, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
@@ -84,6 +101,9 @@ func (h *TodoHandler) List(c *gin.Context) {
 		filter.Status = &status
 	}
 	if assigneeID != "" {
+		if assigneeID == "me" {
+			assigneeID = uid(c)
+		}
 		filter.AssigneeID = &assigneeID
 	}
 	if creatorID != "" {
@@ -151,6 +171,13 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
+	switch model.TodoStatus(req.Status) {
+	case model.TodoStatusDraft, model.TodoStatusPlanned, model.TodoStatusInProgress, model.TodoStatusDone, model.TodoStatusCancelled:
+		// valid
+	default:
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid status value", nil)
+		return
+	}
 	detail, err := h.svc.TransitionStatus(c.Param("id"), spaceID(c), uid(c), model.TodoStatus(req.Status))
 	if err != nil {
 		respondErr(c, err)
@@ -205,6 +232,13 @@ func (h *TodoHandler) UpdateAssigneeStatus(c *gin.Context) {
 	var req updateAssigneeStatusReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
+		return
+	}
+	switch model.AssigneeStatus(req.Status) {
+	case model.AssigneeStatusPending, model.AssigneeStatusDone:
+		// valid
+	default:
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid assignee status, must be 'pending' or 'done'", nil)
 		return
 	}
 	if err := h.svc.UpdateAssigneeStatus(c.Param("id"), spaceID(c), uid(c), model.AssigneeStatus(req.Status)); err != nil {

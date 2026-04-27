@@ -199,14 +199,14 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, descr
 	}
 	todo.GoalID = goalID
 	if deadline != nil {
-		t, err := parseOptionalRFC3339(*deadline)
+		t, err := ParseOptionalRFC3339(*deadline)
 		if err != nil {
 			return nil, apperr.InvalidInput("deadline must be RFC3339 or empty")
 		}
 		todo.Deadline = t
 	}
 	if remindAt != nil {
-		t, err := parseOptionalRFC3339(*remindAt)
+		t, err := ParseOptionalRFC3339(*remindAt)
 		if err != nil {
 			return nil, apperr.InvalidInput("remind_at must be RFC3339 or empty")
 		}
@@ -218,10 +218,10 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, descr
 	return todo, nil
 }
 
-// parseOptionalRFC3339 returns (nil, nil) for the empty string (clear the
+// ParseOptionalRFC3339 returns (nil, nil) for the empty string (clear the
 // field) and otherwise parses as RFC3339. Returning an error on any other
 // input stops silent drops.
-func parseOptionalRFC3339(s string) (*time.Time, error) {
+func ParseOptionalRFC3339(s string) (*time.Time, error) {
 	if s == "" {
 		return nil, nil
 	}
@@ -232,48 +232,49 @@ func parseOptionalRFC3339(s string) (*time.Time, error) {
 	return &t, nil
 }
 
-// TransitionStatus changes a todo's status and (when moving to done) marks
-// every assignee done atomically, so the "is this todo done?" check can never
-// see status=done with assignees still pending.
-//
-// Errors split along two axes:
-//   - state machine disallows target → INVALID_TRANSITION (400) with
-//     details.current and details.allowed, so clients don't need a second GET.
-//   - state machine allows target, but caller lacks the required role →
-//     FORBIDDEN (403).
+// TransitionStatus changes a todo's status atomically. All transitions run
+// inside a transaction with SELECT ... FOR UPDATE to prevent TOCTOU races.
+// Moving to done additionally marks every assignee done in the same tx.
 func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.TodoStatus) (*TodoDetail, error) {
-	todo, err := s.todoRepo.GetByID(id, spaceID)
-	if err != nil {
-		return nil, err
-	}
+	var (
+		todo      *model.Todo
+		isCreator bool
+		isAssignee bool
+	)
 
-	allowed := model.AllowedTransitions(todo.Status)
-	if !containsStatus(allowed, target) {
-		return nil, apperr.InvalidTransition(string(todo.Status), statusStrings(allowed))
-	}
+	err := s.tx.Do(func(r *repository.TxRepos) error {
+		var err error
+		todo, err = r.Todo.GetByIDForUpdate(id, spaceID)
+		if err != nil {
+			return err
+		}
 
-	isCreator := todo.CreatorID == userID
-	isAssignee, err := s.assigneeRepo.IsAssignee(id, userID)
-	if err != nil {
-		return nil, err
-	}
-	if !model.CanTransition(todo.Status, target, isCreator, isAssignee) {
-		return nil, apperr.Forbidden("caller role may not perform this transition")
-	}
+		allowed := model.AllowedTransitions(todo.Status)
+		if !containsStatus(allowed, target) {
+			return apperr.InvalidTransition(string(todo.Status), statusStrings(allowed))
+		}
 
-	if target == model.TodoStatusDone {
-		if err := s.tx.Do(func(r *repository.TxRepos) error {
-			if err := r.Todo.UpdateStatus(id, spaceID, string(target)); err != nil {
+		isCreator = todo.CreatorID == userID
+		isAssignee, err = r.Assignee.IsAssignee(id, userID)
+		if err != nil {
+			return err
+		}
+		if !model.CanTransition(todo.Status, target, isCreator, isAssignee) {
+			return apperr.Forbidden("caller role may not perform this transition")
+		}
+
+		if err := r.Todo.UpdateStatus(id, spaceID, string(target)); err != nil {
+			return err
+		}
+		if target == model.TodoStatusDone {
+			if err := r.Assignee.MarkAllDone(id); err != nil {
 				return err
 			}
-			return r.Assignee.MarkAllDone(id)
-		}); err != nil {
-			return nil, err
 		}
-	} else {
-		if err := s.todoRepo.UpdateStatus(id, spaceID, string(target)); err != nil {
-			return nil, err
-		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	todo.Status = target

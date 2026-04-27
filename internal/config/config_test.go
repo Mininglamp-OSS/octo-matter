@@ -74,6 +74,7 @@ func TestValidate_HappyPath_ProdJWT(t *testing.T) {
 		AuthMode:   AuthModeJWT,
 		MySQLDSN:   "dsn",
 		JWKSURL:    "http://octo-auth:8080/.well-known/jwks.json",
+		RedisURL:   "redis://127.0.0.1:6379/0",
 		ServerPort: "8080",
 	}
 	if err := c.Validate(); err != nil {
@@ -87,6 +88,7 @@ func TestValidate_HappyPath_ProdRemote(t *testing.T) {
 		AuthMode:   AuthModeRemote,
 		MySQLDSN:   "dsn",
 		AuthURL:    "http://auth",
+		RedisURL:   "redis://127.0.0.1:6379/0",
 		ServerPort: "8080",
 	}
 	if err := c.Validate(); err != nil {

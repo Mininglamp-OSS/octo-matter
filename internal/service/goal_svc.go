@@ -10,7 +10,7 @@ import (
 type goalStore interface {
 	Create(goal *model.Goal) error
 	GetByID(id, spaceID string) (*model.Goal, error)
-	ListByUser(spaceID, userID string) ([]*model.Goal, error)
+	ListByUser(spaceID string, filter repository.GoalFilter) ([]*model.Goal, bool, error)
 	Update(goal *model.Goal) error
 	Archive(id, spaceID string) error
 	AddAssignee(goalID, userID string) error
@@ -59,9 +59,32 @@ func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *
 	return goal, nil
 }
 
-// ListGoals returns goals where the user is creator or assignee.
-func (s *GoalService) ListGoals(spaceID, userID string) ([]*model.Goal, error) {
-	return s.goalRepo.ListByUser(spaceID, userID)
+// GoalListResult wraps paginated goal results.
+type GoalListResult struct {
+	Items      []*model.Goal `json:"items"`
+	HasMore    bool          `json:"has_more"`
+	NextCursor string        `json:"next_cursor,omitempty"`
+}
+
+// ListGoals returns goals where the user is creator or assignee, with cursor pagination.
+func (s *GoalService) ListGoals(spaceID string, filter repository.GoalFilter) (*GoalListResult, error) {
+	goals, hasMore, err := s.goalRepo.ListByUser(spaceID, filter)
+	if err != nil {
+		return nil, err
+	}
+	var nextCursor string
+	if hasMore && len(goals) > 0 {
+		last := goals[len(goals)-1]
+		nextCursor = repository.EncodeCursor(repository.Cursor{
+			CreatedAt: last.CreatedAt,
+			ID:        last.ID,
+		})
+	}
+	return &GoalListResult{
+		Items:      goals,
+		HasMore:    hasMore,
+		NextCursor: nextCursor,
+	}, nil
 }
 
 type GoalDetail struct {

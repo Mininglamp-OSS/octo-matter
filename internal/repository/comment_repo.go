@@ -53,7 +53,7 @@ func (r *CommentRepo) Delete(id string) error {
 }
 
 func (r *CommentRepo) ListByTodo(todoID string) ([]*model.TodoComment, error) {
-	var comments []*model.TodoComment
+	comments := make([]*model.TodoComment, 0)
 	_, err := r.runner.Select("*").
 		From("todo_comments").
 		Where("todo_id = ?", todoID).

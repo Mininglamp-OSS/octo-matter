@@ -55,7 +55,7 @@ func Load() *Config {
 		AppEnv:     env,
 		AuthMode:   AuthMode(envOrDefault("AUTH_MODE", string(AuthModeStub))),
 		MySQLDSN:   devDefault(env, "MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
-		RedisURL:   envOrDefault("REDIS_URL", "redis://127.0.0.1:6379/0"),
+		RedisURL:   devDefault(env, "REDIS_URL", "redis://127.0.0.1:6379/0"),
 		AuthURL:    devDefault(env, "AUTH_URL", "http://127.0.0.1:8090/internal/v1"),
 		JWKSURL:    envOrDefault("JWKS_URL", "http://127.0.0.1:8080/.well-known/jwks.json"),
 		Audience:   envOrDefault("AUDIENCE", "octo"),
@@ -86,6 +86,9 @@ func (c *Config) Validate() error {
 	}
 	if c.AppEnv == AppEnvProd && c.AuthMode == AuthModeStub {
 		return fmt.Errorf("AUTH_MODE=stub is not permitted when APP_ENV=prod; use 'jwt' or 'bot'")
+	}
+	if c.AppEnv == AppEnvProd && c.RedisURL == "" {
+		return fmt.Errorf("REDIS_URL is required when APP_ENV=prod")
 	}
 	if c.ServerPort == "" {
 		return fmt.Errorf("SERVER_PORT is required")

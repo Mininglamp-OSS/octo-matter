@@ -53,7 +53,7 @@ func (r *AttachmentRepo) Delete(id string) error {
 }
 
 func (r *AttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment, error) {
-	var attachments []*model.TodoAttachment
+	attachments := make([]*model.TodoAttachment, 0)
 	_, err := r.runner.Select("*").
 		From("todo_attachments").
 		Where("todo_id = ?", todoID).

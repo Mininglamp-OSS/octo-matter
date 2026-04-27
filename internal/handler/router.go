@@ -8,6 +8,17 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// maxBodySize limits request body to prevent OOM from oversized payloads.
+const maxBodySize = 1 << 20 // 1 MB
+
+// MaxBodySize returns a Gin middleware that caps the request body at n bytes.
+func MaxBodySize(n int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, n)
+		c.Next()
+	}
+}
+
 // ReadinessCheck returns nil when the service is ready to serve traffic. Main
 // wires this to a function that Pings MySQL (and later Redis / Octo IM). A
 // non-nil error renders 503 so k8s pulls the Pod out of rotation until
@@ -48,7 +59,7 @@ func SetupRouter(
 	})
 
 	api := r.Group("/api/v1")
-	api.Use(userAuth, auth.SpaceMiddleware())
+	api.Use(MaxBodySize(maxBodySize), userAuth, auth.SpaceMiddleware())
 
 	// Goals
 	goals := api.Group("/goals")

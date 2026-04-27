@@ -45,7 +45,6 @@ CREATE TABLE IF NOT EXISTS todos (
     INDEX idx_todos_space_status (space_id, status),
     INDEX idx_todos_goal (goal_id),
     INDEX idx_todos_creator (space_id, creator_id),
-    INDEX idx_todos_creator_space (space_id, creator_id),
     INDEX idx_todos_deadline (space_id, deadline),
     INDEX idx_todos_source (source_channel_id, source_channel_type),
     CONSTRAINT fk_todos_goal FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL

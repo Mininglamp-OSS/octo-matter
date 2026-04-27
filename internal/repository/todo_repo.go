@@ -82,10 +82,10 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		From("todos").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID).
 		Where(
-			"(creator_id = ? OR id IN (SELECT todo_id FROM todo_assignees WHERE user_id = ?) OR goal_id IN (SELECT goal_id FROM goal_assignees WHERE user_id = ?))",
+			"(creator_id = ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id = ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id = ?))",
 			filter.CallerID, filter.CallerID, filter.CallerID,
 		).
-		Where("(goal_id IS NULL OR goal_id NOT IN (SELECT id FROM goals WHERE archived = 1))")
+		Where("(goal_id IS NULL OR NOT EXISTS (SELECT 1 FROM goals WHERE goals.id = todos.goal_id AND goals.archived = 1))")
 
 	if filter.GoalID != nil {
 		q = q.Where("goal_id = ?", *filter.GoalID)
@@ -135,6 +135,9 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 	if err != nil {
 		return nil, false, err
 	}
+	if todos == nil {
+		todos = make([]*model.Todo, 0)
+	}
 
 	hasMore := len(todos) > limit
 	if hasMore {
@@ -147,21 +150,21 @@ func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLi
 	if perColumnLimit <= 0 {
 		perColumnLimit = 50
 	}
-	statuses := []string{"draft", "planned", "in_progress", "done", "cancelled"}
+	var all []*model.Todo
+	_, err := r.runner.Select("*").
+		From("todos").
+		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
+		OrderBy("status").
+		OrderDir("created_at", false).
+		Load(&all)
+	if err != nil {
+		return nil, err
+	}
 	grouped := make(map[string][]*model.Todo)
-	for _, status := range statuses {
-		var todos []*model.Todo
-		_, err := r.runner.Select("*").
-			From("todos").
-			Where("space_id = ? AND goal_id = ? AND status = ? AND deleted_at IS NULL", spaceID, goalID, status).
-			OrderDir("created_at", false).
-			Limit(uint64(perColumnLimit)).
-			Load(&todos)
-		if err != nil {
-			return nil, err
-		}
-		if len(todos) > 0 {
-			grouped[status] = todos
+	for _, t := range all {
+		key := string(t.Status)
+		if len(grouped[key]) < perColumnLimit {
+			grouped[key] = append(grouped[key], t)
 		}
 	}
 	return grouped, nil
@@ -188,11 +191,28 @@ func (r *TodoRepo) CountByGoalStatus(spaceID, goalID string) (map[string]int, er
 	return result, nil
 }
 
+// GetByIDForUpdate loads a non-deleted todo with SELECT ... FOR UPDATE for use
+// inside transactions. This locks the row until the transaction commits/rolls back.
+func (r *TodoRepo) GetByIDForUpdate(id, spaceID string) (*model.Todo, error) {
+	var todo model.Todo
+	err := r.runner.SelectBySql(
+		"SELECT * FROM todos WHERE id = ? AND space_id = ? AND deleted_at IS NULL FOR UPDATE",
+		id, spaceID,
+	).LoadOne(&todo)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.TodoNotFound()
+		}
+		return nil, err
+	}
+	return &todo, nil
+}
+
 // Update writes all editable fields of todo. The WHERE clause includes space_id
 // so a stale struct from another space cannot overwrite a row here.
 func (r *TodoRepo) Update(todo *model.Todo) error {
 	todo.UpdatedAt = time.Now()
-	_, err := r.runner.Update("todos").
+	result, err := r.runner.Update("todos").
 		Set("title", todo.Title).
 		Set("description", todo.Description).
 		Set("goal_id", todo.GoalID).
@@ -201,28 +221,58 @@ func (r *TodoRepo) Update(todo *model.Todo) error {
 		Set("updated_at", todo.UpdatedAt).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", todo.ID, todo.SpaceID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.TodoNotFound()
+	}
+	return nil
 }
 
 func (r *TodoRepo) UpdateStatus(id, spaceID, status string) error {
-	_, err := r.runner.Update("todos").
+	result, err := r.runner.Update("todos").
 		Set("status", status).
 		Set("updated_at", time.Now()).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.TodoNotFound()
+	}
+	return nil
 }
 
 func (r *TodoRepo) SoftDelete(id, spaceID string) error {
-	_, err := r.runner.Update("todos").
+	result, err := r.runner.Update("todos").
 		Set("deleted_at", time.Now()).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.TodoNotFound()
+	}
+	return nil
 }
 
 func (r *TodoRepo) ListBySource(spaceID, channelID string, channelType uint8) ([]*model.Todo, error) {
-	var todos []*model.Todo
+	todos := make([]*model.Todo, 0)
 	_, err := r.runner.Select("*").
 		From("todos").
 		Where("space_id = ? AND source_channel_id = ? AND source_channel_type = ? AND deleted_at IS NULL",

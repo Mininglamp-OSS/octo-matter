@@ -1,8 +1,9 @@
 package auth
 
 import (
+	"bytes"
 	"context"
-	"fmt"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -81,10 +82,22 @@ func jwtAuth(jwksURL, audience string) gin.HandlerFunc {
 	return mw.GinJWT()
 }
 
-// botAuth validates Bot tokens by calling Octo IM server's robot events endpoint.
+// botVerifyRequest is the JSON body sent to POST /v1/auth/verify-bot.
+type botVerifyRequest struct {
+	BotToken string `json:"bot_token"`
+}
+
+// botVerifyResponse is the parsed JSON from a successful verify-bot call.
+type botVerifyResponse struct {
+	RobotID   string `json:"robot_id"`
+	RobotName string `json:"robot_name"`
+	SpaceID   string `json:"space_id"`
+}
+
+// botAuth validates Bot tokens by calling POST /v1/auth/verify-bot.
 // Token format: "Authorization: Bot <robot_id>/<app_key>"
-// The middleware calls GET <authURL>/robots/<robot_id>/<app_key>/events to validate.
-// If Octo IM returns 200, the bot is authenticated. The robot_id is used as uid.
+// The middleware posts {"bot_token":"bf_<robot_id>_<app_key>"} to the auth server.
+// Only HTTP 200 is treated as success; the response body provides robot info and space_id.
 func botAuth(authURL string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 10 * time.Second}
 	baseURL := strings.TrimRight(authURL, "/")
@@ -111,13 +124,17 @@ func botAuth(authURL string) gin.HandlerFunc {
 			return
 		}
 
-		// Validate against Octo IM by calling the events endpoint (lightweight GET)
-		validateURL := fmt.Sprintf("%s/v1/robots/%s/%s/events", baseURL, robotID, appKey)
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, validateURL, nil)
+		// Validate via POST /v1/auth/verify-bot with credentials in body (not URL).
+		verifyURL := baseURL + "/v1/auth/verify-bot"
+		body, _ := json.Marshal(botVerifyRequest{
+			BotToken: "bf_" + robotID + "_" + appKey,
+		})
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, verifyURL, bytes.NewReader(body))
 		if err != nil {
 			writeAuthErr(c, http.StatusInternalServerError, "AUTH_ERROR", "failed to create validation request")
 			return
 		}
+		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -125,25 +142,39 @@ func botAuth(authURL string) gin.HandlerFunc {
 			return
 		}
 		defer resp.Body.Close()
-		io.Copy(io.Discard, resp.Body)
 
-		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		// Only 200 is success; everything else is a failure.
+		if resp.StatusCode != http.StatusOK {
+			io.Copy(io.Discard, resp.Body)
 			writeAuthErr(c, http.StatusUnauthorized, "UNAUTHORIZED", "invalid bot credentials")
 			return
 		}
 
-		// Bot is authenticated. Set identity in context.
-		c.Set("uid", robotID)
-		c.Set("name", robotID)
+		// Parse robot info from response.
+		var botResp botVerifyResponse
+		if err := json.NewDecoder(resp.Body).Decode(&botResp); err != nil {
+			writeAuthErr(c, http.StatusInternalServerError, "AUTH_ERROR", "failed to parse auth response")
+			return
+		}
+
+		// Set identity in context.
+		name := botResp.RobotName
+		if name == "" {
+			name = robotID
+		}
+		c.Set("uid", botResp.RobotID)
+		c.Set("name", name)
 		c.Set("role", "bot")
 
-		// Bot space resolution:
-		// 1. X-Space-ID header (injected by agent runtime from conversation context)
-		// 2. Future: auto-resolve from Octo IM /v1/robots/:id/:key/info endpoint
-		spaceID := c.GetHeader("X-Space-ID")
+		// Space resolution: prefer space_id from verify-bot response (auto-resolved),
+		// fall back to X-Space-ID header if the auth server did not return one.
+		spaceID := botResp.SpaceID
+		if spaceID == "" {
+			spaceID = c.GetHeader("X-Space-ID")
+		}
 		if spaceID == "" {
 			writeAuthErr(c, http.StatusBadRequest, "SPACE_REQUIRED",
-				"X-Space-ID header is required for bot auth (set OCTO_SPACE_ID in agent runtime)")
+				"bot space could not be resolved; provide X-Space-ID header")
 			return
 		}
 		c.Set("space_id", spaceID)
@@ -151,6 +182,10 @@ func botAuth(authURL string) gin.HandlerFunc {
 		c.Next()
 	}
 }
+
+// TODO: Phase B: implement mixed auth middleware that routes based on header
+// presence (Authorization: Bot ... → botAuth, Authorization: Bearer ... → jwtAuth)
+// to serve both user and bot simultaneously on the same service instance.
 
 // SpaceMiddleware reads the X-Space-ID header and stores it in the gin context.
 // Used for user auth (JWT mode). Bot auth mode handles space_id internally.

@@ -73,7 +73,7 @@ func (r *AssigneeRepo) MarkAllDone(todoID string) error {
 }
 
 func (r *AssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) {
-	var assignees []*model.TodoAssignee
+	assignees := make([]*model.TodoAssignee, 0)
 	_, err := r.runner.Select("*").
 		From("todo_assignees").
 		Where("todo_id = ?", todoID).

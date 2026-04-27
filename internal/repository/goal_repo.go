@@ -45,41 +45,87 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 	return &goal, nil
 }
 
-// ListByUser returns non-archived goals where user is creator or assignee.
-func (r *GoalRepo) ListByUser(spaceID, userID string) ([]*model.Goal, error) {
-	var goals []*model.Goal
-	_, err := r.runner.Select("g.*").
+// GoalFilter holds optional filters for goal listing.
+type GoalFilter struct {
+	CallerID string
+	Cursor   *string
+	Limit    int
+}
+
+// ListByUser returns non-archived goals where user is creator or assignee, with cursor pagination.
+func (r *GoalRepo) ListByUser(spaceID string, filter GoalFilter) ([]*model.Goal, bool, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	goals := make([]*model.Goal, 0)
+	q := r.runner.Select("g.*").
 		From(dbr.I("goals").As("g")).
 		LeftJoin(dbr.I("goal_assignees").As("ga"), "ga.goal_id = g.id").
-		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id = ? OR ga.user_id = ?)", spaceID, userID, userID).
-		GroupBy("g.id").
-		OrderDir("g.created_at", false).
-		Limit(200).
+		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id = ? OR ga.user_id = ?)", spaceID, filter.CallerID, filter.CallerID).
+		GroupBy("g.id")
+
+	if filter.Cursor != nil && *filter.Cursor != "" {
+		cur, err := DecodeCursor(*filter.Cursor)
+		if err != nil {
+			return nil, false, err
+		}
+		q = q.Where("(g.created_at < ? OR (g.created_at = ? AND g.id < ?))", cur.CreatedAt, cur.CreatedAt, cur.ID)
+	}
+
+	_, err := q.OrderDir("g.created_at", false).
+		OrderDir("g.id", false).
+		Limit(uint64(limit + 1)).
 		Load(&goals)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return goals, nil
+
+	hasMore := len(goals) > limit
+	if hasMore {
+		goals = goals[:limit]
+	}
+	return goals, hasMore, nil
 }
 
 func (r *GoalRepo) Update(goal *model.Goal) error {
 	goal.UpdatedAt = time.Now()
-	_, err := r.runner.Update("goals").
+	result, err := r.runner.Update("goals").
 		Set("title", goal.Title).
 		Set("description", goal.Description).
 		Set("updated_at", goal.UpdatedAt).
 		Where("id = ? AND space_id = ?", goal.ID, goal.SpaceID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.GoalNotFound()
+	}
+	return nil
 }
 
 func (r *GoalRepo) Archive(id, spaceID string) error {
-	_, err := r.runner.Update("goals").
+	result, err := r.runner.Update("goals").
 		Set("archived", 1).
 		Set("updated_at", time.Now()).
 		Where("id = ? AND space_id = ?", id, spaceID).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.GoalNotFound()
+	}
+	return nil
 }
 
 func (r *GoalRepo) AddAssignee(goalID, userID string) error {
@@ -114,7 +160,7 @@ func (r *GoalRepo) RemoveAssignee(goalID, userID string) error {
 }
 
 func (r *GoalRepo) ListAssignees(goalID string) ([]*model.GoalAssignee, error) {
-	var assignees []*model.GoalAssignee
+	assignees := make([]*model.GoalAssignee, 0)
 	_, err := r.runner.Select("*").
 		From("goal_assignees").
 		Where("goal_id = ?", goalID).
