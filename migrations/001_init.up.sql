@@ -54,14 +54,11 @@ CREATE TABLE IF NOT EXISTS todo_assignees (
     id              CHAR(36)                    NOT NULL,
     todo_id         CHAR(36)                    NOT NULL,
     user_id         VARCHAR(64)                 NOT NULL,
-    status          ENUM('pending','done')      NOT NULL DEFAULT 'pending',
-    completed_at    DATETIME(3)                 NULL,
     created_at      DATETIME(3)                 NOT NULL,
     PRIMARY KEY (id),
     UNIQUE KEY uk_todo_user (todo_id, user_id),
     INDEX idx_assignees_user (user_id),
     INDEX idx_assignees_todo (todo_id),
-    INDEX idx_assignees_status (user_id, status),
     CONSTRAINT fk_todo_assignees_todo FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

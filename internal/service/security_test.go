@@ -106,23 +106,6 @@ func (f *fakeAssigneeRepo) Delete(todoID, userID string) error {
 	return nil
 }
 
-func (f *fakeAssigneeRepo) UpdateStatus(todoID, userID, status string) error {
-	for _, a := range f.byTodo[todoID] {
-		if a.UserID == userID {
-			a.Status = model.AssigneeStatus(status)
-			return nil
-		}
-	}
-	return apperr.ErrNotFound
-}
-
-func (f *fakeAssigneeRepo) MarkAllDone(todoID string) error {
-	for _, a := range f.byTodo[todoID] {
-		a.Status = model.AssigneeStatusDone
-	}
-	return nil
-}
-
 func (f *fakeAssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) {
 	return f.byTodo[todoID], nil
 }

@@ -21,7 +21,7 @@ func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
 	a.ID = uuid.New().String()
 	a.CreatedAt = time.Now()
 	_, err := r.runner.InsertInto("todo_assignees").
-		Columns("id", "todo_id", "user_id", "status", "completed_at", "created_at").
+		Columns("id", "todo_id", "user_id", "created_at").
 		Record(a).
 		Exec()
 	if err != nil {
@@ -48,38 +48,6 @@ func (r *AssigneeRepo) Delete(todoID, userID string) error {
 		return apperr.AssigneeNotFound()
 	}
 	return nil
-}
-
-func (r *AssigneeRepo) UpdateStatus(todoID, userID, status string) error {
-	stmt := r.runner.Update("todo_assignees").
-		Set("status", status).
-		Where("todo_id = ? AND user_id = ?", todoID, userID)
-	if status == string(model.AssigneeStatusDone) {
-		stmt = stmt.Set("completed_at", time.Now())
-	} else {
-		stmt = stmt.Set("completed_at", nil)
-	}
-	result, err := stmt.Exec()
-	if err != nil {
-		return err
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return apperr.AssigneeNotFound()
-	}
-	return nil
-}
-
-func (r *AssigneeRepo) MarkAllDone(todoID string) error {
-	_, err := r.runner.Update("todo_assignees").
-		Set("status", string(model.AssigneeStatusDone)).
-		Set("completed_at", time.Now()).
-		Where("todo_id = ?", todoID).
-		Exec()
-	return err
 }
 
 func (r *AssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) {
