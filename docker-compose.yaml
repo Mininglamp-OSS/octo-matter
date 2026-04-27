@@ -5,16 +5,32 @@ services:
       - "8080:8080"
     environment:
       APP_ENV: "dev"
-      AUTH_MODE: "stub"
       MYSQL_DSN: "todo:todo@tcp(mysql:3306)/octo_todo?charset=utf8mb4&parseTime=true"
       REDIS_URL: "redis://redis:6379/0"
-      AUTH_URL: "http://octo-im:8090/internal/v1"
+      AUTH_URL: "http://octo-auth:8080"
+      AUTH_INTERNAL_KEY: "${AUTH_INTERNAL_KEY:-dev-internal-key}"
       SERVER_PORT: "8080"
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
+      octo-auth:
         condition: service_started
+
+  octo-auth:
+    image: ghcr.io/Mininglamp-OSS/octo-auth:latest
+    ports:
+      - "8081:8080"
+    environment:
+      PORT: "8080"
+      REDIS_ADDR: "redis:6379"
+      INTERNAL_KEY: "${AUTH_INTERNAL_KEY:-dev-internal-key}"
+      KEY_DIR: "/data/keys"
+      IM_REDIS_ADDR: "redis:6379"
+      IM_TOKEN_PREFIX: "token:"
+    volumes:
+      - authkeys:/data/keys
+    depends_on:
+      - redis
 
   mysql:
     image: mysql:8.0
@@ -41,3 +57,4 @@ services:
 
 volumes:
   mysqldata:
+  authkeys:

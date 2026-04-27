@@ -26,7 +26,7 @@ type createTodoReq struct {
 	Deadline          *string  `json:"deadline"`
 	RemindAt          *string  `json:"remind_at"`
 	SourceChannelID   *string  `json:"source_channel_id"`
-	SourceChannelType *uint8   `json:"source_channel_type"`
+	SourceChannelType *uint8   `json:"source_channel_type" binding:"omitempty,oneof=1 2 5"`
 	SourceName        *string  `json:"source_name"`
 }
 
