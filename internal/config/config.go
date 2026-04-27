@@ -53,6 +53,9 @@ func (c *Config) Validate() error {
 	if c.AppEnv == AppEnvProd && c.InternalKey == "" {
 		return fmt.Errorf("AUTH_INTERNAL_KEY is required when APP_ENV=prod")
 	}
+	if c.AppEnv == AppEnvDev && c.InternalKey == "" {
+		fmt.Println("WARN: AUTH_INTERNAL_KEY not set — octo-auth calls will lack internal key authentication")
+	}
 	if c.ServerPort == "" {
 		return fmt.Errorf("SERVER_PORT is required")
 	}
