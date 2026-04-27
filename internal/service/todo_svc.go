@@ -22,8 +22,6 @@ type todoStore interface {
 type assigneeStore interface {
 	Create(a *model.TodoAssignee) error
 	Delete(todoID, userID string) error
-	UpdateStatus(todoID, userID, status string) error
-	MarkAllDone(todoID string) error
 	ListByTodo(todoID string) ([]*model.TodoAssignee, error)
 	IsAssignee(todoID, userID string) (bool, error)
 }
@@ -66,7 +64,6 @@ func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []st
 			a := &model.TodoAssignee{
 				TodoID: todo.ID,
 				UserID: aid,
-				Status: model.AssigneeStatusPending,
 			}
 			if err := r.Assignee.Create(a); err != nil {
 				return err
@@ -237,13 +234,6 @@ func (s *TodoService) SetStatus(id, spaceID, userID string, target model.TodoSta
 		if err := r.Todo.UpdateStatus(id, spaceID, string(target)); err != nil {
 			return err
 		}
-
-		// When closing, mark all assignees done.
-		if target == model.TodoStatusClosed {
-			if err := r.Assignee.MarkAllDone(id); err != nil {
-				return err
-			}
-		}
 		return nil
 	})
 	if err != nil {
@@ -287,7 +277,6 @@ func (s *TodoService) AddAssignee(todoID, spaceID, userID, assigneeUserID string
 	a := &model.TodoAssignee{
 		TodoID: todoID,
 		UserID: assigneeUserID,
-		Status: model.AssigneeStatusPending,
 	}
 	return s.assigneeRepo.Create(a)
 }
