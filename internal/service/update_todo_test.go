@@ -15,7 +15,7 @@ func TestUpdateTodo_PersistsDeadlineAndRemindAt(t *testing.T) {
 
 	deadline := "2026-06-01T12:00:00Z"
 	remind := "2026-05-30T09:00:00Z"
-	updated, err := svc.UpdateTodo("t1", "space-A", "u1", "x", nil, nil, &deadline, &remind)
+	updated, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, nil, &deadline, &remind)
 	if err != nil {
 		t.Fatalf("UpdateTodo failed: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestUpdateTodo_EmptyStringClearsTimestamp(t *testing.T) {
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	empty := ""
-	updated, err := svc.UpdateTodo("t1", "space-A", "u1", "x", nil, nil, &empty, nil)
+	updated, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, nil, &empty, nil)
 	if err != nil {
 		t.Fatalf("UpdateTodo failed: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestUpdateTodo_NilPointerLeavesTimestampUntouched(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, Deadline: &existing}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
-	updated, err := svc.UpdateTodo("t1", "space-A", "u1", "x", nil, nil, nil, nil)
+	updated, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("UpdateTodo failed: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestUpdateTodo_InvalidDeadlineReturnsInvalidInput(t *testing.T) {
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	bad := "not-a-date"
-	_, err := svc.UpdateTodo("t1", "space-A", "u1", "x", nil, nil, &bad, nil)
+	_, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, nil, &bad, nil)
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("bad deadline should return ErrInvalidInput, got %v", err)
 	}
@@ -75,3 +75,4 @@ func mustParse(t *testing.T, s string) time.Time {
 	}
 	return v
 }
+

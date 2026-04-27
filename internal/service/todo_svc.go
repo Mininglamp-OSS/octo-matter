@@ -152,7 +152,7 @@ func (s *TodoService) canAccessTodo(todo *model.Todo, userID string) bool {
 }
 
 // UpdateTodo applies editable fields.
-func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, description *string, goalID *string, deadline, remindAt *string) (*model.Todo, error) {
+func (s *TodoService) UpdateTodo(id, spaceID, userID string, title *string, description *string, goalID *string, deadline, remindAt *string) (*model.Todo, error) {
 	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
@@ -160,7 +160,9 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, descr
 	if todo.CreatorID != userID {
 		return nil, apperr.ErrForbidden
 	}
-	todo.Title = title
+	if title != nil {
+		todo.Title = *title
+	}
 	todo.Description = description
 	if goalID != nil && *goalID != "" {
 		goal, err := s.goalRepo.GetByID(*goalID, todo.SpaceID)
