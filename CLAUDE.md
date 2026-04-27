@@ -1,6 +1,6 @@
 # Octo Todo - todo-service
 
-Goal-driven kanban task microservice. Full context: README.md, docs/DESIGN.md.
+Simple task microservice with open/closed status model. Full context: README.md, docs/DESIGN.md.
 
 ## Tech Stack
 - Go 1.25+, Gin, gocraft/dbr/v2 (MySQL — NOT GORM)
@@ -19,17 +19,17 @@ mysql ... < migrations/001_init.up.sql   # apply migrations
 `cmd/main.go` wires: config -> db -> repos -> services -> handlers -> Gin server.
 Layers (strict direction, no skipping):
 - `internal/handler/`    HTTP (Gin), request binding, resp helpers
-- `internal/service/`    business logic, permissions, state machine
+- `internal/service/`    business logic, permissions
 - `internal/repository/` dbr queries (parameterized; no raw SQL concat)
-- `internal/model/`      domain structs + state machine (todo.go)
-- `internal/auth/`       middleware (currently stubbed)
+- `internal/model/`      domain structs (todo.go, goal.go, assignee.go, etc.)
+- `internal/auth/`       middleware (stub/jwt/bot modes)
 - `internal/config/`     env-based config
 
 ## Key Invariants (gotchas)
 - **Space scoping**: every query MUST filter by `space_id` from `X-Space-ID` header. Missing it = cross-tenant leak.
-- **Todo state machine** (model/todo.go `ValidTransitions`): `draft->planned->in_progress->done|cancelled`, plus `cancelled->draft`. Use `CanTransition` in services; never mutate status directly in repos.
-- **Permissions**: creator can do all transitions + edits; assignees only `planned->in_progress` and `in_progress->done`. Enforce in service layer.
-- **Auth is stubbed** — `internal/auth/middleware.go` parses `uid@name@role` tokens when `AUTH_MODE=stub` (logs a startup WARN). `AUTH_MODE=remote` is the planned octo-auth-client SDK path and currently panics at startup. `APP_ENV=prod` rejects `AUTH_MODE=stub`.
+- **Todo status**: `open` or `closed`. No state machine. Creator or assignee can close/reopen. SetStatus is idempotent.
+- **Permissions**: creator can do all edits + delete; assignees can close/reopen and update their own completion status.
+- **Auth modes** — `AUTH_MODE=stub` parses `uid@name@role` tokens (dev only, logs WARN). `AUTH_MODE=jwt` validates RS256 JWTs via JWKS. `AUTH_MODE=bot` validates via POST /v1/auth/verify-bot. `APP_ENV=prod` rejects `AUTH_MODE=stub`.
 - **UUIDs** generated in app (google/uuid), not DB.
 - **dbr usage**: use `sess.Select(...).Where(...)` builders; never string-concat user input. See repository/*.go for patterns.
 

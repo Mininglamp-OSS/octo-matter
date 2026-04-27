@@ -6,9 +6,9 @@
 > - Composite cursor `(created_at, id)` spelled out — a plain `last_id` cursor is not safe under same-second inserts.
 > - `X-Space-ID` header only; query-string alternative removed (leaks into access logs / Referer).
 > - Flat `source_channel_id / source_channel_type / source_name` fields on both request and response — matches the DB and list-filter query shape.
-> - Enumerated error codes carry `details` (e.g. `INVALID_TRANSITION.details.allowed`).
+> - Enumerated error codes carry `details` (e.g. `VALIDATION_ERROR for invalid status values`).
 > - `GET /goals/:id` requires goal assignment, not just space membership.
-> - `POST /todos` response includes `allowed_transitions` so clients skip a follow-up `GET`.
+> - `POST /todos` response includes assignees so clients skip a follow-up `GET`.
 > - `PUT /todos/:id` field semantics: absent = unchanged, `""` = clear, non-empty = set.
 > - `/health/ready` probes MySQL (and Redis / Octo IM server when wired). `/health` stays a cheap liveness check.
 > - `AUTH_MODE=stub` + `APP_ENV=prod` is a startup error; `AUTH_MODE=remote` panics until the SDK is wired (no silent fallback).
@@ -19,19 +19,19 @@
 
 Octo  is an enterprise messaging and collaboration platform. As the platform evolves, productivity tools become essential. To-Dos — the ability to create, assign, track, and complete tasks — is a foundational productivity primitive.
 
-This document defines the architecture for **Octo Todo**: a standalone microservice integrated into the Octo ecosystem. Authentication is delegated to Octo IM server via a new internal auth API (Phase A of the Octo unified auth strategy). Bot and agent automation goes through a unified `octo-cli`. The core model is **status-driven todos with optional goal-based kanban organization**.
+This document defines the architecture for **Octo Todo**: a standalone microservice integrated into the Octo ecosystem. Authentication is delegated to Octo IM server via a new internal auth API (Phase A of the Octo unified auth strategy). Bot and agent automation goes through a unified `octo-cli`. The core model is **simple open/closed todo tracking with optional goal organization**.
 
 ### Goals
 
 1. **Independent microservice** — `todo-service` runs standalone with its own MySQL database
-2. **Status-driven task model** — Fixed state machine (`draft -> planned -> in_progress -> done / cancelled`) with assignees (human or bot)
-3. **Goal-driven kanban (optional)** — Todos optionally associate with a goal; kanban view groups todos by status
+2. **Status-driven task model** — Simple open/closed status model (GitHub-style) with assignees (human or bot)
+3. **Goal organization (optional) — Todos optionally associate with a goal; sidebar lists goals, selecting one shows its todos
 4. **Unified CLI** — `octo-cli` is the single CLI entry point for all Octo services (`octo todo ...`)
 5. **Unified auth via Octo IM server** — Token validation through Octo IM server internal API + `octo-auth-client` SDK
 6. **Source context tracking** — Every todo records where it was created (group, thread, subsystem), enabling per-conversation todo panels
 7. **Space isolation** — All data is scoped to a Space; cross-Space access is forbidden
 8. **Chat integration** — Create and update todos from Octo chat conversations
-9. **Web interface** — `todo-web` delivers a React-based kanban board UI
+**Web interface** — `todo-web` delivers a React-based todo list UI
 
 ### Non-Goals (v1)
 
@@ -39,7 +39,7 @@ This document defines the architecture for **Octo Todo**: a standalone microserv
 - Sub-tasks / checklist items within a todo
 - File editing or document collaboration
 - Real-time collaborative editing of descriptions
-- Custom workflow states beyond the fixed state machine
+- Custom workflow states or additional status values
 
 ## Unified Auth Strategy
 
@@ -139,7 +139,7 @@ The SDK handles:
 
 #### `goals`
 
-A goal is an optional organizational container. Its kanban view shows associated todos grouped by status.
+A goal is an optional organizational container for todos.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -154,7 +154,7 @@ A goal is an optional organizational container. Its kanban view shows associated
 
 #### `goal_assignees`
 
-Access control. Assignees can view the goal's kanban and create todos under it.
+Access control. Assignees can view the goal and create todos under it.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
@@ -177,7 +177,7 @@ The atomic unit. Fixed status + optional goal association + Space scoping.
 | title | varchar(500) | NOT NULL | Todo title |
 | description | text | nullable | Detailed description |
 | creator\_id | varchar(64) | NOT NULL | Creator (Octo UID) |
-| status | enum('draft','planned','in\_progress','done','cancelled') | NOT NULL, default 'draft' | Current status |
+| status | enum('open','closed') | NOT NULL, default 'open' | Current status |
 | deadline | datetime(3) | nullable | Due date |
 | remind\_at | datetime(3) | nullable | Reminder time |
 | source\_channel\_id | varchar(255) | nullable | Source channel ID (group\_no or group\_no\_\_\_\_short\_id) |
@@ -253,27 +253,20 @@ CREATE INDEX idx_attachments_todo ON todo_attachments(todo_id);
 
 ## State Machine
 
-### Todo Status Transitions
+### Todo Status Model
 
-![State Machine](./c6-state.puml)
+Simple two-state model inspired by GitHub Issues:
 
-**Valid transitions:**
-
-| From | To | Who can trigger |
-|------|----|-----------------|
-| draft | planned | Creator |
-| draft | cancelled | Creator |
-| planned | in\_progress | Creator or assignee |
-| planned | cancelled | Creator |
-| in\_progress | done | Creator or assignee |
-| in\_progress | cancelled | Creator |
-| cancelled | draft | Creator (reactivate) |
+| Status | Meaning |
+|--------|---------|
+| `open` | Needs work (default on creation) |
+| `closed` | Done or won't do |
 
 **Rules:**
-- Forward transitions + one reactivation path (`cancelled -> draft`)
-- When todo transitions to `done`, all assignees auto-marked `done` **atomically in the same transaction** — a partial state (status=done with pending assignees) must never be observable.
-- API response includes `allowed_transitions` for the current status on `POST /todos`, `GET /todos/:id`, and `PUT /todos/:id/status`, so clients never hardcode the state machine.
-- Illegal transitions return `INVALID_TRANSITION` (400) with `details.current` and `details.allowed` — the client does not need a second round-trip to learn what is allowed.
+- Creator or assignee can close or reopen. No state machine, no role-based transition matrix.
+- Setting the current status is a no-op (idempotent).
+- When a todo is closed, all assignees are auto-marked `done` atomically in the same transaction.
+- Invalid status values return `VALIDATION_ERROR` (400).
 
 **Assignee status (independent):**
 - `pending` -> `done`: Assignee marks self done
@@ -303,14 +296,13 @@ During Phase A, `AUTH_MODE=stub` parses `token` as `uid@name@role` without crypt
 ```json
 {
   "error": {
-    "code": "INVALID_TRANSITION",
-    "message": "Cannot transition from 'draft' to 'done'",
-    "details": { "current": "draft", "allowed": ["planned", "cancelled"] }
+    "code": "VALIDATION_ERROR",
+    "message": "status must be 'open' or 'closed'",
   }
 }
 ```
 
-`code` is a stable machine-readable enum (see Error Codes below). `message` is a human-readable string safe to render verbatim. `details` is optional and only populated for codes where it is specified (currently `INVALID_TRANSITION`; may extend).
+`code` is a stable machine-readable enum (see Error Codes below). `message` is a human-readable string safe to render verbatim. `details` is optional and only populated for codes where it is specified (currently only for VALIDATION_ERROR).
 
 ### RESTful Endpoints
 
@@ -322,21 +314,21 @@ Base path: `/api/v1`
 |--------|------|-------------|------|
 | POST | /goals | Create goal | Required |
 | GET | /goals | List goals (in current Space) | Required (space member) |
-| GET | /goals/:id | Get goal detail (kanban: todos by status) | Required (goal member) |
+| GET | /goals/:id | Get goal detail (metadata + assignees) | Required (goal member) |
 | PUT | /goals/:id | Update goal | Required (owner) |
 | DELETE | /goals/:id | Archive goal | Required (owner) |
 | POST | /goals/:id/assignees | Add assignees | Required (creator) |
 | DELETE | /goals/:id/assignees/:uid | Remove assignee | Required (creator) |
 
-Goal detail (`GET /goals/:id`) returns the kanban view and is scoped to goal assignees. Non-assignees in the same Space receive `403 FORBIDDEN` — listing goals does **not** imply permission to open any of them.
+Goal detail (`GET /goals/:id`) returns metadata and assignees, scoped to goal assignees. Non-assignees in the same Space receive `403 FORBIDDEN`.
 
 #### Todo CRUD
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| POST | /todos | Create todo (response includes `allowed_transitions`) | Required |
+| POST | /todos | Create todo | Required |
 | GET | /todos | List todos (filterable, cursor-paginated) | Required |
-| GET | /todos/:id | Get todo detail (includes `allowed_transitions`) | Required |
+| GET | /todos/:id | Get todo detail | Required |
 | PUT | /todos/:id | Update todo (see field semantics below) | Required (creator) |
 | PUT | /todos/:id/status | Transition status | Required (creator or assignee) |
 | DELETE | /todos/:id | Soft delete | Required (creator) |
@@ -387,7 +379,7 @@ Response:
 - `limit` defaults to 20 and is clamped to `[1, 100]`.
 - The server fetches `limit + 1` rows internally; if the extra row exists, `has_more=true` and it is stripped from `data`. This means `has_more` is exact — clients stop paging as soon as it is `false`.
 - `next_cursor` is only emitted when `has_more=true`.
-- **No `total` field.** Cursor-paginated lists do not carry a row count — computing it would require an O(N) COUNT on every page. Clients that need a count use a dedicated stats endpoint (e.g. `GET /goals/:id` returns `stats` for a goal's kanban).
+- **No `total` field.** Cursor-paginated lists do not carry a row count — computing it would require an O(N) COUNT on every page. Clients that need a count should maintain it client-side.
 
 ### Request / Response Examples
 
@@ -409,7 +401,7 @@ X-Space-ID: sp_abc123
 }
 ```
 
-Response (`201 Created`) — bare object, includes the computed `allowed_transitions`:
+Response (`201 Created`) — bare object:
 
 ```json
 {
@@ -418,8 +410,7 @@ Response (`201 Created`) — bare object, includes the computed `allowed_transit
   "goal_id": "g1a2b3c4-d5e6-7890-abcd-ef1234567890",
   "title": "Complete requirements document",
   "creator_id": "d0bb36669625432898ab339c78b8db94",
-  "status": "draft",
-  "allowed_transitions": ["planned", "cancelled"],
+  "status": "open",
   "assignees": [
     {"user_id": "d0bb36669625432898ab339c78b8db94", "status": "pending"},
     {"user_id": "bot_reviewer_uid", "status": "pending"}
@@ -441,15 +432,14 @@ PUT /api/v1/todos/t1b2c3d4/status
 token: <octo-user-token>
 X-Space-ID: sp_abc123
 
-{ "status": "in_progress" }
+{ "status": "closed" }
 ```
 
 Success (`200 OK`):
 ```json
 {
   "id": "t1b2c3d4",
-  "status": "in_progress",
-  "allowed_transitions": ["done", "cancelled"],
+  "status": "closed",
   "assignees": [ /* ... */ ]
 }
 ```
@@ -458,9 +448,8 @@ Invalid transition (`400 Bad Request`):
 ```json
 {
   "error": {
-    "code": "INVALID_TRANSITION",
-    "message": "Cannot transition from 'draft' to 'done'",
-    "details": { "current": "draft", "allowed": ["planned", "cancelled"] }
+    "code": "VALIDATION_ERROR",
+    "message": "status must be 'open' or 'closed'",
   }
 }
 ```
@@ -473,22 +462,21 @@ token: <octo-user-token>
 X-Space-ID: sp_abc123
 ```
 
-Response — todos grouped by status for kanban rendering:
+Response — goal metadata and assignees:
 ```json
 {
   "id": "g1a2b3c4",
   "title": "Q2 Product Launch",
   "description": "Ship v2.0 by June 30",
-  "columns": {
-    "draft": [...],
-    "planned": [...],
-    "in_progress": [...],
-    "done": [...],
-    "cancelled": [...]
-  },
-  "stats": {"total": 12, "done": 5, "in_progress": 3}
+  "creator_id": "u_merlin",
+  "assignees": [
+    { "id": "ga1", "goal_id": "g1a2b3c4", "user_id": "u_merlin" },
+    { "id": "ga2", "goal_id": "g1a2b3c4", "user_id": "u_feifei" }
+  ]
 }
 ```
+
+To list todos under this goal, use `GET /api/v1/todos?goal_id=g1a2b3c4` with cursor pagination.
 
 #### List Todos by Source (Chat Panel Query)
 
@@ -512,7 +500,7 @@ All error responses carry a stable `code`. Clients should branch on `code`, not 
 | `GOAL_NOT_FOUND` | 404 | Goal id does not exist in the current Space | — |
 | `TODO_NOT_FOUND` | 404 | Todo id does not exist in the current Space (or is soft-deleted) | — |
 | `ASSIGNEE_NOT_FOUND` | 404 | Assignee row does not exist for the specified `(todo_id, user_id)` | — |
-| `INVALID_TRANSITION` | 400 | Status transition not permitted for current state or caller role | `{current, allowed}` |
+| `VALIDATION_ERROR` | 400 | Invalid status value (must be 'open' or 'closed') | `` |
 | `DUPLICATE_ASSIGNEE` | 409 | `(todo_id, user_id)` already exists | — |
 | `SPACE_FORBIDDEN` | 403 | Caller is not a member of the target Space (enforced by SpaceMiddleware once Phase A auth is wired) | — |
 | `RATE_LIMITED` | 429 | Per-endpoint or global limit exceeded | `{retry_after_sec}` |
@@ -531,7 +519,7 @@ Authorization: Bearer <todo-bot-token>
 {
   "channel_id": "<target_group_no>",
   "channel_type": 2,
-  "payload": { "type": 1, "content": "Task 'Review PR' moved to in_progress by Merlin" }
+  "payload": { "type": 1, "content": "Task 'Review PR' closed by Merlin" }
 }
 ```
 
@@ -574,7 +562,7 @@ octo <service> <command> [flags]
 Services:
   auth        Authentication management
   todo        Task management
-  goal        Goal / kanban management
+  goal        Goal management
   (future)    knowledge, workflow, ...
 
 Global Flags:
@@ -599,10 +587,10 @@ octo todo create "Review PR #42" \
   --assign d0bb366,bot_reviewer
 
 # Transition status
-octo todo status t1b2c3d4 in_progress
+octo todo close t1b2c3d4
 
 # List todos in current space
-octo todo list --assignee me --status in_progress
+octo todo list --assignee me --status open
 
 # Bot usage (JSON output)
 octo todo list --format json --assignee bot_reviewer
@@ -622,7 +610,7 @@ octo todo list --format json --assignee bot_reviewer
 ### Kanban UX
 
 - **5 status columns**: Draft, Planned, In Progress, Done, Cancelled
-- **Drag & drop**: validates against `allowed_transitions` from API; invalid drops show error tooltip; Done/Cancelled columns cannot be dragged **out** (except Cancelled -> Draft to reactivate)
+- Todo list with open/closed toggle and status badges
 - **Bot assignees**: robot icon distinct from human avatars
 - **Space scoping**: space selector in top nav
 
@@ -630,7 +618,7 @@ octo todo list --format json --assignee bot_reviewer
 
 In Octo chat windows, a toggle button opens a todo side panel:
 - Queries `GET /api/v1/todos?source_channel_id=<current>&source_channel_type=<type>`
-- Shows todos grouped by status with quick-create and status badges
+- Shows todos list with quick-create and status badges
 - Auto-refreshes via polling
 
 ## Service Internal Architecture
@@ -644,7 +632,7 @@ todo-service/
 |   |-- config/config.go
 |   |-- model/
 |   |   |-- goal.go
-|   |   |-- todo.go            # includes state machine
+|   |   |-- todo.go            # open/closed status model
 |   |   |-- assignee.go
 |   |   |-- comment.go
 |   |   |-- attachment.go
@@ -654,7 +642,7 @@ todo-service/
 |   |   |-- assignee_repo.go
 |   |-- service/
 |   |   |-- goal_svc.go
-|   |   |-- todo_svc.go        # state machine enforcement
+|   |   |-- todo_svc.go        # status + permissions
 |   |   |-- notification_svc.go
 |   |-- handler/
 |   |   |-- goal_handler.go
@@ -729,7 +717,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 - octo-auth-client SDK (Go package)
 - MySQL schema + migrations
 - Goal CRUD API + Space isolation
-- Todo CRUD API + state machine + pagination
+- Todo CRUD API + open/closed status + pagination
 - Assignee management
 - octo-cli: `octo auth` + `octo todo` + `octo goal`
 - Tests (target: 80% coverage)
@@ -739,7 +727,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 - React SPA (Vite + Ant Design)
 - Octo token auth flow
-- Goal list + Kanban board (drag-and-drop with transition validation)
+- Goal list + todo list with open/closed status toggle
 - My Todos list (cross-goal, filterable)
 - Todo detail modal
 - Responsive
@@ -788,8 +776,8 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 
 | Feature | WeCom To-Dos | Trello / Notion | Octo Todo |
 |---------|-------------|----------------|-----------|
-| Goal-driven kanban | No | Partial | Yes |
-| Fixed state machine | No | No | Yes (5+1 states) |
+| Goal organization | No | Partial | Yes (optional grouping) |
+| Simple open/closed status | No | No | Yes |
 | Space isolation | N/A | Workspace | Yes |
 | Create from chat | Yes | No | Yes |
 | Assign to bots | No | No | Yes |
@@ -810,31 +798,16 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 | Assignee update | 100 | 1 min |
 | Global per-user | 500 | 1 min |
 
-### Appendix C: State Machine
+### Appendix C: Status Model
 
 ```
-                 +-------+
-                 | draft |<---------+
-                 +---+---+          |
-                     |          reactivate
-                plan |              |
-                     v              |
-               +---------+    +-----------+
-               | planned  |--->| cancelled |
-               +----+----+    +-----------+
-                    |               ^
-              start |               |
-                    v               |
-             +--------------+       |
-             | in_progress  |-------+
-             +------+-------+
-                    |
-            complete|
-                    v
-                +------+
-                | done |
-                +------+
+    +------+      close      +--------+
+    | open | ───────────▸ | closed |
+    +------+ ◂─────────── +--------+
+                 reopen
 ```
+
+Creator or assignee can close or reopen. No state machine, no role matrix.
 
 ### Appendix D: Octo IM server Channel Types Reference
 
