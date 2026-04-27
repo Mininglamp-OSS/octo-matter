@@ -303,16 +303,4 @@ func (s *TodoService) RemoveAssignee(todoID, spaceID, userID, assigneeUserID str
 	return s.assigneeRepo.Delete(todoID, assigneeUserID)
 }
 
-func (s *TodoService) UpdateAssigneeStatus(todoID, spaceID, userID string, status model.AssigneeStatus) error {
-	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
-		return err
-	}
-	isAssignee, err := s.assigneeRepo.IsAssignee(todoID, userID)
-	if err != nil {
-		return err
-	}
-	if !isAssignee {
-		return apperr.ErrForbidden
-	}
-	return s.assigneeRepo.UpdateStatus(todoID, userID, string(status))
-}
+

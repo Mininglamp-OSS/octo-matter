@@ -84,7 +84,6 @@ func SetupRouter(
 		todos.DELETE("/:id", todoH.Delete)
 		todos.POST("/:id/assignees", todoH.AddAssignee)
 		todos.DELETE("/:id/assignees/:uid", todoH.RemoveAssignee)
-		todos.PUT("/:id/assignee-status", todoH.UpdateAssigneeStatus)
 
 		// Comments
 		todos.POST("/:id/comments", commentH.Create)
