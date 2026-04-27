@@ -19,20 +19,13 @@ type goalStore interface {
 	IsAssignee(goalID, userID string) (bool, error)
 }
 
-// goalTodoStore is the subset of TodoRepo needed for kanban view.
-type goalTodoStore interface {
-	CountByGoalStatus(spaceID, goalID string) (map[string]int, error)
-	ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLimit int) (map[string][]*model.Todo, error)
-}
-
 type GoalService struct {
 	goalRepo goalStore
-	todoRepo goalTodoStore
 	tx       txRunner
 }
 
-func NewGoalService(goalRepo goalStore, todoRepo goalTodoStore, tx txRunner) *GoalService {
-	return &GoalService{goalRepo: goalRepo, todoRepo: todoRepo, tx: tx}
+func NewGoalService(goalRepo goalStore, tx txRunner) *GoalService {
+	return &GoalService{goalRepo: goalRepo, tx: tx}
 }
 
 func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *string, assigneeIDs []string) (*model.Goal, error) {
@@ -87,11 +80,11 @@ func (s *GoalService) ListGoals(spaceID string, filter repository.GoalFilter) (*
 	}, nil
 }
 
+// GoalDetail is the enriched response for a single goal (no kanban — just
+// metadata + assignees).
 type GoalDetail struct {
 	*model.Goal
-	Assignees  []*model.GoalAssignee    `json:"assignees"`
-	TodoCounts map[string]int           `json:"todo_counts"`
-	Todos      map[string][]*model.Todo `json:"todos"`
+	Assignees []*model.GoalAssignee `json:"assignees"`
 }
 
 // GetGoal returns goal detail. Only creator or assignee can access.
@@ -107,19 +100,9 @@ func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	counts, err := s.todoRepo.CountByGoalStatus(spaceID, id)
-	if err != nil {
-		return nil, err
-	}
-	todos, err := s.todoRepo.ListByGoalGroupedByStatus(spaceID, id, 50)
-	if err != nil {
-		return nil, err
-	}
 	return &GoalDetail{
-		Goal:       goal,
-		Assignees:  assignees,
-		TodoCounts: counts,
-		Todos:      todos,
+		Goal:      goal,
+		Assignees: assignees,
 	}, nil
 }
 
@@ -172,7 +155,6 @@ func (s *GoalService) RemoveAssignee(goalID, spaceID, userID, targetUID string) 
 	return s.goalRepo.RemoveAssignee(goalID, targetUID)
 }
 
-// canAccessGoal checks if user is creator or assignee of the goal.
 func (s *GoalService) canAccessGoal(goal *model.Goal, userID string) bool {
 	if goal.CreatorID == userID {
 		return true

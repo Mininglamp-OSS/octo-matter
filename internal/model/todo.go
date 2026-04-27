@@ -2,92 +2,19 @@ package model
 
 import "time"
 
-// TodoStatus represents the status of a todo.
+// TodoStatus represents the status of a todo. Follows the GitHub model:
+// open (needs work) and closed (done or won't do). No state machine — any
+// creator or assignee can close or reopen.
 type TodoStatus string
 
 const (
-	TodoStatusDraft      TodoStatus = "draft"
-	TodoStatusPlanned    TodoStatus = "planned"
-	TodoStatusInProgress TodoStatus = "in_progress"
-	TodoStatusDone       TodoStatus = "done"
-	TodoStatusCancelled  TodoStatus = "cancelled"
+	TodoStatusOpen   TodoStatus = "open"
+	TodoStatusClosed TodoStatus = "closed"
 )
 
-// ValidTransitions defines which status transitions are allowed and who can trigger them.
-// Key: from status, Value: map of target status -> required role ("creator" or "creator_or_assignee").
-var ValidTransitions = map[TodoStatus]map[TodoStatus]string{
-	TodoStatusDraft: {
-		TodoStatusPlanned:   "creator",
-		TodoStatusCancelled: "creator",
-	},
-	TodoStatusPlanned: {
-		TodoStatusInProgress: "creator_or_assignee",
-		TodoStatusCancelled:  "creator",
-	},
-	TodoStatusInProgress: {
-		TodoStatusDone:      "creator_or_assignee",
-		TodoStatusCancelled: "creator",
-	},
-	TodoStatusCancelled: {
-		TodoStatusDraft: "creator",
-	},
-}
-
-// AllowedTransitions returns the list of statuses a todo can transition to from its current status.
-func AllowedTransitions(current TodoStatus) []TodoStatus {
-	targets, ok := ValidTransitions[current]
-	if !ok {
-		return nil
-	}
-	result := make([]TodoStatus, 0, len(targets))
-	for target := range targets {
-		result = append(result, target)
-	}
-	return result
-}
-
-// AllowedTransitionsForRole returns only the transitions the caller can perform.
-func AllowedTransitionsForRole(current TodoStatus, isCreator, isAssignee bool) []TodoStatus {
-	targets, ok := ValidTransitions[current]
-	if !ok {
-		return nil
-	}
-	var result []TodoStatus
-	for target, requiredRole := range targets {
-		switch requiredRole {
-		case "creator":
-			if isCreator {
-				result = append(result, target)
-			}
-		case "creator_or_assignee":
-			if isCreator || isAssignee {
-				result = append(result, target)
-			}
-		}
-	}
-	return result
-}
-
-// CanTransition checks if a transition from current to target is valid for the given user role.
-// userIsCreator: the user is the todo creator.
-// userIsAssignee: the user is an assignee of the todo.
-func CanTransition(current, target TodoStatus, userIsCreator, userIsAssignee bool) bool {
-	targets, ok := ValidTransitions[current]
-	if !ok {
-		return false
-	}
-	requiredRole, ok := targets[target]
-	if !ok {
-		return false
-	}
-	switch requiredRole {
-	case "creator":
-		return userIsCreator
-	case "creator_or_assignee":
-		return userIsCreator || userIsAssignee
-	default:
-		return false
-	}
+// IsValidStatus reports whether s is a known TodoStatus.
+func IsValidStatus(s TodoStatus) bool {
+	return s == TodoStatusOpen || s == TodoStatusClosed
 }
 
 // Todo represents the atomic task unit.

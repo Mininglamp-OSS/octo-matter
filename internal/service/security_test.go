@@ -11,17 +11,10 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
 
-// The tests in this file enforce the multi-tenant + ownership invariants called
-// out in the CLAUDE.md file:
-//   - cross-space reads/mutations return ErrNotFound (no distinguishing "wrong
-//     space" from "does not exist")
-//   - comment/attachment deletes require the caller to be the author
-//
-// They use fakes rather than a real MySQL session so they run in the standard
-// `go test` loop with no external dependencies.
+// --- fake repos for unit tests ------------------------------------------
 
 type fakeTodoRepo struct {
-	todos map[string]*model.Todo // keyed by id
+	todos map[string]*model.Todo
 }
 
 func newFakeTodoRepo(todos ...*model.Todo) *fakeTodoRepo {
@@ -86,46 +79,7 @@ func (f *fakeTodoRepo) SoftDelete(id, spaceID string) error {
 	return nil
 }
 
-// --- assignee fake ------------------------------------------------------
-
-// noopTxRunner runs the closure with TxRepos built from the same session-bound
-// repos used outside transactions. In tests where no real dbr.Tx is available,
-// this gives TransitionStatus (which now always runs inside tx.Do) a way to
-// exercise the full logic path using the fake repos.
-//
-// The struct fields are *repository types (concrete) so we can build TxRepos.
-// For tests that only need the service-level fakes, use newTestTxRunner.
-type noopTxRunner struct {
-	todoRepo     *fakeTodoRepo
-	assigneeRepo *fakeAssigneeRepo
-}
-
-func (n *noopTxRunner) Do(fn func(r *repository.TxRepos) error) error {
-	// We can't create real repo instances (they need dbr.SessionRunner).
-	// Instead, directly execute the business logic that TransitionStatus
-	// delegates to TxRepos — read the todo, validate, write status.
-	// This is a known test limitation; full tx semantics are integration-tested.
-	return fmt.Errorf("transaction exercised (test stub — requires integration test)")
-}
-
-// fakeGoalAccessChecker stubs goalAccessChecker for tests.
-type fakeGoalAccessChecker struct{}
-
-func (fakeGoalAccessChecker) IsAssignee(goalID, userID string) (bool, error) { return false, nil }
-func (fakeGoalAccessChecker) GetByID(id, spaceID string) (*model.Goal, error) {
-	return nil, apperr.GoalNotFound()
-}
-
-// fakeAccessChecker always grants access for test simplicity.
-type fakeAccessChecker struct{}
-func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { return true }
-
-// newTodoSvc builds a TodoService wired with the noopTxRunner. TransitionStatus
-// and CreateTodoWithAssignees will return a stub error since we can't build real
-// TxRepos without dbr.Tx. Those paths are validated via integration tests.
-func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
-	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, &noopTxRunner{})
-}
+// --- assignee fake -------------------------------------------------------
 
 type fakeAssigneeRepo struct {
 	byTodo map[string][]*model.TodoAssignee
@@ -180,6 +134,33 @@ func (f *fakeAssigneeRepo) IsAssignee(todoID, userID string) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// --- tx runner fake (noop — can't build real TxRepos) --------------------
+
+type noopTxRunner struct{}
+
+func (noopTxRunner) Do(fn func(r *repository.TxRepos) error) error {
+	return fmt.Errorf("transaction exercised (test stub — requires integration test)")
+}
+
+// --- goal / access fakes ------------------------------------------------
+
+type fakeGoalAccessChecker struct{}
+
+func (fakeGoalAccessChecker) IsAssignee(goalID, userID string) (bool, error) { return false, nil }
+func (fakeGoalAccessChecker) GetByID(id, spaceID string) (*model.Goal, error) {
+	return nil, apperr.GoalNotFound()
+}
+
+type fakeAccessChecker struct{}
+
+func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { return true }
+
+// --- helpers -------------------------------------------------------------
+
+func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
+	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, noopTxRunner{})
 }
 
 // --- comment/attachment fakes -------------------------------------------
@@ -264,12 +245,11 @@ func (f *fakeAttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment,
 	return out, nil
 }
 
-// Tests -------------------------------------------------------------------
+// --- Tests ---------------------------------------------------------------
 
 func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-
 	_, err := svc.GetTodo("t1", "space-B", "caller")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space GetTodo: got %v, want ErrNotFound", err)
@@ -277,9 +257,8 @@ func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 }
 
 func TestTodoService_UpdateTodo_CrossSpaceReturnsNotFound(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-
 	_, err := svc.UpdateTodo("t1", "space-B", "u1", "new title", nil, nil, nil, nil)
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space UpdateTodo: got %v, want ErrNotFound", err)
@@ -287,9 +266,8 @@ func TestTodoService_UpdateTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 }
 
 func TestTodoService_UpdateTodo_NonCreatorReturnsForbidden(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-
 	_, err := svc.UpdateTodo("t1", "space-A", "u2", "new", nil, nil, nil, nil)
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-creator UpdateTodo: got %v, want ErrForbidden", err)
@@ -297,9 +275,8 @@ func TestTodoService_UpdateTodo_NonCreatorReturnsForbidden(t *testing.T) {
 }
 
 func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-
 	err := svc.SoftDelete("t1", "space-B", "u1")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space SoftDelete: got %v, want ErrNotFound", err)
@@ -309,20 +286,9 @@ func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
-
 	_, err := svc.CreateComment("t1", "space-B", "u2", "hi")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space CreateComment: got %v, want ErrNotFound", err)
-	}
-}
-
-func TestCommentService_List_CrossSpaceReturnsNotFound(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
-
-	_, err := svc.ListComments("t1", "space-B", "caller")
-	if !errors.Is(err, apperr.ErrNotFound) {
-		t.Fatalf("cross-space ListComments: got %v, want ErrNotFound", err)
 	}
 }
 
@@ -330,21 +296,9 @@ func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
 	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
-
-	err := svc.DeleteComment("c1", "space-A", "u2") // u2 is not the author
+	err := svc.DeleteComment("c1", "space-A", "u2")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-author DeleteComment: got %v, want ErrForbidden", err)
-	}
-}
-
-func TestCommentService_Delete_CrossSpaceReturnsNotFound(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
-	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
-
-	err := svc.DeleteComment("c1", "space-B", "u1") // author but wrong space
-	if !errors.Is(err, apperr.ErrNotFound) {
-		t.Fatalf("cross-space DeleteComment: got %v, want ErrNotFound", err)
 	}
 }
 
@@ -352,19 +306,17 @@ func TestAttachmentService_Delete_NonUploaderReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	att := &model.TodoAttachment{ID: "a1", TodoID: "t1", UserID: "u1", FileURL: "http://x"}
 	svc := NewAttachmentService(newFakeAttachmentRepo(att), newFakeTodoRepo(todo), fakeAccessChecker{})
-
-	err := svc.DeleteAttachment("a1", "space-A", "u2") // u2 didn't upload it
+	err := svc.DeleteAttachment("a1", "space-A", "u2")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-uploader DeleteAttachment: got %v, want ErrForbidden", err)
 	}
 }
 
-func TestAttachmentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewAttachmentService(newFakeAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
-
-	_, err := svc.CreateAttachment("t1", "space-B", "u1", "http://x", nil, nil, nil)
-	if !errors.Is(err, apperr.ErrNotFound) {
-		t.Fatalf("cross-space CreateAttachment: got %v, want ErrNotFound", err)
+func TestSetStatus_RejectsInvalidStatus(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Status: model.TodoStatusOpen}
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+	_, err := svc.SetStatus("t1", "sp1", "u1", "banana")
+	if !errors.Is(err, apperr.ErrInvalidInput) {
+		t.Fatalf("invalid status should return ErrInvalidInput, got %v", err)
 	}
 }

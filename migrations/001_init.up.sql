@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS todos (
     title                VARCHAR(500)                                                   NOT NULL,
     description          TEXT                                                           NULL,
     creator_id           VARCHAR(64)                                                    NOT NULL,
-    status               ENUM('draft','planned','in_progress','done','cancelled')       NOT NULL DEFAULT 'draft',
+    status               ENUM('open','closed')                                          NOT NULL DEFAULT 'open',
     deadline             DATETIME(3)                                                    NULL,
     remind_at            DATETIME(3)                                                    NULL,
     source_channel_id    VARCHAR(255)                                                   NULL,

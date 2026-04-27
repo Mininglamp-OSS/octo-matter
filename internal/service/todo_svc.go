@@ -9,8 +9,7 @@ import (
 )
 
 // todoStore is the narrow TodoRepo surface TodoService depends on outside of
-// transactional flows. Declared at the service layer (not the repo layer) so
-// tests can swap in fakes without bringing in real dbr/MySQL machinery.
+// transactional flows.
 type todoStore interface {
 	Create(todo *model.Todo) error
 	GetByID(id, spaceID string) (*model.Todo, error)
@@ -29,9 +28,7 @@ type assigneeStore interface {
 	IsAssignee(todoID, userID string) (bool, error)
 }
 
-// txRunner runs a closure against a bundle of tx-bound repos. Satisfied by
-// *repository.TxManager in production and by tests that need to exercise the
-// atomic flows.
+// txRunner runs a closure against a bundle of tx-bound repos.
 type txRunner interface {
 	Do(fn func(r *repository.TxRepos) error) error
 }
@@ -54,15 +51,10 @@ func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, goalRepo goa
 }
 
 // CreateTodoWithAssignees creates the todo and all its initial assignees inside
-// a single transaction. A failure on any assignee rolls back the todo too,
-// which is the only way to avoid orphan rows when a duplicate assignee_id or
-// a dead connection aborts the second write.
-//
-// Returns a fully-populated TodoDetail so the client has everything it needs
-// (assignees, allowed_transitions) without a follow-up GET.
+// a single transaction.
 func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []string) (*TodoDetail, error) {
 	if todo.Status == "" {
-		todo.Status = model.TodoStatusDraft
+		todo.Status = model.TodoStatusOpen
 	}
 	var created []*model.TodoAssignee
 	err := s.tx.Do(func(r *repository.TxRepos) error {
@@ -87,9 +79,8 @@ func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []st
 		return nil, err
 	}
 	return &TodoDetail{
-		Todo:               todo,
-		Assignees:          created,
-		AllowedTransitions: model.AllowedTransitionsForRole(todo.Status, true, false),
+		Todo:      todo,
+		Assignees: created,
 	}, nil
 }
 
@@ -105,8 +96,6 @@ func (s *TodoService) ListTodos(spaceID string, filter repository.TodoFilter) (*
 		return nil, err
 	}
 	var nextCursor string
-	// Only emit next_cursor when there's a next page — repo returns the exact
-	// has_more by fetching limit+1 rows internally, so we don't have to guess.
 	if hasMore && len(todos) > 0 {
 		last := todos[len(todos)-1]
 		nextCursor = repository.EncodeCursor(repository.Cursor{
@@ -121,10 +110,10 @@ func (s *TodoService) ListTodos(spaceID string, filter repository.TodoFilter) (*
 	}, nil
 }
 
+// TodoDetail is the enriched response for a single todo.
 type TodoDetail struct {
 	*model.Todo
-	Assignees          []*model.TodoAssignee `json:"assignees"`
-	AllowedTransitions []model.TodoStatus    `json:"allowed_transitions"`
+	Assignees []*model.TodoAssignee `json:"assignees"`
 }
 
 func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
@@ -132,7 +121,6 @@ func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Visibility check: creator, assignee, or goal assignee
 	if !s.canAccessTodo(todo, userID) {
 		return nil, apperr.Forbidden("not authorized to view this todo")
 	}
@@ -140,17 +128,13 @@ func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	isCreator := todo.CreatorID == userID
-	isAssignee, _ := s.assigneeRepo.IsAssignee(id, userID)
 	return &TodoDetail{
-		Todo:               todo,
-		Assignees:          assignees,
-		AllowedTransitions: model.AllowedTransitionsForRole(todo.Status, isCreator, isAssignee),
+		Todo:      todo,
+		Assignees: assignees,
 	}, nil
 }
 
 // CanAccessTodo checks if user can view a todo: creator, assignee, or goal assignee.
-// Implements TodoAccessChecker interface.
 func (s *TodoService) CanAccessTodo(todo *model.Todo, userID string) bool {
 	return s.canAccessTodo(todo, userID)
 }
@@ -170,11 +154,7 @@ func (s *TodoService) canAccessTodo(todo *model.Todo, userID string) bool {
 	return false
 }
 
-// UpdateTodo applies editable fields. Deadline and RemindAt arrive as optional
-// RFC3339 strings from the JSON body; a malformed value returns an apperr-like
-// validation error that handlers map to 400. An explicit null (parsed to nil
-// pointer by the handler) is treated as "clear the field"; an absent field
-// leaves the existing value in place.
+// UpdateTodo applies editable fields.
 func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, description *string, goalID *string, deadline, remindAt *string) (*model.Todo, error) {
 	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
@@ -185,7 +165,6 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, descr
 	}
 	todo.Title = title
 	todo.Description = description
-	// Validate new goal: must exist in same space + caller has access
 	if goalID != nil && *goalID != "" {
 		goal, err := s.goalRepo.GetByID(*goalID, todo.SpaceID)
 		if err != nil {
@@ -219,8 +198,7 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title string, descr
 }
 
 // ParseOptionalRFC3339 returns (nil, nil) for the empty string (clear the
-// field) and otherwise parses as RFC3339. Returning an error on any other
-// input stops silent drops.
+// field) and otherwise parses as RFC3339.
 func ParseOptionalRFC3339(s string) (*time.Time, error) {
 	if s == "" {
 		return nil, nil
@@ -232,41 +210,36 @@ func ParseOptionalRFC3339(s string) (*time.Time, error) {
 	return &t, nil
 }
 
-// TransitionStatus changes a todo's status atomically. All transitions run
-// inside a transaction with SELECT ... FOR UPDATE to prevent TOCTOU races.
-// Moving to done additionally marks every assignee done in the same tx.
-func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.TodoStatus) (*TodoDetail, error) {
-	var (
-		todo      *model.Todo
-		isCreator bool
-		isAssignee bool
-	)
+// SetStatus changes a todo's status. No state machine — creator or assignee
+// can close or reopen. Uses a transaction with SELECT FOR UPDATE.
+func (s *TodoService) SetStatus(id, spaceID, userID string, target model.TodoStatus) (*TodoDetail, error) {
+	if !model.IsValidStatus(target) {
+		return nil, apperr.InvalidInput("status must be 'open' or 'closed'")
+	}
 
 	err := s.tx.Do(func(r *repository.TxRepos) error {
-		var err error
-		todo, err = r.Todo.GetByIDForUpdate(id, spaceID)
+		todo, err := r.Todo.GetByIDForUpdate(id, spaceID)
 		if err != nil {
 			return err
 		}
 
-		allowed := model.AllowedTransitions(todo.Status)
-		if !containsStatus(allowed, target) {
-			return apperr.InvalidTransition(string(todo.Status), statusStrings(allowed))
+		// Creator or assignee can close/reopen.
+		isCreator := todo.CreatorID == userID
+		isAssignee, _ := r.Assignee.IsAssignee(id, userID)
+		if !isCreator && !isAssignee {
+			return apperr.Forbidden("only creator or assignee can change status")
 		}
 
-		isCreator = todo.CreatorID == userID
-		isAssignee, err = r.Assignee.IsAssignee(id, userID)
-		if err != nil {
-			return err
-		}
-		if !model.CanTransition(todo.Status, target, isCreator, isAssignee) {
-			return apperr.Forbidden("caller role may not perform this transition")
+		if todo.Status == target {
+			return nil // idempotent — no-op
 		}
 
 		if err := r.Todo.UpdateStatus(id, spaceID, string(target)); err != nil {
 			return err
 		}
-		if target == model.TodoStatusDone {
+
+		// When closing, mark all assignees done.
+		if target == model.TodoStatusClosed {
 			if err := r.Assignee.MarkAllDone(id); err != nil {
 				return err
 			}
@@ -277,33 +250,19 @@ func (s *TodoService) TransitionStatus(id, spaceID, userID string, target model.
 		return nil, err
 	}
 
-	todo.Status = target
+	// Re-read outside tx for fresh response.
+	todo, err := s.todoRepo.GetByID(id, spaceID)
+	if err != nil {
+		return nil, err
+	}
 	assignees, err := s.assigneeRepo.ListByTodo(id)
 	if err != nil {
 		return nil, err
 	}
 	return &TodoDetail{
-		Todo:               todo,
-		Assignees:          assignees,
-		AllowedTransitions: model.AllowedTransitionsForRole(target, isCreator, isAssignee),
+		Todo:      todo,
+		Assignees: assignees,
 	}, nil
-}
-
-func containsStatus(list []model.TodoStatus, target model.TodoStatus) bool {
-	for _, s := range list {
-		if s == target {
-			return true
-		}
-	}
-	return false
-}
-
-func statusStrings(list []model.TodoStatus) []string {
-	out := make([]string, len(list))
-	for i, s := range list {
-		out[i] = string(s)
-	}
-	return out
 }
 
 func (s *TodoService) SoftDelete(id, spaceID, userID string) error {
@@ -345,7 +304,6 @@ func (s *TodoService) RemoveAssignee(todoID, spaceID, userID, assigneeUserID str
 }
 
 func (s *TodoService) UpdateAssigneeStatus(todoID, spaceID, userID string, status model.AssigneeStatus) error {
-	// Validate the parent todo is in the caller's space before any assignee-table write.
 	if _, err := s.todoRepo.GetByID(todoID, spaceID); err != nil {
 		return err
 	}

@@ -146,51 +146,6 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 	return todos, hasMore, nil
 }
 
-func (r *TodoRepo) ListByGoalGroupedByStatus(spaceID, goalID string, perColumnLimit int) (map[string][]*model.Todo, error) {
-	if perColumnLimit <= 0 {
-		perColumnLimit = 50
-	}
-	var all []*model.Todo
-	_, err := r.runner.Select("*").
-		From("todos").
-		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
-		OrderBy("status").
-		OrderDir("created_at", false).
-		Load(&all)
-	if err != nil {
-		return nil, err
-	}
-	grouped := make(map[string][]*model.Todo)
-	for _, t := range all {
-		key := string(t.Status)
-		if len(grouped[key]) < perColumnLimit {
-			grouped[key] = append(grouped[key], t)
-		}
-	}
-	// Ensure non-nil map (empty kanban returns {} not null)
-	return grouped, nil
-}
-
-func (r *TodoRepo) CountByGoalStatus(spaceID, goalID string) (map[string]int, error) {
-	type row struct {
-		Status string `db:"status"`
-		Count  int    `db:"cnt"`
-	}
-	var rows []row
-	_, err := r.runner.Select("status", "COUNT(*) AS cnt").
-		From("todos").
-		Where("space_id = ? AND goal_id = ? AND deleted_at IS NULL", spaceID, goalID).
-		GroupBy("status").
-		Load(&rows)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]int)
-	for _, r := range rows {
-		result[r.Status] = r.Count
-	}
-	return result, nil
-}
 
 // GetByIDForUpdate loads a non-deleted todo with SELECT ... FOR UPDATE for use
 // inside transactions. This locks the row until the transaction commits/rolls back.

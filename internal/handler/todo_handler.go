@@ -98,13 +98,11 @@ func (h *TodoHandler) List(c *gin.Context) {
 		filter.GoalID = &goalID
 	}
 	if status != "" {
-		switch model.TodoStatus(status) {
-		case model.TodoStatusDraft, model.TodoStatusPlanned, model.TodoStatusInProgress, model.TodoStatusDone, model.TodoStatusCancelled:
-			filter.Status = &status
-		default:
-			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid status filter value", nil)
+		if !model.IsValidStatus(model.TodoStatus(status)) {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open' or 'closed'", nil)
 			return
 		}
+		filter.Status = &status
 	}
 	if assigneeID != "" {
 		if assigneeID == "me" {
@@ -180,14 +178,11 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	switch model.TodoStatus(req.Status) {
-	case model.TodoStatusDraft, model.TodoStatusPlanned, model.TodoStatusInProgress, model.TodoStatusDone, model.TodoStatusCancelled:
-		// valid
-	default:
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid status value", nil)
+	if !model.IsValidStatus(model.TodoStatus(req.Status)) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open' or 'closed'", nil)
 		return
 	}
-	detail, err := h.svc.TransitionStatus(c.Param("id"), spaceID(c), uid(c), model.TodoStatus(req.Status))
+	detail, err := h.svc.SetStatus(c.Param("id"), spaceID(c), uid(c), model.TodoStatus(req.Status))
 	if err != nil {
 		respondErr(c, err)
 		return

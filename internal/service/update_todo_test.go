@@ -9,13 +9,9 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
-// Deadline / remind_at: regression tests for the silent-drop bug where the
-// previous UpdateTodo accepted the fields in the DTO but never wrote them.
-
 func TestUpdateTodo_PersistsDeadlineAndRemindAt(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
-	repo := newFakeTodoRepo(todo)
-	svc := newTodoSvc(repo, newFakeAssigneeRepo())
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	deadline := "2026-06-01T12:00:00Z"
 	remind := "2026-05-30T09:00:00Z"
@@ -33,7 +29,7 @@ func TestUpdateTodo_PersistsDeadlineAndRemindAt(t *testing.T) {
 
 func TestUpdateTodo_EmptyStringClearsTimestamp(t *testing.T) {
 	existing := mustParse(t, "2026-06-01T12:00:00Z")
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft, Deadline: &existing}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, Deadline: &existing}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	empty := ""
@@ -48,7 +44,7 @@ func TestUpdateTodo_EmptyStringClearsTimestamp(t *testing.T) {
 
 func TestUpdateTodo_NilPointerLeavesTimestampUntouched(t *testing.T) {
 	existing := mustParse(t, "2026-06-01T12:00:00Z")
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft, Deadline: &existing}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, Deadline: &existing}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	updated, err := svc.UpdateTodo("t1", "space-A", "u1", "x", nil, nil, nil, nil)
@@ -61,7 +57,7 @@ func TestUpdateTodo_NilPointerLeavesTimestampUntouched(t *testing.T) {
 }
 
 func TestUpdateTodo_InvalidDeadlineReturnsInvalidInput(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusDraft}
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	bad := "not-a-date"
