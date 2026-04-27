@@ -228,26 +228,4 @@ func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
 	ok(c, nil)
 }
 
-type updateAssigneeStatusReq struct {
-	Status string `json:"status" binding:"required"`
-}
 
-func (h *TodoHandler) UpdateAssigneeStatus(c *gin.Context) {
-	var req updateAssigneeStatusReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		bindJSONErr(c, err)
-		return
-	}
-	switch model.AssigneeStatus(req.Status) {
-	case model.AssigneeStatusPending, model.AssigneeStatusDone:
-		// valid
-	default:
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid assignee status, must be 'pending' or 'done'", nil)
-		return
-	}
-	if err := h.svc.UpdateAssigneeStatus(c.Param("id"), spaceID(c), uid(c), model.AssigneeStatus(req.Status)); err != nil {
-		respondErr(c, err)
-		return
-	}
-	ok(c, nil)
-}
