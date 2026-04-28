@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,7 @@ func NewGoalHandler(svc *service.GoalService) *GoalHandler {
 type createGoalReq struct {
 	Title       string   `json:"title" binding:"required,max=200"`
 	Description *string  `json:"description" binding:"omitempty,max=10000"`
+	Deadline    *string  `json:"deadline"`
 	AssigneeIDs []string `json:"assignee_ids"`
 }
 
@@ -29,7 +31,7 @@ func (h *GoalHandler) Create(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	goal, err := h.svc.CreateGoal(spaceID(c), uid(c), req.Title, req.Description, req.AssigneeIDs)
+	goal, err := h.svc.CreateGoal(spaceID(c), uid(c), req.Title, req.Description, req.Deadline, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -43,12 +45,20 @@ func (h *GoalHandler) List(c *gin.Context) {
 		limit = 20
 	}
 	cursor := c.Query("cursor")
+	status := c.Query("status")
 	filter := repository.GoalFilter{
 		CallerUIDs: relatedUIDs(c),
-		Limit:    limit,
+		Limit:      limit,
 	}
 	if cursor != "" {
 		filter.Cursor = &cursor
+	}
+	if status != "" {
+		if !model.IsValidGoalStatus(model.GoalStatus(status)) {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'active', 'completed', or 'archived'", nil)
+			return
+		}
+		filter.Status = &status
 	}
 	result, err := h.svc.ListGoals(spaceID(c), filter)
 	if err != nil {
@@ -70,6 +80,7 @@ func (h *GoalHandler) Get(c *gin.Context) {
 type updateGoalReq struct {
 	Title       string  `json:"title" binding:"required,max=200"`
 	Description *string `json:"description" binding:"omitempty,max=10000"`
+	Deadline    *string `json:"deadline"`
 }
 
 func (h *GoalHandler) Update(c *gin.Context) {
@@ -78,7 +89,7 @@ func (h *GoalHandler) Update(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	goal, err := h.svc.UpdateGoal(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description)
+	goal, err := h.svc.UpdateGoal(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description, req.Deadline)
 	if err != nil {
 		respondErr(c, err)
 		return
