@@ -225,7 +225,7 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	c.Next()
 }
 
-// SpaceMiddleware reads X-Space-ID header and validates membership
+// SpaceMiddleware reads X-Space-Id header and validates membership
 // by calling dmworkim's public API (token is forwarded).
 func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -236,10 +236,10 @@ func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		spaceID := c.GetHeader("X-Space-ID")
+		spaceID := c.GetHeader("X-Space-Id")
 		if spaceID == "" {
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error": gin.H{"code": "VALIDATION_ERROR", "message": "missing X-Space-ID header"},
+				"error": gin.H{"code": "VALIDATION_ERROR", "message": "missing X-Space-Id header"},
 			})
 			return
 		}
