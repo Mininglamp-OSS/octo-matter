@@ -39,7 +39,7 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		return
 	}
 	notification.SafeGo(func() {
-		todo, err := h.todoSvc.GetTodoRaw(todoID, space)
+		todo, err := h.todoSvc.GetTodoForNotification(todoID, space)
 		if err != nil {
 			return
 		}

@@ -113,9 +113,9 @@ type TodoDetail struct {
 	Assignees []*model.TodoAssignee `json:"assignees"`
 }
 
-// GetTodoRaw loads a todo by ID+space without access checks. Used internally
+// GetTodoForNotification loads a todo by ID+space without access checks. Used internally
 // for notification enrichment where the caller already verified access.
-func (s *TodoService) GetTodoRaw(id, spaceID string) (*model.Todo, error) {
+func (s *TodoService) GetTodoForNotification(id, spaceID string) (*model.Todo, error) {
 	return s.todoRepo.GetByID(id, spaceID)
 }
 

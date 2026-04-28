@@ -1,44 +1,69 @@
 package notification
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
-func TestNotify_DeduplicatesAndSkipsActor(t *testing.T) {
+func TestWKNotifier_Notify_DeduplicatesAndSkipsActor(t *testing.T) {
+	var mu sync.Mutex
 	var sent []string
-	n := &testNotifier{sendFn: func(uid, _ string) error {
-		sent = append(sent, uid)
-		return nil
-	}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		// Extract channel_id from request to track who was notified.
+		// For simplicity, just count calls.
+		sent = append(sent, "called")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
 
-	// actorID="u1" should be skipped; "u2" appears twice but sent once.
+	n := NewWKNotifier(srv.URL, "notification")
+
+	// actorID="u1" should be skipped; "u2" appears twice but sent once; "" skipped.
 	n.notify("u1", []string{"u1", "u2", "u3", "u2", ""}, "test msg")
 
+	mu.Lock()
+	defer mu.Unlock()
 	if len(sent) != 2 {
-		t.Fatalf("expected 2 sends, got %d: %v", len(sent), sent)
-	}
-	if sent[0] != "u2" || sent[1] != "u3" {
-		t.Errorf("expected [u2, u3], got %v", sent)
+		t.Fatalf("expected 2 sends, got %d", len(sent))
 	}
 }
 
-func TestNotify_EmptyTargets(t *testing.T) {
-	var sent []string
-	n := &testNotifier{sendFn: func(uid, _ string) error {
-		sent = append(sent, uid)
-		return nil
-	}}
+func TestWKNotifier_Notify_EmptyTargets(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
 
+	n := NewWKNotifier(srv.URL, "notification")
 	n.notify("actor", nil, "msg")
-	if len(sent) != 0 {
-		t.Fatalf("expected 0 sends for nil targets, got %d", len(sent))
+	if called {
+		t.Fatal("expected no sends for nil targets")
 	}
 
 	n.notify("actor", []string{}, "msg")
-	if len(sent) != 0 {
-		t.Fatalf("expected 0 sends for empty targets, got %d", len(sent))
+	if called {
+		t.Fatal("expected no sends for empty targets")
+	}
+}
+
+func TestWKNotifier_SendToUser_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	n := NewWKNotifier(srv.URL, "notification")
+	err := n.sendToUser("u1", "test")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
 	}
 }
 
@@ -93,30 +118,11 @@ func TestTemplates(t *testing.T) {
 	}
 }
 
-func TestNoop_Compiles(t *testing.T) {
-	// Verify Noop satisfies the interface at compile time.
+func TestNoop_ImplementsNotifier(t *testing.T) {
 	var n Notifier = Noop{}
 	todo := &model.Todo{Title: "x", CreatorID: "u1", Status: "open"}
 	n.NotifyTodoCreated(todo, "name", []string{"u2"})
 	n.NotifyStatusChanged(todo, "u1", "name", []string{"u2"})
 	n.NotifyAssigneeAdded(todo, "name", "u3")
 	n.NotifyCommentAdded(todo, "u1", "name", []string{"u2"})
-}
-
-// testNotifier reuses WKNotifier's notify logic with a pluggable send function.
-type testNotifier struct {
-	sendFn func(uid, content string) error
-}
-
-func (n *testNotifier) notify(actorID string, targetIDs []string, content string) {
-	seen := make(map[string]bool)
-	for _, uid := range targetIDs {
-		if uid == actorID || uid == "" || seen[uid] {
-			continue
-		}
-		seen[uid] = true
-		if n.sendFn != nil {
-			n.sendFn(uid, content)
-		}
-	}
 }
