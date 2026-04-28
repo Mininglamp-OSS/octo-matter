@@ -3,9 +3,11 @@ package auth
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -45,14 +47,46 @@ type verifyBotResp struct {
 // On success, injects into gin context:
 //   - "uid", "name", "role" — caller identity
 //   - "related_uids" — [self, owned_bots...] or [self, owner] for visibility
+// verifyCache caches auth verify results to avoid calling dmworkim on every request.
+type verifyCache struct {
+	mu      sync.RWMutex
+	entries map[string]verifyCacheEntry
+}
+
+type verifyCacheEntry struct {
+	result   interface{}
+	expireAt time.Time
+}
+
+func newVerifyCache() *verifyCache {
+	return &verifyCache{entries: make(map[string]verifyCacheEntry)}
+}
+
+func (c *verifyCache) get(key string) (interface{}, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok || time.Now().After(e.expireAt) {
+		return nil, false
+	}
+	return e.result, true
+}
+
+func (c *verifyCache) set(key string, result interface{}, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = verifyCacheEntry{result: result, expireAt: time.Now().Add(ttl)}
+}
+
 func AuthMiddleware(cfg Config) gin.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
+	cache := newVerifyCache()
 
 	return func(c *gin.Context) {
 		// Check for Bot auth first
 		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			botToken := strings.TrimPrefix(authHeader, "Bearer ")
-			handleBotAuth(c, client, cfg.DmworkIMURL, botToken)
+			handleBotAuth(c, client, cfg.DmworkIMURL, botToken, cache)
 			return
 		}
 
@@ -64,11 +98,26 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 			})
 			return
 		}
-		handleUserAuth(c, client, cfg.DmworkIMURL, token)
+		handleUserAuth(c, client, cfg.DmworkIMURL, token, cache)
 	}
 }
 
-func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string) {
+func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, cache *verifyCache) {
+	// Check cache
+	if cached, ok := cache.get("user:" + token); ok {
+		result := cached.(*verifyTokenResp)
+		c.Set("uid", result.UID)
+		c.Set("name", result.Name)
+		c.Set("role", result.Role)
+		relatedUIDs := []string{result.UID}
+		for _, bot := range result.OwnedBots {
+			relatedUIDs = append(relatedUIDs, bot.UID)
+		}
+		c.Set("related_uids", relatedUIDs)
+		c.Next()
+		return
+	}
+
 	body, _ := json.Marshal(map[string]string{"token": token})
 	resp, err := client.Post(baseURL+"/v1/auth/verify", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -99,17 +148,34 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string) 
 	c.Set("name", result.Name)
 	c.Set("role", result.Role)
 
-	// Build related UIDs: [self, owned_bot1, owned_bot2, ...]
 	relatedUIDs := []string{result.UID}
 	for _, bot := range result.OwnedBots {
 		relatedUIDs = append(relatedUIDs, bot.UID)
 	}
 	c.Set("related_uids", relatedUIDs)
 
+	// Cache for 60s
+	cache.set("user:"+token, &result, 60*time.Second)
+
 	c.Next()
 }
 
-func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string) {
+func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string, cache *verifyCache) {
+	// Check cache
+	if cached, ok := cache.get("bot:" + botToken); ok {
+		result := cached.(*verifyBotResp)
+		c.Set("uid", result.BotUID)
+		c.Set("name", result.BotName)
+		c.Set("role", "bot")
+		relatedUIDs := []string{result.BotUID}
+		if result.OwnerUID != "" {
+			relatedUIDs = append(relatedUIDs, result.OwnerUID)
+		}
+		c.Set("related_uids", relatedUIDs)
+		c.Next()
+		return
+	}
+
 	body, _ := json.Marshal(map[string]string{"bot_token": botToken})
 	resp, err := client.Post(baseURL+"/v1/auth/verify-bot", "application/json", bytes.NewReader(body))
 	if err != nil {
@@ -147,6 +213,8 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	}
 	c.Set("related_uids", relatedUIDs)
 
+	cache.set("bot:"+botToken, &result, 60*time.Second)
+
 	c.Next()
 }
 
@@ -154,6 +222,7 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 // by calling dmworkim's public API (token is forwarded).
 func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
+	cache := newSpaceCache()
 
 	return func(c *gin.Context) {
 		if _, exists := c.Get("space_id"); exists {
@@ -171,26 +240,38 @@ func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 		// Validate via dmworkim public API
 		if dmworkIMURL != "" {
 			token := c.GetHeader("token")
-			// Bot requests use Authorization header, not token
 			if token == "" {
-				// For bot requests, skip Space check via API
-				// (data-layer space_id scope is the safety net)
 				c.Set("space_id", spaceID)
 				c.Next()
 				return
 			}
-			req, _ := http.NewRequest("GET", dmworkIMURL+"/v1/space/"+spaceID, nil)
-			req.Header.Set("token", token)
-			resp, err := client.Do(req)
-			if err == nil {
-				resp.Body.Close()
-				// dmworkim returns 400 (not 403) for non-members
-				if resp.StatusCode != http.StatusOK {
+
+			cacheKey := fmt.Sprintf("%s:%s", spaceID, token[:min(len(token), 16)])
+			if ok, found := cache.get(cacheKey); found {
+				if !ok {
 					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 						"error": gin.H{"code": "SPACE_FORBIDDEN", "message": "not a member of this space"},
 					})
 					return
 				}
+				c.Set("space_id", spaceID)
+				c.Next()
+				return
+			}
+
+			req, _ := http.NewRequest("GET", dmworkIMURL+"/v1/space/"+spaceID, nil)
+			req.Header.Set("token", token)
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					cache.set(cacheKey, false, 30*time.Second)
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+						"error": gin.H{"code": "SPACE_FORBIDDEN", "message": "not a member of this space"},
+					})
+					return
+				}
+				cache.set(cacheKey, true, 60*time.Second)
 			}
 		}
 
@@ -211,4 +292,36 @@ func GetRelatedUIDs(c *gin.Context) []string {
 		return []string{s}
 	}
 	return nil
+}
+
+// --- Simple in-memory cache for Space membership ---
+
+type spaceCache struct {
+	mu      sync.RWMutex
+	entries map[string]spaceCacheEntry
+}
+
+type spaceCacheEntry struct {
+	ok       bool
+	expireAt time.Time
+}
+
+func newSpaceCache() *spaceCache {
+	return &spaceCache{entries: make(map[string]spaceCacheEntry)}
+}
+
+func (c *spaceCache) get(key string) (bool, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	e, ok := c.entries[key]
+	if !ok || time.Now().After(e.expireAt) {
+		return false, false
+	}
+	return e.ok, true
+}
+
+func (c *spaceCache) set(key string, ok bool, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries[key] = spaceCacheEntry{ok: ok, expireAt: time.Now().Add(ttl)}
 }
