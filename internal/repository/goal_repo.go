@@ -20,11 +20,14 @@ func NewGoalRepo(sess *dbr.Session) *GoalRepo {
 
 func (r *GoalRepo) Create(goal *model.Goal) error {
 	goal.ID = uuid.New().String()
+	if goal.Status == "" {
+		goal.Status = model.GoalStatusActive
+	}
 	now := time.Now()
 	goal.CreatedAt = now
 	goal.UpdatedAt = now
 	_, err := r.runner.InsertInto("goals").
-		Columns("id", "space_id", "title", "description", "creator_id", "archived", "created_at", "updated_at").
+		Columns("id", "space_id", "title", "description", "creator_id", "status", "deadline", "created_at", "updated_at").
 		Record(goal).
 		Exec()
 	return err
@@ -62,7 +65,7 @@ func (r *GoalRepo) ListByUser(spaceID string, filter GoalFilter) ([]*model.Goal,
 	q := r.runner.Select("g.*").
 		From(dbr.I("goals").As("g")).
 		LeftJoin(dbr.I("goal_assignees").As("ga"), "ga.goal_id = g.id").
-		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id IN ? OR ga.user_id IN ?)", spaceID, filter.CallerUIDs, filter.CallerUIDs).
+		Where("g.space_id = ? AND g.status != 'archived' AND (g.creator_id IN ? OR ga.user_id IN ?)", spaceID, filter.CallerUIDs, filter.CallerUIDs).
 		GroupBy("g.id")
 
 	if filter.Cursor != nil && *filter.Cursor != "" {
@@ -111,7 +114,7 @@ func (r *GoalRepo) Update(goal *model.Goal) error {
 
 func (r *GoalRepo) Archive(id, spaceID string) error {
 	result, err := r.runner.Update("goals").
-		Set("archived", 1).
+		Set("status", string(model.GoalStatusArchived)).
 		Set("updated_at", time.Now()).
 		Where("id = ? AND space_id = ?", id, spaceID).
 		Exec()
