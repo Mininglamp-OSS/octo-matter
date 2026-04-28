@@ -171,18 +171,25 @@ func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 		// Validate via dmworkim public API
 		if dmworkIMURL != "" {
 			token := c.GetHeader("token")
-			if token != "" {
-				req, _ := http.NewRequest("GET", dmworkIMURL+"/v1/space/"+spaceID, nil)
-				req.Header.Set("token", token)
-				resp, err := client.Do(req)
-				if err == nil {
-					resp.Body.Close()
-					if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
-						c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-							"error": gin.H{"code": "SPACE_FORBIDDEN", "message": "not a member of this space"},
-						})
-						return
-					}
+			// Bot requests use Authorization header, not token
+			if token == "" {
+				// For bot requests, skip Space check via API
+				// (data-layer space_id scope is the safety net)
+				c.Set("space_id", spaceID)
+				c.Next()
+				return
+			}
+			req, _ := http.NewRequest("GET", dmworkIMURL+"/v1/space/"+spaceID, nil)
+			req.Header.Set("token", token)
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				// dmworkim returns 400 (not 403) for non-members
+				if resp.StatusCode != http.StatusOK {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+						"error": gin.H{"code": "SPACE_FORBIDDEN", "message": "not a member of this space"},
+					})
+					return
 				}
 			}
 		}
