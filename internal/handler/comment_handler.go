@@ -1,16 +1,22 @@
 package handler
 
 import (
+	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 type CommentHandler struct {
-	svc *service.CommentService
+	svc      *service.CommentService
+	todoSvc  *service.TodoService
+	notifier notification.Notifier
 }
 
-func NewCommentHandler(svc *service.CommentService) *CommentHandler {
-	return &CommentHandler{svc: svc}
+func NewCommentHandler(svc *service.CommentService, todoSvc *service.TodoService, notifier notification.Notifier) *CommentHandler {
+	if notifier == nil {
+		notifier = notification.Noop{}
+	}
+	return &CommentHandler{svc: svc, todoSvc: todoSvc, notifier: notifier}
 }
 
 type createCommentReq struct {
@@ -23,11 +29,20 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	comment, err := h.svc.CreateComment(c.Param("id"), spaceID(c), uid(c), req.Content)
+	todoID := c.Param("id")
+	comment, err := h.svc.CreateComment(todoID, spaceID(c), uid(c), req.Content)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
+	notification.SafeGo(func() {
+		todo, err := h.todoSvc.GetTodoRaw(todoID, spaceID(c))
+		if err != nil {
+			return
+		}
+		assignees, _ := h.todoSvc.ListAssigneeIDs(todoID)
+		h.notifier.NotifyCommentAdded(todo, uid(c), userName(c), assignees)
+	})
 	created(c, comment)
 }
 

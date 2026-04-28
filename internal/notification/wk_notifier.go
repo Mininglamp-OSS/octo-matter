@@ -33,7 +33,8 @@ func NewWKNotifier(apiURL, botUID string) *WKNotifier {
 
 // sendToUser sends a text message from the notification bot to a single user.
 func (n *WKNotifier) sendToUser(toUID, content string) error {
-	payload, _ := json.Marshal(map[string]interface{}{
+	// WuKongIM expects payload as a JSON-encoded string, not a nested object.
+	payloadStr, _ := json.Marshal(map[string]interface{}{
 		"type":    1, // text message
 		"content": content,
 	})
@@ -47,7 +48,7 @@ func (n *WKNotifier) sendToUser(toUID, content string) error {
 		"from_uid":     n.botUID,
 		"channel_id":   toUID,
 		"channel_type": 1, // personal channel
-		"payload":      json.RawMessage(payload),
+		"payload":      string(payloadStr),
 	})
 
 	resp, err := n.client.Post(n.apiURL+"/message/send", "application/json", bytes.NewReader(body))
@@ -77,26 +78,18 @@ func (n *WKNotifier) notify(actorID string, targetIDs []string, content string) 
 	}
 }
 
-// collectTodoTargets returns creator + all assignee IDs for notification targeting.
-// The caller passes whatever IDs are readily available; dedup happens in notify().
-func collectTodoTargets(creatorID string, assigneeIDs []string) []string {
-	targets := make([]string, 0, 1+len(assigneeIDs))
-	targets = append(targets, creatorID)
-	targets = append(targets, assigneeIDs...)
-	return targets
-}
-
 func (n *WKNotifier) NotifyTodoCreated(todo *model.Todo, actorName string, assigneeIDs []string) {
 	msg := todoCreatedMsg(todo.Title, actorName)
 	n.notify(todo.CreatorID, assigneeIDs, msg)
 }
 
-func (n *WKNotifier) NotifyStatusChanged(todo *model.Todo, actorID, actorName string) {
+func (n *WKNotifier) NotifyStatusChanged(todo *model.Todo, actorID, actorName string, assigneeIDs []string) {
 	msg := statusChangedMsg(todo.Title, actorName, string(todo.Status))
 	// Notify creator + all assignees; actorID is excluded by notify().
-	// We don't have assignee IDs here, so we notify the creator at minimum.
-	// The service layer should pass enriched targets in future iterations.
-	n.notify(actorID, []string{todo.CreatorID}, msg)
+	targets := make([]string, 0, 1+len(assigneeIDs))
+	targets = append(targets, todo.CreatorID)
+	targets = append(targets, assigneeIDs...)
+	n.notify(actorID, targets, msg)
 }
 
 func (n *WKNotifier) NotifyAssigneeAdded(todo *model.Todo, actorName, newAssigneeID string) {
@@ -104,7 +97,10 @@ func (n *WKNotifier) NotifyAssigneeAdded(todo *model.Todo, actorName, newAssigne
 	n.notify("", []string{newAssigneeID}, msg)
 }
 
-func (n *WKNotifier) NotifyCommentAdded(todo *model.Todo, actorID, actorName string) {
+func (n *WKNotifier) NotifyCommentAdded(todo *model.Todo, actorID, actorName string, assigneeIDs []string) {
 	msg := commentAddedMsg(todo.Title, actorName)
-	n.notify(actorID, []string{todo.CreatorID}, msg)
+	targets := make([]string, 0, 1+len(assigneeIDs))
+	targets = append(targets, todo.CreatorID)
+	targets = append(targets, assigneeIDs...)
+	n.notify(actorID, targets, msg)
 }

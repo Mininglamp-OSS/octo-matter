@@ -46,14 +46,14 @@ func main() {
 
 	// Services
 	goalSvc := service.NewGoalService(goalRepo, txMgr)
-	todoSvc := service.NewTodoService(todoRepo, assigneeRepo, goalRepo, txMgr, notifier)
-	commentSvc := service.NewCommentService(commentRepo, todoRepo, todoSvc, notifier)
+	todoSvc := service.NewTodoService(todoRepo, assigneeRepo, goalRepo, txMgr)
+	commentSvc := service.NewCommentService(commentRepo, todoRepo, todoSvc)
 	attachmentSvc := service.NewAttachmentService(attachmentRepo, todoRepo, todoSvc)
 
 	// Handlers
 	goalH := handler.NewGoalHandler(goalSvc)
-	todoH := handler.NewTodoHandler(todoSvc)
-	commentH := handler.NewCommentHandler(commentSvc)
+	todoH := handler.NewTodoHandler(todoSvc, notifier)
+	commentH := handler.NewCommentHandler(commentSvc, todoSvc, notifier)
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
 	// Readiness probe: MySQL Ping via embedded *sql.DB.
