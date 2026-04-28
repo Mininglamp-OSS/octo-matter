@@ -235,7 +235,7 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 		return
 	}
 	notification.SafeGo(func() {
-		todo, err := h.svc.GetTodoRaw(todoID, space)
+		todo, err := h.svc.GetTodoForNotification(todoID, space)
 		if err == nil {
 			h.notifier.NotifyAssigneeAdded(todo, actorName, assigneeUID)
 		}

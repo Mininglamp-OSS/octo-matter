@@ -46,10 +46,20 @@ func (r *CommentRepo) GetByID(id string) (*model.TodoComment, error) {
 }
 
 func (r *CommentRepo) Delete(id string) error {
-	_, err := r.runner.DeleteFrom("todo_comments").
+	result, err := r.runner.DeleteFrom("todo_comments").
 		Where("id = ?", id).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.ErrNotFound
+	}
+	return nil
 }
 
 func (r *CommentRepo) ListByTodo(todoID string) ([]*model.TodoComment, error) {
