@@ -12,7 +12,7 @@ import (
 )
 
 type TodoFilter struct {
-	CallerID          string // required: scopes visibility to caller's todos
+	CallerUIDs        []string // required: scopes visibility to caller's todos
 	GoalID            *string
 	Status            *string
 	AssigneeID        *string
@@ -82,8 +82,8 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		From("todos").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID).
 		Where(
-			"(creator_id = ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id = ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id = ?))",
-			filter.CallerID, filter.CallerID, filter.CallerID,
+			"(creator_id IN ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id IN ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id IN ?))",
+			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs,
 		).
 		Where("(goal_id IS NULL OR NOT EXISTS (SELECT 1 FROM goals WHERE goals.id = todos.goal_id AND goals.archived = 1))")
 
