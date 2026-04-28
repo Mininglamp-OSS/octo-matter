@@ -85,7 +85,7 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 			"(creator_id IN ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id IN ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id IN ?))",
 			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs,
 		).
-		Where("(goal_id IS NULL OR NOT EXISTS (SELECT 1 FROM goals WHERE goals.id = todos.goal_id AND goals.archived = 1))")
+		Where("(goal_id IS NULL OR NOT EXISTS (SELECT 1 FROM goals WHERE goals.id = todos.goal_id AND goals.status = 'archived'))")
 
 	if filter.GoalID != nil {
 		q = q.Where("goal_id = ?", *filter.GoalID)
