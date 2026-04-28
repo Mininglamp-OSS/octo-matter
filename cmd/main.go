@@ -42,6 +42,8 @@ func main() {
 	if cfg.WuKongIMURL != "" {
 		notifier = notification.NewWKNotifier(cfg.WuKongIMURL, cfg.NotifyBotUID)
 		log.Printf("notification enabled: wukongim=%s bot=%s", cfg.WuKongIMURL, cfg.NotifyBotUID)
+	} else {
+		log.Printf("WARN: WUKONGIM_API_URL not set — notifications disabled")
 	}
 
 	// Services

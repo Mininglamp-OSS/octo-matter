@@ -46,10 +46,20 @@ func (r *AttachmentRepo) GetByID(id string) (*model.TodoAttachment, error) {
 }
 
 func (r *AttachmentRepo) Delete(id string) error {
-	_, err := r.runner.DeleteFrom("todo_attachments").
+	result, err := r.runner.DeleteFrom("todo_attachments").
 		Where("id = ?", id).
 		Exec()
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return apperr.ErrNotFound
+	}
+	return nil
 }
 
 func (r *AttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment, error) {

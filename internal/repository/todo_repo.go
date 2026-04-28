@@ -227,20 +227,6 @@ func (r *TodoRepo) SoftDelete(id, spaceID string) error {
 	return nil
 }
 
-func (r *TodoRepo) ListBySource(spaceID, channelID string, channelType uint8) ([]*model.Todo, error) {
-	todos := make([]*model.Todo, 0)
-	_, err := r.runner.Select("*").
-		From("todos").
-		Where("space_id = ? AND source_channel_id = ? AND source_channel_type = ? AND deleted_at IS NULL",
-			spaceID, channelID, channelType).
-		OrderDir("created_at", false).
-		Load(&todos)
-	if err != nil {
-		return nil, err
-	}
-	return todos, nil
-}
-
 // escapeLikePattern escapes SQL LIKE wildcards (% and _) in user input.
 func escapeLikePattern(s string) string {
 	s = strings.ReplaceAll(s, "%", "\\%")
