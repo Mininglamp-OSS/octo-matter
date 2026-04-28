@@ -30,18 +30,21 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		return
 	}
 	todoID := c.Param("id")
-	comment, err := h.svc.CreateComment(todoID, spaceID(c), uid(c), req.Content)
+	space := spaceID(c)
+	actorUID := uid(c)
+	actorName := userName(c)
+	comment, err := h.svc.CreateComment(todoID, space, actorUID, req.Content)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
 	notification.SafeGo(func() {
-		todo, err := h.todoSvc.GetTodoRaw(todoID, spaceID(c))
+		todo, err := h.todoSvc.GetTodoRaw(todoID, space)
 		if err != nil {
 			return
 		}
 		assignees, _ := h.todoSvc.ListAssigneeIDs(todoID)
-		h.notifier.NotifyCommentAdded(todo, uid(c), userName(c), assignees)
+		h.notifier.NotifyCommentAdded(todo, actorUID, actorName, assignees)
 	})
 	created(c, comment)
 }

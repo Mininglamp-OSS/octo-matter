@@ -75,8 +75,9 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	actorName := userName(c)
 	notification.SafeGo(func() {
-		h.notifier.NotifyTodoCreated(todo, userName(c), req.AssigneeIDs)
+		h.notifier.NotifyTodoCreated(todo, actorName, req.AssigneeIDs)
 	})
 	created(c, detail)
 }
@@ -195,12 +196,14 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	actorUID := uid(c)
+	actorName := userName(c)
+	aIDs := make([]string, 0, len(detail.Assignees))
+	for _, a := range detail.Assignees {
+		aIDs = append(aIDs, a.UserID)
+	}
 	notification.SafeGo(func() {
-		aIDs := make([]string, 0, len(detail.Assignees))
-		for _, a := range detail.Assignees {
-			aIDs = append(aIDs, a.UserID)
-		}
-		h.notifier.NotifyStatusChanged(detail.Todo, uid(c), userName(c), aIDs)
+		h.notifier.NotifyStatusChanged(detail.Todo, actorUID, actorName, aIDs)
 	})
 	ok(c, detail)
 }
@@ -224,14 +227,17 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 		return
 	}
 	todoID := c.Param("id")
-	if err := h.svc.AddAssignee(todoID, spaceID(c), uid(c), req.UserID); err != nil {
+	space := spaceID(c)
+	actorName := userName(c)
+	assigneeUID := req.UserID
+	if err := h.svc.AddAssignee(todoID, space, uid(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}
 	notification.SafeGo(func() {
-		todo, err := h.svc.GetTodoRaw(todoID, spaceID(c))
+		todo, err := h.svc.GetTodoRaw(todoID, space)
 		if err == nil {
-			h.notifier.NotifyAssigneeAdded(todo, userName(c), req.UserID)
+			h.notifier.NotifyAssigneeAdded(todo, actorName, assigneeUID)
 		}
 	})
 	ok(c, nil)
