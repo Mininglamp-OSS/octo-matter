@@ -5,7 +5,6 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
-	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
 
@@ -37,7 +36,6 @@ type TodoService struct {
 	assigneeRepo assigneeStore
 	goalRepo     goalAccessChecker
 	tx           txRunner
-	notifier     notification.Notifier
 }
 
 // goalAccessChecker is the subset of GoalRepo needed for visibility + validation checks.
@@ -46,11 +44,8 @@ type goalAccessChecker interface {
 	GetByID(id, spaceID string) (*model.Goal, error)
 }
 
-func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, goalRepo goalAccessChecker, tx txRunner, notifier notification.Notifier) *TodoService {
-	if notifier == nil {
-		notifier = notification.Noop{}
-	}
-	return &TodoService{todoRepo: todoRepo, assigneeRepo: assigneeRepo, goalRepo: goalRepo, tx: tx, notifier: notifier}
+func NewTodoService(todoRepo todoStore, assigneeRepo assigneeStore, goalRepo goalAccessChecker, tx txRunner) *TodoService {
+	return &TodoService{todoRepo: todoRepo, assigneeRepo: assigneeRepo, goalRepo: goalRepo, tx: tx}
 }
 
 // CreateTodoWithAssignees creates the todo and all its initial assignees inside
@@ -80,8 +75,6 @@ func (s *TodoService) CreateTodoWithAssignees(todo *model.Todo, assigneeIDs []st
 	if err != nil {
 		return nil, err
 	}
-	// Fire-and-forget notification to assignees.
-	go s.notifier.NotifyTodoCreated(todo, todo.CreatorID, assigneeIDs)
 	return &TodoDetail{
 		Todo:      todo,
 		Assignees: created,
@@ -118,6 +111,12 @@ func (s *TodoService) ListTodos(spaceID string, filter repository.TodoFilter) (*
 type TodoDetail struct {
 	*model.Todo
 	Assignees []*model.TodoAssignee `json:"assignees"`
+}
+
+// GetTodoRaw loads a todo by ID+space without access checks. Used internally
+// for notification enrichment where the caller already verified access.
+func (s *TodoService) GetTodoRaw(id, spaceID string) (*model.Todo, error) {
+	return s.todoRepo.GetByID(id, spaceID)
 }
 
 func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
@@ -258,13 +257,6 @@ func (s *TodoService) SetStatus(id, spaceID, userID string, target model.TodoSta
 	if err != nil {
 		return nil, err
 	}
-	// Notify creator + assignees about status change.
-	targetIDs := make([]string, 0, 1+len(assignees))
-	targetIDs = append(targetIDs, todo.CreatorID)
-	for _, a := range assignees {
-		targetIDs = append(targetIDs, a.UserID)
-	}
-	go s.notifier.NotifyStatusChanged(todo, userID, userID)
 	return &TodoDetail{
 		Todo:      todo,
 		Assignees: assignees,
@@ -282,6 +274,20 @@ func (s *TodoService) SoftDelete(id, spaceID, userID string) error {
 	return s.todoRepo.SoftDelete(id, spaceID)
 }
 
+// ListAssigneeIDs returns the user IDs of all assignees for a todo.
+// Used by handlers for notification targeting.
+func (s *TodoService) ListAssigneeIDs(todoID string) ([]string, error) {
+	assignees, err := s.assigneeRepo.ListByTodo(todoID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(assignees))
+	for _, a := range assignees {
+		ids = append(ids, a.UserID)
+	}
+	return ids, nil
+}
+
 func (s *TodoService) AddAssignee(todoID, spaceID, userID, assigneeUserID string) error {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
@@ -297,7 +303,6 @@ func (s *TodoService) AddAssignee(todoID, spaceID, userID, assigneeUserID string
 	if err := s.assigneeRepo.Create(a); err != nil {
 		return err
 	}
-	go s.notifier.NotifyAssigneeAdded(todo, userID, assigneeUserID)
 	return nil
 }
 
