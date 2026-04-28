@@ -11,7 +11,7 @@
 > - `POST /todos` response includes assignees so clients skip a follow-up `GET`.
 > - `PUT /todos/:id` field semantics: absent = unchanged, `""` = clear, non-empty = set.
 > - `/health/ready` probes MySQL (and Redis / Octo IM server when wired). `/health` stays a cheap liveness check.
-> - `AUTH_MODE=stub` + `APP_ENV=prod` is a startup error; `AUTH_MODE=remote` panics until the SDK is wired (no silent fallback).
+> - `Auth: calls dmworkim POST /v1/auth/verify (user token) or /v1/auth/verify-bot (bot token).
 
 ## Overview
 
@@ -27,7 +27,7 @@ This document defines the architecture for **Octo Todo**: a standalone microserv
 2. **Status-driven task model** — Simple open/closed status model (GitHub-style) with assignees (human or bot)
 3. **Goal organization (optional) — Todos optionally associate with a goal; sidebar lists goals, selecting one shows its todos
 4. **Unified CLI** — `octo-cli` is the single CLI entry point for all Octo services (`octo todo ...`)
-5. **Unified auth via Octo IM server** — Token validation through Octo IM server internal API + `octo-auth-client` SDK
+5. **Unified auth via Octo IM server** — Token validation through Octo IM server internal API + `dmworkim verify` SDK
 6. **Source context tracking** — Every todo records where it was created (group, thread, subsystem), enabling per-conversation todo panels
 7. **Space isolation** — All data is scoped to a Space; cross-Space access is forbidden
 8. **Chat integration** — Create and update todos from Octo chat conversations
@@ -53,9 +53,9 @@ External microservices (todo-service, future knowledge-service, etc.) cannot cal
 
 ### Solution: Phase A -> Phase B
 
-**Phase A (Now)**: Add 3 internal HTTP endpoints to Octo IM server. All Octo microservices call these endpoints. Ship an `octo-auth-client` Go SDK that wraps the calls + local cache.
+**Phase A (Now)**: Add 3 internal HTTP endpoints to Octo IM server. All Octo microservices call these endpoints. Ship an `dmworkim verify` Go SDK that wraps the calls + local cache.
 
-**Phase B (Future)**: When 3+ microservices exist, extract these endpoints into a standalone `octo-auth-service`. The SDK only changes its target URL; business code untouched.
+**Phase B (Future)**: When 3+ microservices exist, extract these endpoints into a standalone `dmworkim auth-service`. The SDK only changes its target URL; business code untouched.
 
 ### Phase A: Octo IM server Internal Endpoints
 
@@ -78,11 +78,11 @@ POST /internal/v1/auth/space-check
 
 These endpoints are **internal only** (bound to internal network, not exposed to public).
 
-### octo-auth-client SDK
+### dmworkim verify API
 
 ```go
 // All Octo microservices import this package
-import "github.com/Mininglamp-OSS/octo-auth-client"
+import "github.com/Mininglamp-OSS/octo-server verify"
 
 client := octoauth.New(octoauth.Config{
     AuthURL:  "http://Octo IM server:8090/internal/v1",
@@ -114,7 +114,7 @@ The SDK handles:
 
 - **todo-web** — React + TypeScript SPA. Auth tokens obtained from Octo IM, passed via `token` header.
 - **octo-cli** — Unified Go CLI. `octo todo` sub-commands call todo-service REST API. Bot agents invoke via `exec`.
-- **todo-service** — Go (Gin + wkhttp) REST API. Uses `octo-auth-client` SDK for auth. Owns todo/goal business logic.
+- **todo-service** — Go (Gin + wkhttp) REST API. Uses `dmworkim verify` SDK for auth. Owns todo/goal business logic.
 - **Octo IM server** — Auth provider (internal endpoints). Notification channel (Bot API for message push).
 - **WuKongIM** — Underlying message transport. todo-service sends notifications as a system Bot via Octo IM server Bot API.
 
@@ -127,7 +127,7 @@ The SDK handles:
 | octo-cli | Go 1.22+, Cobra | Extensible sub-commands |
 | Database | MySQL 8 | Aligned with Octo IM server (single DB infrastructure) |
 | Cache | Redis 7 | Rate limiting, auth cache, notification queue |
-| Auth | octo-auth-client SDK | Unified auth across all Octo services |
+| Auth | dmworkim verify API | Unified auth across all Octo services |
 
 ## Data Model
 
@@ -276,7 +276,7 @@ Simple two-state model inspired by GitHub Issues:
 
 ### Authentication
 
-All requests must include the `token` header (user) or `Authorization: Bearer <bot_token>` (bot). todo-service validates via `octo-auth-client` SDK which calls Octo IM server internal endpoints.
+All requests must include the `token` header (user) or `Authorization: Bearer <bot_token>` (bot). todo-service validates via `dmworkim verify` SDK which calls Octo IM server internal endpoints.
 
 Space context is passed via the `X-Space-ID` header **only**. The query-string alternative (`?space_id=...`) is rejected — space IDs must not leak into access logs or Referer headers.
 
@@ -285,7 +285,7 @@ token: <octo-user-token>
 X-Space-ID: <space-id>
 ```
 
-During Phase A, `AUTH_MODE=stub` parses `token` as `uid@name@role` without cryptographic verification — it is refused at startup when `APP_ENV=prod`. `AUTH_MODE=remote` points at the SDK path; until the SDK is wired it panics on construction so a production deploy cannot silently fall back to stub.
+During Phase A, `Auth: calls dmworkim POST /v1/auth/verify (user token) or /v1/auth/verify-bot (bot token).
 
 ### Response Envelope
 
@@ -647,7 +647,7 @@ todo-service/
 |   |-- handler/
 |   |   |-- goal_handler.go
 |   |   |-- todo_handler.go
-|   |   |-- middleware.go       # octo-auth-client integration
+|   |   |-- middleware.go       # dmworkim verify integration
 |   |-- integration/
 |       |-- octo_bot.go       # Bot API client for notifications
 |-- migrations/                 # MySQL migrations (hand-written SQL)
@@ -706,7 +706,7 @@ GET /health/ready  -> 200 {"status":"ready"}     # readiness: MySQL Ping succeed
 ```
 codex.example.com/octo/octo-todo/       # todo-service + todo-web + docs
 codex.example.com/octo/octo-cli/        # unified CLI (separate repo)
-codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
+codex.example.com/octo/dmworkim verify/ # auth SDK (separate repo)
 ```
 
 ## Implementation Phases
@@ -714,7 +714,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
 ### Phase 1 — Auth + Core Service + CLI (Week 1-2)
 
 - Octo IM server: implement 3 internal auth endpoints
-- octo-auth-client SDK (Go package)
+- dmworkim verify API (Go package)
 - MySQL schema + migrations
 - Goal CRUD API + Space isolation
 - Todo CRUD API + open/closed status + pagination
@@ -761,7 +761,7 @@ codex.example.com/octo/octo-auth-client/ # auth SDK (separate repo)
    - **Nginx layer**: `location /internal/ { allow 192.0.2.0/24; allow 198.51.100.0/24; deny all; }`
    - **Octo IM server layer**: Internal routes bind to separate port `:8091` (not `:8090`), accessible only from internal network.
    Public port `:8090` does NOT serve `/internal/*` paths.
-9. **Auth cache policy** — octo-auth-client SDK uses read/write split caching:
+9. **Auth cache policy** — dmworkim verify API uses read/write split caching:
    - Read operations (GET): 60s local cache TTL
    - Write operations (PUT/POST/DELETE): realtime verify, no cache
    This prevents stale-token phantom writes while keeping read performance high.

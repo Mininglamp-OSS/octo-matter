@@ -199,14 +199,16 @@ Creator or assignee can set status to `open` or `closed`. Idempotent — setting
 
 ## Authentication
 
-Dual-path via octo-auth — auto-routes based on request header:
+Dual-path auth via dmworkim verify API:
 
 | Header | Path | Use case |
 |--------|------|----------|
-| `token` | User verification via octo-auth | Human users (dmwork-web) |
-| `Authorization: Bot <id>/<key>` | Bot verification via octo-auth | Bot/agent automation |
+| `token` | User token → POST dmworkim /v1/auth/verify | Human users (dmwork-web) |
+| `Authorization: Bearer <bot_token>` | Bot token → POST dmworkim /v1/auth/verify-bot | Bot/agent automation |
 
-Config: `AUTH_URL` (octo-auth base URL) + `AUTH_INTERNAL_KEY` (pre-shared key).
+Bot-owner visibility: users see their bots' goals/todos, bots see their owner's.
+
+Config: `DMWORKIM_URL` (dmworkim base URL) + `WUKONGIM_URL` (notification delivery).
 
 ## Design Document
 
@@ -218,9 +220,9 @@ Full architecture design with data model, API specification, auth strategy:
 
 | Repository | Description |
 |-----------|-------------|
-| [Mininglamp-OSS/octo-auth](https://github.com/Mininglamp-OSS/octo-auth) | Auth service + SDK |
+| [Mininglamp-OSS/octo-server](https://github.com/Mininglamp-OSS/octo-server) | Core IM platform (auth verify API) |
 | [Mininglamp-OSS/octo-cli](https://github.com/Mininglamp-OSS/octo-cli) | Unified Octo CLI |
-| [Mininglamp-OSS/octo-server](https://github.com/Mininglamp-OSS/octo-server) | Core IM platform |
+| [Mininglamp-OSS/octo-web](https://github.com/Mininglamp-OSS/octo-web) | Web frontend (todo-web module) |
 
 ## License
 

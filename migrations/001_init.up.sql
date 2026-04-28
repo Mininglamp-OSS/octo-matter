@@ -6,11 +6,13 @@ CREATE TABLE IF NOT EXISTS goals (
     title           VARCHAR(200)    NOT NULL,
     description     TEXT            NULL,
     creator_id      VARCHAR(64)     NOT NULL,
-    archived        TINYINT(1)      NOT NULL DEFAULT 0,
+    status          ENUM('active','completed','archived') NOT NULL DEFAULT 'active',
+    deadline        DATETIME(3)     NULL,
     created_at      DATETIME(3)     NOT NULL,
     updated_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
-    INDEX idx_goals_space_creator (space_id, creator_id)
+    INDEX idx_goals_space_creator (space_id, creator_id),
+    INDEX idx_goals_space_status (space_id, status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS goal_assignees (

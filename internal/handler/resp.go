@@ -111,3 +111,12 @@ func userName(c *gin.Context) string {
 func spaceID(c *gin.Context) string {
 	return c.GetString("space_id")
 }
+
+func relatedUIDs(c *gin.Context) []string {
+	if v, exists := c.Get("related_uids"); exists {
+		if uids, ok := v.([]string); ok && len(uids) > 0 {
+			return uids
+		}
+	}
+	return []string{uid(c)}
+}
