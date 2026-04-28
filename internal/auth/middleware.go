@@ -37,6 +37,7 @@ type verifyBotResp struct {
 	BotName   string `json:"bot_name"`
 	OwnerUID  string `json:"owner_uid"`
 	OwnerName string `json:"owner_name"`
+	SpaceID   string `json:"space_id"`
 }
 
 // AuthMiddleware authenticates requests by calling dmworkim's verify API.
@@ -167,6 +168,9 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 		c.Set("uid", result.BotUID)
 		c.Set("name", result.BotName)
 		c.Set("role", "bot")
+		if result.SpaceID != "" {
+			c.Set("space_id", result.SpaceID)
+		}
 		relatedUIDs := []string{result.BotUID}
 		if result.OwnerUID != "" {
 			relatedUIDs = append(relatedUIDs, result.OwnerUID)
@@ -205,6 +209,9 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	c.Set("uid", result.BotUID)
 	c.Set("name", result.BotName)
 	c.Set("role", "bot")
+	if result.SpaceID != "" {
+		c.Set("space_id", result.SpaceID)
+	}
 
 	// Build related UIDs: [self, owner]
 	relatedUIDs := []string{result.BotUID}
