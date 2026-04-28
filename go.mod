@@ -3,7 +3,6 @@ module github.com/Mininglamp-OSS/octo-matter
 go 1.25.0
 
 require (
-	github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260427140213-200408405ca8
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocraft/dbr/v2 v2.7.7

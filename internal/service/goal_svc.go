@@ -1,12 +1,13 @@
 package service
 
 import (
+	"time"
+
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
 
-// goalStore is the subset of GoalRepo the service depends on.
 type goalStore interface {
 	Create(goal *model.Goal) error
 	GetByID(id, spaceID string) (*model.Goal, error)
@@ -17,6 +18,7 @@ type goalStore interface {
 	RemoveAssignee(goalID, userID string) error
 	ListAssignees(goalID string) ([]*model.GoalAssignee, error)
 	IsAssignee(goalID, userID string) (bool, error)
+	GetTodoStatsByGoals(goalIDs []string) (map[string]*repository.TodoStats, error)
 }
 
 type GoalService struct {
@@ -28,12 +30,20 @@ func NewGoalService(goalRepo goalStore, tx txRunner) *GoalService {
 	return &GoalService{goalRepo: goalRepo, tx: tx}
 }
 
-func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *string, assigneeIDs []string) (*model.Goal, error) {
+func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *string, deadline *string, assigneeIDs []string) (*model.Goal, error) {
 	goal := &model.Goal{
 		SpaceID:     spaceID,
 		Title:       title,
 		Description: description,
 		CreatorID:   creatorID,
+		Status:      model.GoalStatusActive,
+	}
+	if deadline != nil {
+		t, err := ParseOptionalRFC3339(*deadline)
+		if err != nil {
+			return nil, apperr.InvalidInput("deadline must be RFC3339 or empty")
+		}
+		goal.Deadline = t
 	}
 	err := s.tx.Do(func(r *repository.TxRepos) error {
 		if err := r.Goal.Create(goal); err != nil {
@@ -52,14 +62,18 @@ func (s *GoalService) CreateGoal(spaceID, creatorID, title string, description *
 	return goal, nil
 }
 
-// GoalListResult wraps paginated goal results.
-type GoalListResult struct {
-	Items      []*model.Goal `json:"items"`
-	HasMore    bool          `json:"has_more"`
-	NextCursor string        `json:"next_cursor,omitempty"`
+type GoalWithStats struct {
+	*model.Goal
+	OpenCount   int `json:"open_count"`
+	ClosedCount int `json:"closed_count"`
 }
 
-// ListGoals returns goals where the user is creator or assignee, with cursor pagination.
+type GoalListResult struct {
+	Items      []*GoalWithStats `json:"items"`
+	HasMore    bool             `json:"has_more"`
+	NextCursor string           `json:"next_cursor,omitempty"`
+}
+
 func (s *GoalService) ListGoals(spaceID string, filter repository.GoalFilter) (*GoalListResult, error) {
 	goals, hasMore, err := s.goalRepo.ListByUser(spaceID, filter)
 	if err != nil {
@@ -68,26 +82,34 @@ func (s *GoalService) ListGoals(spaceID string, filter repository.GoalFilter) (*
 	var nextCursor string
 	if hasMore && len(goals) > 0 {
 		last := goals[len(goals)-1]
-		nextCursor = repository.EncodeCursor(repository.Cursor{
-			CreatedAt: last.CreatedAt,
-			ID:        last.ID,
-		})
+		nextCursor = repository.EncodeCursor(repository.Cursor{CreatedAt: last.CreatedAt, ID: last.ID})
 	}
-	return &GoalListResult{
-		Items:      goals,
-		HasMore:    hasMore,
-		NextCursor: nextCursor,
-	}, nil
+
+	goalIDs := make([]string, 0, len(goals))
+	for _, g := range goals {
+		goalIDs = append(goalIDs, g.ID)
+	}
+	statsMap, _ := s.goalRepo.GetTodoStatsByGoals(goalIDs)
+
+	items := make([]*GoalWithStats, 0, len(goals))
+	for _, g := range goals {
+		gs := &GoalWithStats{Goal: g}
+		if stats, ok := statsMap[g.ID]; ok {
+			gs.OpenCount = stats.OpenCount
+			gs.ClosedCount = stats.ClosedCount
+		}
+		items = append(items, gs)
+	}
+	return &GoalListResult{Items: items, HasMore: hasMore, NextCursor: nextCursor}, nil
 }
 
-// GoalDetail is the enriched response for a single goal (no kanban — just
-// metadata + assignees).
 type GoalDetail struct {
 	*model.Goal
-	Assignees []*model.GoalAssignee `json:"assignees"`
+	Assignees   []*model.GoalAssignee `json:"assignees"`
+	OpenCount   int                   `json:"open_count"`
+	ClosedCount int                   `json:"closed_count"`
 }
 
-// GetGoal returns goal detail. Only creator or assignee can access.
 func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	goal, err := s.goalRepo.GetByID(id, spaceID)
 	if err != nil {
@@ -100,13 +122,16 @@ func (s *GoalService) GetGoal(id, spaceID, userID string) (*GoalDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &GoalDetail{
-		Goal:      goal,
-		Assignees: assignees,
-	}, nil
+	statsMap, _ := s.goalRepo.GetTodoStatsByGoals([]string{id})
+	detail := &GoalDetail{Goal: goal, Assignees: assignees}
+	if stats, ok := statsMap[id]; ok {
+		detail.OpenCount = stats.OpenCount
+		detail.ClosedCount = stats.ClosedCount
+	}
+	return detail, nil
 }
 
-func (s *GoalService) UpdateGoal(id, spaceID, userID, title string, description *string) (*model.Goal, error) {
+func (s *GoalService) UpdateGoal(id, spaceID, userID, title string, description *string, deadline *string) (*model.Goal, error) {
 	goal, err := s.goalRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
@@ -116,6 +141,13 @@ func (s *GoalService) UpdateGoal(id, spaceID, userID, title string, description 
 	}
 	goal.Title = title
 	goal.Description = description
+	if deadline != nil {
+		t, err := ParseOptionalRFC3339(*deadline)
+		if err != nil {
+			return nil, apperr.InvalidInput("deadline must be RFC3339 or empty")
+		}
+		goal.Deadline = t
+	}
 	if err := s.goalRepo.Update(goal); err != nil {
 		return nil, err
 	}
@@ -165,3 +197,5 @@ func (s *GoalService) canAccessGoal(goal *model.Goal, userID string) bool {
 	}
 	return isAssignee
 }
+
+var _ = time.RFC3339
