@@ -100,6 +100,14 @@ func uid(c *gin.Context) string {
 	return c.GetString("uid")
 }
 
+func userName(c *gin.Context) string {
+	name := c.GetString("name")
+	if name == "" {
+		return c.GetString("uid") // fallback to uid if name not set
+	}
+	return name
+}
+
 func spaceID(c *gin.Context) string {
 	return c.GetString("space_id")
 }

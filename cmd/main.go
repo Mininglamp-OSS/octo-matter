@@ -12,6 +12,7 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
+	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 )
@@ -36,6 +37,13 @@ func main() {
 	attachmentRepo := repository.NewAttachmentRepo(sess)
 	txMgr := repository.NewTxManager(sess)
 
+	// Notifier
+	var notifier notification.Notifier
+	if cfg.WuKongIMURL != "" {
+		notifier = notification.NewWKNotifier(cfg.WuKongIMURL, cfg.NotifyBotUID)
+		log.Printf("notification enabled: wukongim=%s bot=%s", cfg.WuKongIMURL, cfg.NotifyBotUID)
+	}
+
 	// Services
 	goalSvc := service.NewGoalService(goalRepo, txMgr)
 	todoSvc := service.NewTodoService(todoRepo, assigneeRepo, goalRepo, txMgr)
@@ -44,8 +52,8 @@ func main() {
 
 	// Handlers
 	goalH := handler.NewGoalHandler(goalSvc)
-	todoH := handler.NewTodoHandler(todoSvc)
-	commentH := handler.NewCommentHandler(commentSvc)
+	todoH := handler.NewTodoHandler(todoSvc, notifier)
+	commentH := handler.NewCommentHandler(commentSvc, todoSvc, notifier)
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
 	// Readiness probe: MySQL Ping via embedded *sql.DB.
