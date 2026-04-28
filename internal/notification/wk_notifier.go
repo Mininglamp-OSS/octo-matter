@@ -2,6 +2,7 @@ package notification
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -33,11 +34,12 @@ func NewWKNotifier(apiURL, botUID string) *WKNotifier {
 
 // sendToUser sends a text message from the notification bot to a single user.
 func (n *WKNotifier) sendToUser(toUID, content string) error {
-	// WuKongIM expects payload as a JSON-encoded string, not a nested object.
-	payloadStr, _ := json.Marshal(map[string]interface{}{
+	// WuKongIM expects payload as base64-encoded JSON string.
+	payloadJSON, _ := json.Marshal(map[string]interface{}{
 		"type":    1, // text message
 		"content": content,
 	})
+	payloadB64 := base64.StdEncoding.EncodeToString(payloadJSON)
 
 	body, _ := json.Marshal(map[string]interface{}{
 		"header": map[string]interface{}{
@@ -48,7 +50,7 @@ func (n *WKNotifier) sendToUser(toUID, content string) error {
 		"from_uid":     n.botUID,
 		"channel_id":   toUID,
 		"channel_type": 1, // personal channel
-		"payload":      string(payloadStr),
+		"payload":      payloadB64,
 	})
 
 	resp, err := n.client.Post(n.apiURL+"/message/send", "application/json", bytes.NewReader(body))
