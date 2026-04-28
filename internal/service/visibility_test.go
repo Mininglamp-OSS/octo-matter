@@ -14,7 +14,7 @@ func (denyAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { r
 
 func TestCommentService_CreateComment_DeniedByVisibility(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "owner"}
-	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), denyAccessChecker{})
+	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), denyAccessChecker{}, nil)
 	_, err := svc.CreateComment("t1", "sp1", "stranger", "hello")
 	if err == nil || !errors.Is(err, apperr.ErrForbidden) {
 		t.Errorf("expected ErrForbidden, got %v", err)
