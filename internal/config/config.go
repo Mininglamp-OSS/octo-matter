@@ -15,12 +15,14 @@ const (
 
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
-	AppEnv      AppEnv
-	MySQLDSN    string
-	RedisURL    string
-	AuthURL     string // octo-auth base URL for token verification
-	InternalKey string // pre-shared key for calling octo-auth internal endpoints
-	ServerPort  string
+	AppEnv       AppEnv
+	MySQLDSN     string
+	RedisURL     string
+	AuthURL      string // octo-auth base URL for token verification
+	InternalKey  string // pre-shared key for calling octo-auth internal endpoints
+	ServerPort   string
+	WuKongIMURL  string // WuKongIM API URL for sending messages
+	NotifyBotUID string // system notification bot UID
 }
 
 // Load reads configuration from environment.
@@ -33,6 +35,8 @@ func Load() *Config {
 		AuthURL:     devDefault(env, "AUTH_URL", "http://127.0.0.1:8080"),
 		InternalKey: os.Getenv("AUTH_INTERNAL_KEY"),
 		ServerPort:  envOrDefault("SERVER_PORT", "8080"),
+		WuKongIMURL:  devDefault(env, "WUKONGIM_API_URL", "http://127.0.0.1:5001"),
+		NotifyBotUID: envOrDefault("NOTIFY_BOT_UID", "notification"),
 	}
 }
 

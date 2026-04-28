@@ -5,17 +5,22 @@ import (
 	"strconv"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
+	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
 type TodoHandler struct {
-	svc *service.TodoService
+	svc      *service.TodoService
+	notifier notification.Notifier
 }
 
-func NewTodoHandler(svc *service.TodoService) *TodoHandler {
-	return &TodoHandler{svc: svc}
+func NewTodoHandler(svc *service.TodoService, notifier notification.Notifier) *TodoHandler {
+	if notifier == nil {
+		notifier = notification.Noop{}
+	}
+	return &TodoHandler{svc: svc, notifier: notifier}
 }
 
 type createTodoReq struct {
@@ -70,6 +75,10 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	actorName := userName(c)
+	notification.SafeGo(func() {
+		h.notifier.NotifyTodoCreated(todo, actorName, req.AssigneeIDs)
+	})
 	created(c, detail)
 }
 
@@ -187,6 +196,15 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
+	actorUID := uid(c)
+	actorName := userName(c)
+	aIDs := make([]string, 0, len(detail.Assignees))
+	for _, a := range detail.Assignees {
+		aIDs = append(aIDs, a.UserID)
+	}
+	notification.SafeGo(func() {
+		h.notifier.NotifyStatusChanged(detail.Todo, actorUID, actorName, aIDs)
+	})
 	ok(c, detail)
 }
 
@@ -208,10 +226,20 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	if err := h.svc.AddAssignee(c.Param("id"), spaceID(c), uid(c), req.UserID); err != nil {
+	todoID := c.Param("id")
+	space := spaceID(c)
+	actorName := userName(c)
+	assigneeUID := req.UserID
+	if err := h.svc.AddAssignee(todoID, space, uid(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}
+	notification.SafeGo(func() {
+		todo, err := h.svc.GetTodoRaw(todoID, space)
+		if err == nil {
+			h.notifier.NotifyAssigneeAdded(todo, actorName, assigneeUID)
+		}
+	})
 	ok(c, nil)
 }
 
