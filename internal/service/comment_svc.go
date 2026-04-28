@@ -3,6 +3,7 @@ package service
 import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
+	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 )
 
 type commentStore interface {
@@ -21,10 +22,14 @@ type CommentService struct {
 	commentRepo commentStore
 	todoRepo    todoScopeChecker
 	access      TodoAccessChecker
+	notifier    notification.Notifier
 }
 
-func NewCommentService(commentRepo commentStore, todoRepo todoScopeChecker, access TodoAccessChecker) *CommentService {
-	return &CommentService{commentRepo: commentRepo, todoRepo: todoRepo, access: access}
+func NewCommentService(commentRepo commentStore, todoRepo todoScopeChecker, access TodoAccessChecker, notifier notification.Notifier) *CommentService {
+	if notifier == nil {
+		notifier = notification.Noop{}
+	}
+	return &CommentService{commentRepo: commentRepo, todoRepo: todoRepo, access: access, notifier: notifier}
 }
 
 func (s *CommentService) CreateComment(todoID, spaceID, userID, content string) (*model.TodoComment, error) {
@@ -43,6 +48,7 @@ func (s *CommentService) CreateComment(todoID, spaceID, userID, content string) 
 	if err := s.commentRepo.Create(c); err != nil {
 		return nil, err
 	}
+	go s.notifier.NotifyCommentAdded(todo, userID, userID)
 	return c, nil
 }
 

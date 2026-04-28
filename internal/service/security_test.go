@@ -143,7 +143,7 @@ func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { r
 // --- helpers -------------------------------------------------------------
 
 func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
-	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, noopTxRunner{})
+	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, noopTxRunner{}, nil)
 }
 
 // --- comment/attachment fakes -------------------------------------------
@@ -268,7 +268,7 @@ func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 
 func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{}, nil)
 	_, err := svc.CreateComment("t1", "space-B", "u2", "hi")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space CreateComment: got %v, want ErrNotFound", err)
@@ -278,7 +278,7 @@ func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
-	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
+	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{}, nil)
 	err := svc.DeleteComment("c1", "space-A", "u2")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-author DeleteComment: got %v, want ErrForbidden", err)
