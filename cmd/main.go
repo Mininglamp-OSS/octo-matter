@@ -22,7 +22,7 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid configuration: %v", err)
 	}
-	log.Printf("starting todo-service env=%s auth=%s", cfg.AppEnv, cfg.AuthURL)
+	log.Printf("starting todo-service env=%s dmworkim=%s", cfg.AppEnv, cfg.DmworkIMURL)
 
 	conn, sess, err := repository.NewSession(cfg.MySQLDSN)
 	if err != nil {
@@ -37,13 +37,13 @@ func main() {
 	attachmentRepo := repository.NewAttachmentRepo(sess)
 	txMgr := repository.NewTxManager(sess)
 
-	// Notifier
+	// Notifier — uses WuKongIM /message/send as system admin (u_10000)
 	var notifier notification.Notifier
 	if cfg.WuKongIMURL != "" {
-		notifier = notification.NewWKNotifier(cfg.WuKongIMURL, cfg.NotifyBotUID)
-		log.Printf("notification enabled: wukongim=%s bot=%s", cfg.WuKongIMURL, cfg.NotifyBotUID)
+		notifier = notification.NewSystemNotifier(cfg.WuKongIMURL)
+		log.Printf("notification enabled via WuKongIM %s (from_uid=u_10000)", cfg.WuKongIMURL)
 	} else {
-		log.Printf("WARN: WUKONGIM_API_URL not set — notifications disabled")
+		log.Printf("WARN: WUKONGIM_URL not set — notifications disabled")
 	}
 
 	// Services
@@ -58,18 +58,18 @@ func main() {
 	commentH := handler.NewCommentHandler(commentSvc, todoSvc, notifier)
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
-	// Readiness probe: MySQL Ping via embedded *sql.DB.
+	// Auth: call dmworkim /v1/auth/verify + /v1/auth/verify-bot
+	authMW := auth.AuthMiddleware(auth.Config{DmworkIMURL: cfg.DmworkIMURL})
+	spaceMW := auth.SpaceMiddleware(cfg.DmworkIMURL)
+
+	// Readiness
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	userAuth := auth.NewAuthMiddleware(cfg)
-	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, userAuth, readiness)
+	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, authMW, spaceMW, readiness)
 
-	// Graceful shutdown: drain in-flight requests on SIGINT/SIGTERM.
-	srv := &http.Server{
-		Addr:    ":" + cfg.ServerPort,
-		Handler: r,
-	}
+	// Graceful shutdown
+	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
 
 	go func() {
 		log.Printf("listening on :%s", cfg.ServerPort)
@@ -81,7 +81,7 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("shutting down, draining requests (10s timeout)...")
+	log.Println("shutting down...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

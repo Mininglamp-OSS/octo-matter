@@ -97,7 +97,7 @@ func (h *TodoHandler) List(c *gin.Context) {
 	sourceChannelTypeStr := c.Query("source_channel_type")
 
 	filter := repository.TodoFilter{
-		CallerID: uid(c),
+		CallerUIDs: relatedUIDs(c),
 		Limit:    limit,
 	}
 	if cursor != "" {

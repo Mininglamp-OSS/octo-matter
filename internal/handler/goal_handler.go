@@ -44,7 +44,7 @@ func (h *GoalHandler) List(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 	filter := repository.GoalFilter{
-		CallerID: uid(c),
+		CallerUIDs: relatedUIDs(c),
 		Limit:    limit,
 	}
 	if cursor != "" {

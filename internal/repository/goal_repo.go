@@ -47,7 +47,7 @@ func (r *GoalRepo) GetByID(id, spaceID string) (*model.Goal, error) {
 
 // GoalFilter holds optional filters for goal listing.
 type GoalFilter struct {
-	CallerID string
+	CallerUIDs []string
 	Cursor   *string
 	Limit    int
 }
@@ -62,7 +62,7 @@ func (r *GoalRepo) ListByUser(spaceID string, filter GoalFilter) ([]*model.Goal,
 	q := r.runner.Select("g.*").
 		From(dbr.I("goals").As("g")).
 		LeftJoin(dbr.I("goal_assignees").As("ga"), "ga.goal_id = g.id").
-		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id = ? OR ga.user_id = ?)", spaceID, filter.CallerID, filter.CallerID).
+		Where("g.space_id = ? AND g.archived = 0 AND (g.creator_id IN ? OR ga.user_id IN ?)", spaceID, filter.CallerUIDs, filter.CallerUIDs).
 		GroupBy("g.id")
 
 	if filter.Cursor != nil && *filter.Cursor != "" {
