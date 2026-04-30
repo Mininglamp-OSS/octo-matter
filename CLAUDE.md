@@ -23,7 +23,7 @@ Layers (strict direction, no skipping):
 - `internal/repository/`    dbr queries (parameterized; no raw SQL concat)
 - `internal/model/`         domain structs (todo.go, goal.go, assignee.go, etc.)
 - `internal/auth/`          middleware — calls dmworkim verify API for auth + Space check
-- `internal/notification/`  system notifications via WuKongIM (from_uid=u_10000)
+- `internal/notification/`  system notifications via dmworkim internal notify API (X-Internal-Token auth)
 - `internal/config/`        env-based config
 
 ## Key Invariants (gotchas)
@@ -33,7 +33,7 @@ Layers (strict direction, no skipping):
 - **Permissions**: creator can do all edits + delete; assignees can close/reopen.
 - **Auth** — Calls dmworkim public API: `token` header → POST /v1/auth/verify, `Authorization: Bearer` → POST /v1/auth/verify-bot. Config: `DMWORKIM_URL`.
 - **Bot-owner visibility**: users see their bots' todos, bots see their owner's todos. Implemented via `related_uids` (CallerUIDs IN ? queries).
-- **Notifications**: sent via WuKongIM /message/send as u_10000 (system admin). Config: `WUKONGIM_URL`.
+- **Notifications**: sent via dmworkim POST /v1/internal/notify with X-Internal-Token. Config: `DMWORKIM_URL` (base URL), `NOTIFY_INTERNAL_TOKEN` (auth token).
 - **UUIDs** generated in app (google/uuid), not DB.
 - **dbr usage**: use `sess.Select(...).Where(...)` builders; never string-concat user input.
 

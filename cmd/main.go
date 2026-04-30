@@ -37,13 +37,11 @@ func main() {
 	attachmentRepo := repository.NewAttachmentRepo(sess)
 	txMgr := repository.NewTxManager(sess)
 
-	// Notifier — uses WuKongIM /message/send as system admin (u_10000)
-	var notifier notification.Notifier
-	if cfg.WuKongIMURL != "" {
-		notifier = notification.NewSystemNotifier(cfg.WuKongIMURL)
-		log.Printf("notification enabled via WuKongIM %s (from_uid=u_10000)", cfg.WuKongIMURL)
-	} else {
-		log.Printf("WARN: WUKONGIM_URL not set — notifications disabled")
+	// Notifier — posts to dmworkim /v1/internal/notify (X-Internal-Token auth)
+	notifier := notification.NewDmworkNotifier(cfg.DmworkIMURL, cfg.NotifyInternalToken)
+	log.Printf("notification enabled via dmworkim %s/v1/internal/notify", cfg.DmworkIMURL)
+	if cfg.NotifyInternalToken == "" {
+		log.Printf("WARN: NOTIFY_INTERNAL_TOKEN not set — requests will be sent without X-Internal-Token")
 	}
 
 	// Services
