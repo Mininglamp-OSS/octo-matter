@@ -13,21 +13,21 @@ const (
 )
 
 type Config struct {
-	AppEnv      AppEnv
-	MySQLDSN    string
-	DmworkIMURL string // dmworkim base URL for auth verify + Space check
-	WuKongIMURL string // WuKongIM API URL for sending notifications
-	ServerPort  string
+	AppEnv              AppEnv
+	MySQLDSN            string
+	DmworkIMURL         string // dmworkim base URL for auth verify + Space check + internal notify
+	NotifyInternalToken string // shared secret for dmworkim /v1/internal/notify (X-Internal-Token)
+	ServerPort          string
 }
 
 func Load() *Config {
 	env := AppEnv(envOrDefault("APP_ENV", string(AppEnvDev)))
 	return &Config{
-		AppEnv:      env,
-		MySQLDSN:    devDefault(env, "MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
-		DmworkIMURL: devDefault(env, "DMWORKIM_URL", "http://127.0.0.1:8090"),
-		WuKongIMURL: devDefault(env, "WUKONGIM_URL", "http://127.0.0.1:5001"),
-		ServerPort:  envOrDefault("SERVER_PORT", "8080"),
+		AppEnv:              env,
+		MySQLDSN:            devDefault(env, "MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
+		DmworkIMURL:         devDefault(env, "DMWORKIM_URL", "http://127.0.0.1:8090"),
+		NotifyInternalToken: envOrDefault("NOTIFY_INTERNAL_TOKEN", ""),
+		ServerPort:          envOrDefault("SERVER_PORT", "8080"),
 	}
 }
 
