@@ -119,12 +119,15 @@ func (s *TodoService) GetTodoForNotification(id, spaceID string) (*model.Todo, e
 	return s.todoRepo.GetByID(id, spaceID)
 }
 
-func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
+// GetTodo loads a todo the caller is allowed to read. sourceChannelID, when
+// non-empty, grants read access if it matches the todo's source channel —
+// chat-originated todos are visible to anyone in the originating channel.
+func (s *TodoService) GetTodo(id, spaceID, userID, sourceChannelID string) (*TodoDetail, error) {
 	todo, err := s.todoRepo.GetByID(id, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.canAccessTodo(todo, userID) {
+	if !s.canAccessTodo(todo, userID, sourceChannelID) {
 		return nil, apperr.Forbidden("not authorized to view this todo")
 	}
 	assignees, err := s.assigneeRepo.ListByTodo(id)
@@ -137,12 +140,17 @@ func (s *TodoService) GetTodo(id, spaceID, userID string) (*TodoDetail, error) {
 	}, nil
 }
 
-// CanAccessTodo checks if user can view a todo: creator, assignee, or goal assignee.
-func (s *TodoService) CanAccessTodo(todo *model.Todo, userID string) bool {
-	return s.canAccessTodo(todo, userID)
+// CanAccessTodo checks if user can view a todo: creator, assignee, goal
+// assignee, or — when sourceChannelID is non-empty — a member of the todo's
+// originating channel.
+func (s *TodoService) CanAccessTodo(todo *model.Todo, userID string, sourceChannelID string) bool {
+	return s.canAccessTodo(todo, userID, sourceChannelID)
 }
 
-func (s *TodoService) canAccessTodo(todo *model.Todo, userID string) bool {
+func (s *TodoService) canAccessTodo(todo *model.Todo, userID string, sourceChannelID string) bool {
+	if sourceChannelID != "" && todo.SourceChannelID != nil && *todo.SourceChannelID == sourceChannelID {
+		return true
+	}
 	if todo.CreatorID == userID {
 		return true
 	}
