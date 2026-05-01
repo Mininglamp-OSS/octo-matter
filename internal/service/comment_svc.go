@@ -27,12 +27,12 @@ func NewCommentService(commentRepo commentStore, todoRepo todoScopeChecker, acce
 	return &CommentService{commentRepo: commentRepo, todoRepo: todoRepo, access: access}
 }
 
-func (s *CommentService) CreateComment(todoID, spaceID, userID, content string) (*model.TodoComment, error) {
+func (s *CommentService) CreateComment(todoID, spaceID, userID, content string, sourceChannelID string) (*model.TodoComment, error) {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.access.CanAccessTodo(todo, userID) {
+	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
 		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	c := &model.TodoComment{
@@ -46,18 +46,18 @@ func (s *CommentService) CreateComment(todoID, spaceID, userID, content string) 
 	return c, nil
 }
 
-func (s *CommentService) ListComments(todoID, spaceID, userID string) ([]*model.TodoComment, error) {
+func (s *CommentService) ListComments(todoID, spaceID, userID string, sourceChannelID string) ([]*model.TodoComment, error) {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.access.CanAccessTodo(todo, userID) {
+	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
 		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	return s.commentRepo.ListByTodo(todoID)
 }
 
-func (s *CommentService) DeleteComment(id, spaceID, userID string) error {
+func (s *CommentService) DeleteComment(id, spaceID, userID string, sourceChannelID string) error {
 	c, err := s.commentRepo.GetByID(id)
 	if err != nil {
 		return err
@@ -66,7 +66,7 @@ func (s *CommentService) DeleteComment(id, spaceID, userID string) error {
 	if err != nil {
 		return err
 	}
-	if !s.access.CanAccessTodo(todo, userID) {
+	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
 		return apperr.Forbidden("not authorized to access this todo")
 	}
 	if c.UserID != userID {
