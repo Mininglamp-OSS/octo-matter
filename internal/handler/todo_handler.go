@@ -147,7 +147,7 @@ func (h *TodoHandler) List(c *gin.Context) {
 }
 
 func (h *TodoHandler) Get(c *gin.Context) {
-	detail, err := h.svc.GetTodo(c.Param("id"), spaceID(c), uid(c))
+	detail, err := h.svc.GetTodo(c.Param("id"), spaceID(c), uid(c), c.Query("source_channel_id"))
 	if err != nil {
 		respondErr(c, err)
 		return

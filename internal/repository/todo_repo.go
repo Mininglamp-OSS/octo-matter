@@ -80,12 +80,19 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 
 	q := r.runner.Select("*").
 		From("todos").
-		Where("space_id = ? AND deleted_at IS NULL", spaceID).
-		Where(
+		Where("space_id = ? AND deleted_at IS NULL", spaceID)
+
+	// When scoping by source_channel_id, the channel filter itself bounds
+	// visibility: anyone querying a channel they belong to should see its
+	// chat-originated todos. Otherwise fall back to the caller-UID check.
+	if filter.SourceChannelID == nil {
+		q = q.Where(
 			"(creator_id IN ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id IN ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id IN ?))",
 			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs,
-		).
-		Where("(goal_id IS NULL OR NOT EXISTS (SELECT 1 FROM goals WHERE goals.id = todos.goal_id AND goals.status = 'archived'))")
+		)
+	}
+
+	q = q.Where("(goal_id IS NULL OR NOT EXISTS (SELECT 1 FROM goals WHERE goals.id = todos.goal_id AND goals.status = 'archived'))")
 
 	if filter.GoalID != nil {
 		q = q.Where("goal_id = ?", *filter.GoalID)
