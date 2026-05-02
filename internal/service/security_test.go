@@ -138,7 +138,9 @@ func (fakeGoalAccessChecker) GetByID(id, spaceID string) (*model.Goal, error) {
 
 type fakeAccessChecker struct{}
 
-func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string) bool { return true }
+func (fakeAccessChecker) CanAccessTodo(todo *model.Todo, userID string, sourceChannelID string) bool {
+	return true
+}
 
 // --- helpers -------------------------------------------------------------
 
@@ -233,7 +235,7 @@ func (f *fakeAttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment,
 func TestTodoService_GetTodo_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
-	_, err := svc.GetTodo("t1", "space-B", "caller")
+	_, err := svc.GetTodo("t1", "space-B", "caller", "")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space GetTodo: got %v, want ErrNotFound", err)
 	}
@@ -269,7 +271,7 @@ func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
-	_, err := svc.CreateComment("t1", "space-B", "u2", "hi")
+	_, err := svc.CreateComment("t1", "space-B", "u2", "hi", "")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space CreateComment: got %v, want ErrNotFound", err)
 	}
@@ -279,7 +281,7 @@ func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
 	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
-	err := svc.DeleteComment("c1", "space-A", "u2")
+	err := svc.DeleteComment("c1", "space-A", "u2", "")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-author DeleteComment: got %v, want ErrForbidden", err)
 	}
@@ -289,7 +291,7 @@ func TestAttachmentService_Delete_NonUploaderReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	att := &model.TodoAttachment{ID: "a1", TodoID: "t1", UserID: "u1", FileURL: "http://x"}
 	svc := NewAttachmentService(newFakeAttachmentRepo(att), newFakeTodoRepo(todo), fakeAccessChecker{})
-	err := svc.DeleteAttachment("a1", "space-A", "u2")
+	err := svc.DeleteAttachment("a1", "space-A", "u2", "")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-uploader DeleteAttachment: got %v, want ErrForbidden", err)
 	}

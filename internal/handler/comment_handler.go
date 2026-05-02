@@ -33,7 +33,7 @@ func (h *CommentHandler) Create(c *gin.Context) {
 	space := spaceID(c)
 	actorUID := uid(c)
 	actorName := userName(c)
-	comment, err := h.svc.CreateComment(todoID, space, actorUID, req.Content)
+	comment, err := h.svc.CreateComment(todoID, space, actorUID, req.Content, "")
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -50,7 +50,7 @@ func (h *CommentHandler) Create(c *gin.Context) {
 }
 
 func (h *CommentHandler) List(c *gin.Context) {
-	comments, err := h.svc.ListComments(c.Param("id"), spaceID(c), uid(c))
+	comments, err := h.svc.ListComments(c.Param("id"), spaceID(c), uid(c), c.Query("source_channel_id"))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -59,7 +59,7 @@ func (h *CommentHandler) List(c *gin.Context) {
 }
 
 func (h *CommentHandler) Delete(c *gin.Context) {
-	if err := h.svc.DeleteComment(c.Param("comment_id"), spaceID(c), uid(c)); err != nil {
+	if err := h.svc.DeleteComment(c.Param("comment_id"), spaceID(c), uid(c), ""); err != nil {
 		respondErr(c, err)
 		return
 	}

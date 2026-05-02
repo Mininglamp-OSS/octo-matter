@@ -22,12 +22,12 @@ func NewAttachmentService(attachmentRepo attachmentStore, todoRepo todoScopeChec
 	return &AttachmentService{attachmentRepo: attachmentRepo, todoRepo: todoRepo, access: access}
 }
 
-func (s *AttachmentService) CreateAttachment(todoID, spaceID, userID, fileURL string, fileName *string, fileSize *int64, mimeType *string) (*model.TodoAttachment, error) {
+func (s *AttachmentService) CreateAttachment(todoID, spaceID, userID, fileURL string, fileName *string, fileSize *int64, mimeType *string, sourceChannelID string) (*model.TodoAttachment, error) {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.access.CanAccessTodo(todo, userID) {
+	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
 		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	a := &model.TodoAttachment{
@@ -44,18 +44,18 @@ func (s *AttachmentService) CreateAttachment(todoID, spaceID, userID, fileURL st
 	return a, nil
 }
 
-func (s *AttachmentService) ListAttachments(todoID, spaceID, userID string) ([]*model.TodoAttachment, error) {
+func (s *AttachmentService) ListAttachments(todoID, spaceID, userID string, sourceChannelID string) ([]*model.TodoAttachment, error) {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.access.CanAccessTodo(todo, userID) {
+	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
 		return nil, apperr.Forbidden("not authorized to access this todo")
 	}
 	return s.attachmentRepo.ListByTodo(todoID)
 }
 
-func (s *AttachmentService) DeleteAttachment(id, spaceID, userID string) error {
+func (s *AttachmentService) DeleteAttachment(id, spaceID, userID string, sourceChannelID string) error {
 	a, err := s.attachmentRepo.GetByID(id)
 	if err != nil {
 		return err
@@ -64,7 +64,7 @@ func (s *AttachmentService) DeleteAttachment(id, spaceID, userID string) error {
 	if err != nil {
 		return err
 	}
-	if !s.access.CanAccessTodo(todo, userID) {
+	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
 		return apperr.Forbidden("not authorized to access this todo")
 	}
 	if a.UserID != userID {
