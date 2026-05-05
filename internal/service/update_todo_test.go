@@ -27,6 +27,31 @@ func TestUpdateTodo_PersistsDeadlineAndRemindAt(t *testing.T) {
 	}
 }
 
+func TestUpdateTodo_AssigneeCanUpdate(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "owner", Title: "x", Status: model.TodoStatusOpen}
+	assigneeRepo := newFakeAssigneeRepo()
+	_ = assigneeRepo.Create(&model.TodoAssignee{TodoID: "t1", UserID: "assignee-1"})
+	svc := newTodoSvc(newFakeTodoRepo(todo), assigneeRepo)
+
+	updated, err := svc.UpdateTodo("t1", "space-A", "assignee-1", strPtr("new title"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("assignee should be able to update todo: %v", err)
+	}
+	if updated.Title != "new title" {
+		t.Errorf("title not updated: got %q, want %q", updated.Title, "new title")
+	}
+}
+
+func TestUpdateTodo_NonCreatorNonAssigneeForbidden(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "owner", Title: "x", Status: model.TodoStatusOpen}
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+
+	_, err := svc.UpdateTodo("t1", "space-A", "stranger", strPtr("hack"), nil, nil, nil, nil)
+	if !errors.Is(err, apperr.ErrForbidden) {
+		t.Fatalf("non-creator non-assignee should get ErrForbidden, got %v", err)
+	}
+}
+
 func TestUpdateTodo_EmptyStringClearsTimestamp(t *testing.T) {
 	existing := mustParse(t, "2026-06-01T12:00:00Z")
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, Deadline: &existing}

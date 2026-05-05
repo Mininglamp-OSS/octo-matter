@@ -136,8 +136,11 @@ func (s *GoalService) UpdateGoal(id, spaceID, userID, title string, description 
 	if err != nil {
 		return nil, err
 	}
-	if goal.CreatorID != userID {
-		return nil, apperr.Forbidden("only the creator can update this goal")
+	// Creator or assignee can update a goal.
+	isCreator := goal.CreatorID == userID
+	isAssignee, _ := s.goalRepo.IsAssignee(id, userID)
+	if !isCreator && !isAssignee {
+		return nil, apperr.Forbidden("only the creator or assignee can update this goal")
 	}
 	goal.Title = title
 	goal.Description = description

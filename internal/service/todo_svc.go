@@ -171,7 +171,10 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title *string, desc
 	if err != nil {
 		return nil, err
 	}
-	if todo.CreatorID != userID {
+	// Creator or assignee can update a todo (aligned with SetStatus permissions).
+	isCreator := todo.CreatorID == userID
+	isAssignee, _ := s.assigneeRepo.IsAssignee(id, userID)
+	if !isCreator && !isAssignee {
 		return nil, apperr.ErrForbidden
 	}
 	if title != nil {
