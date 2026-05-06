@@ -14,13 +14,14 @@ import (
 type TodoHandler struct {
 	svc      *service.TodoService
 	notifier notification.Notifier
+	worker   *notification.Worker
 }
 
-func NewTodoHandler(svc *service.TodoService, notifier notification.Notifier) *TodoHandler {
+func NewTodoHandler(svc *service.TodoService, notifier notification.Notifier, worker *notification.Worker) *TodoHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &TodoHandler{svc: svc, notifier: notifier}
+	return &TodoHandler{svc: svc, notifier: notifier, worker: worker}
 }
 
 type createTodoReq struct {
@@ -76,7 +77,7 @@ func (h *TodoHandler) Create(c *gin.Context) {
 		return
 	}
 	actorName := userName(c)
-	notification.SafeGo(func() {
+	h.worker.Submit(func() {
 		h.notifier.NotifyTodoCreated(todo, actorName, req.AssigneeIDs)
 	})
 	created(c, detail)
@@ -147,7 +148,12 @@ func (h *TodoHandler) List(c *gin.Context) {
 }
 
 func (h *TodoHandler) Get(c *gin.Context) {
-	detail, err := h.svc.GetTodo(c.Param("id"), spaceID(c), uid(c), c.Query("source_channel_id"))
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
+	detail, err := h.svc.GetTodo(id, spaceID(c), uid(c), c.Query("source_channel_id"))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -164,12 +170,17 @@ type updateTodoReq struct {
 }
 
 func (h *TodoHandler) Update(c *gin.Context) {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	var req updateTodoReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
-	todo, err := h.svc.UpdateTodo(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description, req.GoalID, req.Deadline, req.RemindAt)
+	todo, err := h.svc.UpdateTodo(id, spaceID(c), uid(c), req.Title, req.Description, req.GoalID, req.Deadline, req.RemindAt)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -182,6 +193,11 @@ type transitionReq struct {
 }
 
 func (h *TodoHandler) Transition(c *gin.Context) {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	var req transitionReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
@@ -191,7 +207,7 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open' or 'closed'", nil)
 		return
 	}
-	detail, err := h.svc.SetStatus(c.Param("id"), spaceID(c), uid(c), model.TodoStatus(req.Status))
+	detail, err := h.svc.SetStatus(id, spaceID(c), uid(c), model.TodoStatus(req.Status))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -202,14 +218,19 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 	for _, a := range detail.Assignees {
 		aIDs = append(aIDs, a.UserID)
 	}
-	notification.SafeGo(func() {
+	h.worker.Submit(func() {
 		h.notifier.NotifyStatusChanged(detail.Todo, actorUID, actorName, aIDs)
 	})
 	ok(c, detail)
 }
 
 func (h *TodoHandler) Delete(c *gin.Context) {
-	if err := h.svc.SoftDelete(c.Param("id"), spaceID(c), uid(c)); err != nil {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
+	if err := h.svc.SoftDelete(id, spaceID(c), uid(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -227,6 +248,10 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 		return
 	}
 	todoID := c.Param("id")
+	if !validUUID(todoID) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	space := spaceID(c)
 	actorName := userName(c)
 	assigneeUID := req.UserID
@@ -234,7 +259,7 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	notification.SafeGo(func() {
+	h.worker.Submit(func() {
 		todo, err := h.svc.GetTodoForNotification(todoID, space)
 		if err == nil {
 			h.notifier.NotifyAssigneeAdded(todo, actorName, assigneeUID)
@@ -244,12 +269,17 @@ func (h *TodoHandler) AddAssignee(c *gin.Context) {
 }
 
 func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	assigneeUID := c.Param("uid")
 	if assigneeUID == "" {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "assignee uid is required", nil)
 		return
 	}
-	if err := h.svc.RemoveAssignee(c.Param("id"), spaceID(c), uid(c), assigneeUID); err != nil {
+	if err := h.svc.RemoveAssignee(id, spaceID(c), uid(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}

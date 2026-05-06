@@ -4,11 +4,20 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/gin-gonic/gin"
 )
+
+// uuidRegex validates UUID v4 format on path parameters to avoid unnecessary
+// DB round-trips for garbage input.
+var uuidRegex = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func validUUID(id string) bool {
+	return uuidRegex.MatchString(id)
+}
 
 // This file implements the REST response envelope defined in DESIGN.md:
 //
@@ -92,7 +101,12 @@ func respondErr(c *gin.Context, err error) {
 }
 
 // bindJSONErr renders a JSON binding failure as 400 VALIDATION_ERROR.
+// Detects body-too-large to return 413 instead of generic 400.
 func bindJSONErr(c *gin.Context, err error) {
+	if err.Error() == "http: request body too large" {
+		failCode(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body exceeds size limit", nil)
+		return
+	}
 	failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
 }
 

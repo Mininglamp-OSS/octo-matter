@@ -49,10 +49,13 @@ type verifyBotResp struct {
 //   - "uid", "name", "role" — caller identity
 //   - "related_uids" — [self, owned_bots...] or [self, owner] for visibility
 // verifyCache caches auth verify results to avoid calling dmworkim on every request.
+// It bounds memory via periodic eviction of expired entries and a hard cap.
 type verifyCache struct {
 	mu      sync.RWMutex
 	entries map[string]verifyCacheEntry
 }
+
+const verifyCacheMaxSize = 10000
 
 type verifyCacheEntry struct {
 	result   interface{}
@@ -60,7 +63,24 @@ type verifyCacheEntry struct {
 }
 
 func newVerifyCache() *verifyCache {
-	return &verifyCache{entries: make(map[string]verifyCacheEntry)}
+	c := &verifyCache{entries: make(map[string]verifyCacheEntry)}
+	go c.evictLoop()
+	return c
+}
+
+// evictLoop removes expired entries every 5 minutes to prevent unbounded growth.
+func (c *verifyCache) evictLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		c.mu.Lock()
+		now := time.Now()
+		for k, e := range c.entries {
+			if now.After(e.expireAt) {
+				delete(c.entries, k)
+			}
+		}
+		c.mu.Unlock()
+	}
 }
 
 func (c *verifyCache) get(key string) (interface{}, bool) {
@@ -76,6 +96,10 @@ func (c *verifyCache) get(key string) (interface{}, bool) {
 func (c *verifyCache) set(key string, result interface{}, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.entries) >= verifyCacheMaxSize {
+		// Hard cap reached — clear all to prevent unbounded growth.
+		c.entries = make(map[string]verifyCacheEntry)
+	}
 	c.entries[key] = verifyCacheEntry{result: result, expireAt: time.Now().Add(ttl)}
 }
 
@@ -303,6 +327,8 @@ func GetRelatedUIDs(c *gin.Context) []string {
 
 // --- Simple in-memory cache for Space membership ---
 
+const spaceCacheMaxSize = 10000
+
 type spaceCache struct {
 	mu      sync.RWMutex
 	entries map[string]spaceCacheEntry
@@ -314,7 +340,23 @@ type spaceCacheEntry struct {
 }
 
 func newSpaceCache() *spaceCache {
-	return &spaceCache{entries: make(map[string]spaceCacheEntry)}
+	c := &spaceCache{entries: make(map[string]spaceCacheEntry)}
+	go c.evictLoop()
+	return c
+}
+
+func (c *spaceCache) evictLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		c.mu.Lock()
+		now := time.Now()
+		for k, e := range c.entries {
+			if now.After(e.expireAt) {
+				delete(c.entries, k)
+			}
+		}
+		c.mu.Unlock()
+	}
 }
 
 func (c *spaceCache) get(key string) (bool, bool) {
@@ -330,5 +372,8 @@ func (c *spaceCache) get(key string) (bool, bool) {
 func (c *spaceCache) set(key string, ok bool, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if len(c.entries) >= spaceCacheMaxSize {
+		c.entries = make(map[string]spaceCacheEntry)
+	}
 	c.entries[key] = spaceCacheEntry{ok: ok, expireAt: time.Now().Add(ttl)}
 }

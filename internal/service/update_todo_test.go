@@ -69,7 +69,8 @@ func TestUpdateTodo_EmptyStringClearsTimestamp(t *testing.T) {
 
 func TestUpdateTodo_NilPointerLeavesTimestampUntouched(t *testing.T) {
 	existing := mustParse(t, "2026-06-01T12:00:00Z")
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, Deadline: &existing}
+	desc := "keep me"
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, Deadline: &existing, Description: &desc}
 	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
 
 	updated, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, nil, nil, nil)
@@ -78,6 +79,10 @@ func TestUpdateTodo_NilPointerLeavesTimestampUntouched(t *testing.T) {
 	}
 	if updated.Deadline == nil || !updated.Deadline.Equal(existing) {
 		t.Errorf("nil deadline should leave existing value, got %v", updated.Deadline)
+	}
+	// Verify description is also preserved when nil (regression: previously cleared unconditionally).
+	if updated.Description == nil || *updated.Description != "keep me" {
+		t.Errorf("nil description should leave existing value, got %v", updated.Description)
 	}
 }
 
@@ -89,6 +94,37 @@ func TestUpdateTodo_InvalidDeadlineReturnsInvalidInput(t *testing.T) {
 	_, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, nil, &bad, nil)
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("bad deadline should return ErrInvalidInput, got %v", err)
+	}
+}
+
+func TestUpdateTodo_NilGoalIDPreservesExisting(t *testing.T) {
+	gid := "goal-123"
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, GoalID: &gid}
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+
+	// nil goalID means "don't change it"
+	updated, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("new title"), nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateTodo failed: %v", err)
+	}
+	if updated.GoalID == nil || *updated.GoalID != "goal-123" {
+		t.Errorf("nil goalID should preserve existing, got %v", updated.GoalID)
+	}
+}
+
+func TestUpdateTodo_EmptyGoalIDClearsGoal(t *testing.T) {
+	gid := "goal-123"
+	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.TodoStatusOpen, GoalID: &gid}
+	svc := newTodoSvc(newFakeTodoRepo(todo), newFakeAssigneeRepo())
+
+	// Empty string goalID means "clear the goal"
+	emptyGoal := ""
+	updated, err := svc.UpdateTodo("t1", "space-A", "u1", strPtr("x"), nil, &emptyGoal, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateTodo failed: %v", err)
+	}
+	if updated.GoalID == nil || *updated.GoalID != "" {
+		t.Errorf("empty goalID should clear goal, got %v", updated.GoalID)
 	}
 }
 

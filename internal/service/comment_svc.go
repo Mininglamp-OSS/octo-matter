@@ -9,7 +9,7 @@ type commentStore interface {
 	Create(c *model.TodoComment) error
 	GetByID(id string) (*model.TodoComment, error)
 	Delete(id string) error
-	ListByTodo(todoID string) ([]*model.TodoComment, error)
+	ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoComment, bool, error)
 }
 
 // todoScopeChecker resolves a todo within a space to reject cross-space access.
@@ -46,15 +46,15 @@ func (s *CommentService) CreateComment(todoID, spaceID, userID, content string, 
 	return c, nil
 }
 
-func (s *CommentService) ListComments(todoID, spaceID, userID string, sourceChannelID string) ([]*model.TodoComment, error) {
+func (s *CommentService) ListComments(todoID, spaceID, userID string, sourceChannelID string, cursor *string, limit int) ([]*model.TodoComment, bool, error) {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
-		return nil, apperr.Forbidden("not authorized to access this todo")
+		return nil, false, apperr.Forbidden("not authorized to access this todo")
 	}
-	return s.commentRepo.ListByTodo(todoID)
+	return s.commentRepo.ListByTodo(todoID, cursor, limit)
 }
 
 func (s *CommentService) DeleteComment(id, spaceID, userID string, sourceChannelID string) error {

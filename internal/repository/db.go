@@ -19,6 +19,7 @@ func NewSession(dsn string) (*dbr.Connection, *dbr.Session, error) {
 	conn.SetMaxOpenConns(20)
 	conn.SetMaxIdleConns(5)
 	conn.SetConnMaxLifetime(5 * time.Minute)
+	conn.SetConnMaxIdleTime(3 * time.Minute)
 	if err := conn.Ping(); err != nil {
 		return nil, nil, err
 	}

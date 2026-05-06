@@ -180,14 +180,14 @@ func (f *fakeCommentRepo) GetByID(id string) (*model.TodoComment, error) {
 
 func (f *fakeCommentRepo) Delete(id string) error { delete(f.byID, id); return nil }
 
-func (f *fakeCommentRepo) ListByTodo(todoID string) ([]*model.TodoComment, error) {
+func (f *fakeCommentRepo) ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoComment, bool, error) {
 	var out []*model.TodoComment
 	for _, c := range f.byID {
 		if c.TodoID == todoID {
 			out = append(out, c)
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 type fakeAttachmentRepo struct {
@@ -220,14 +220,14 @@ func (f *fakeAttachmentRepo) GetByID(id string) (*model.TodoAttachment, error) {
 
 func (f *fakeAttachmentRepo) Delete(id string) error { delete(f.byID, id); return nil }
 
-func (f *fakeAttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment, error) {
+func (f *fakeAttachmentRepo) ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoAttachment, bool, error) {
 	var out []*model.TodoAttachment
 	for _, a := range f.byID {
 		if a.TodoID == todoID {
 			out = append(out, a)
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 // --- Tests ---------------------------------------------------------------
