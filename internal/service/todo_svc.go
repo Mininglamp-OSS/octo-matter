@@ -180,19 +180,24 @@ func (s *TodoService) UpdateTodo(id, spaceID, userID string, title *string, desc
 	if title != nil {
 		todo.Title = *title
 	}
-	todo.Description = description
-	if goalID != nil && *goalID != "" {
-		goal, err := s.goalRepo.GetByID(*goalID, todo.SpaceID)
-		if err != nil {
-			return nil, apperr.InvalidInput("goal not found in this space")
-		}
-		if goal.CreatorID != userID {
-			if ok, _ := s.goalRepo.IsAssignee(*goalID, userID); !ok {
-				return nil, apperr.Forbidden("not authorized to use this goal")
+	// nil = not sent = leave as-is; non-nil pointer = explicit set (empty string clears).
+	if description != nil {
+		todo.Description = description
+	}
+	if goalID != nil {
+		if *goalID != "" {
+			goal, err := s.goalRepo.GetByID(*goalID, todo.SpaceID)
+			if err != nil {
+				return nil, apperr.InvalidInput("goal not found in this space")
+			}
+			if goal.CreatorID != userID {
+				if ok, _ := s.goalRepo.IsAssignee(*goalID, userID); !ok {
+					return nil, apperr.Forbidden("not authorized to use this goal")
+				}
 			}
 		}
+		todo.GoalID = goalID
 	}
-	todo.GoalID = goalID
 	if deadline != nil {
 		t, err := ParseOptionalRFC3339(*deadline)
 		if err != nil {

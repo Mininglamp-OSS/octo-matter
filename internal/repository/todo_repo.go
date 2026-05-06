@@ -82,10 +82,18 @@ func (r *TodoRepo) ListBySpace(spaceID string, filter TodoFilter) ([]*model.Todo
 		From("todos").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID)
 
-	// When scoping by source_channel_id, the channel filter itself bounds
-	// visibility: anyone querying a channel they belong to should see its
-	// chat-originated todos. Otherwise fall back to the caller-UID check.
-	if filter.SourceChannelID == nil {
+	// Visibility: user must be creator, assignee, or goal-assignee. When a
+	// source_channel_id is provided, todos originating from that channel are
+	// ALSO visible (channel membership is validated upstream by Space
+	// middleware). The channel filter NEVER bypasses the CallerUIDs check for
+	// non-channel todos — otherwise any user could enumerate another
+	// channel's todos by guessing channel IDs.
+	if filter.SourceChannelID != nil {
+		q = q.Where(
+			"(creator_id IN ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id IN ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id IN ?) OR source_channel_id = ?)",
+			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs, *filter.SourceChannelID,
+		)
+	} else {
 		q = q.Where(
 			"(creator_id IN ? OR EXISTS (SELECT 1 FROM todo_assignees WHERE todo_assignees.todo_id = todos.id AND todo_assignees.user_id IN ?) OR EXISTS (SELECT 1 FROM goal_assignees WHERE goal_assignees.goal_id = todos.goal_id AND goal_assignees.user_id IN ?))",
 			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs,

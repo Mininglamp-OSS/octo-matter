@@ -62,15 +62,33 @@ func (r *CommentRepo) Delete(id string) error {
 	return nil
 }
 
-func (r *CommentRepo) ListByTodo(todoID string) ([]*model.TodoComment, error) {
+func (r *CommentRepo) ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoComment, bool, error) {
+	if limit <= 0 {
+		limit = 50
+	}
 	comments := make([]*model.TodoComment, 0)
-	_, err := r.runner.Select("*").
+	q := r.runner.Select("*").
 		From("todo_comments").
-		Where("todo_id = ?", todoID).
-		OrderDir("created_at", true).
+		Where("todo_id = ?", todoID)
+
+	if cursor != nil && *cursor != "" {
+		cur, err := DecodeCursor(*cursor)
+		if err != nil {
+			return nil, false, err
+		}
+		q = q.Where("(created_at > ? OR (created_at = ? AND id > ?))", cur.CreatedAt, cur.CreatedAt, cur.ID)
+	}
+
+	_, err := q.OrderDir("created_at", true).
+		OrderDir("id", true).
+		Limit(uint64(limit + 1)).
 		Load(&comments)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return comments, nil
+	hasMore := len(comments) > limit
+	if hasMore {
+		comments = comments[:limit]
+	}
+	return comments, hasMore, nil
 }

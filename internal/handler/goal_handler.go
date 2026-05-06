@@ -69,7 +69,12 @@ func (h *GoalHandler) List(c *gin.Context) {
 }
 
 func (h *GoalHandler) Get(c *gin.Context) {
-	detail, err := h.svc.GetGoal(c.Param("id"), spaceID(c), uid(c))
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
+	detail, err := h.svc.GetGoal(id, spaceID(c), uid(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -84,12 +89,17 @@ type updateGoalReq struct {
 }
 
 func (h *GoalHandler) Update(c *gin.Context) {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	var req updateGoalReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
-	goal, err := h.svc.UpdateGoal(c.Param("id"), spaceID(c), uid(c), req.Title, req.Description, req.Deadline)
+	goal, err := h.svc.UpdateGoal(id, spaceID(c), uid(c), req.Title, req.Description, req.Deadline)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -98,7 +108,12 @@ func (h *GoalHandler) Update(c *gin.Context) {
 }
 
 func (h *GoalHandler) Archive(c *gin.Context) {
-	if err := h.svc.ArchiveGoal(c.Param("id"), spaceID(c), uid(c)); err != nil {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
+	if err := h.svc.ArchiveGoal(id, spaceID(c), uid(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -110,12 +125,17 @@ type addAssigneeReq struct {
 }
 
 func (h *GoalHandler) AddAssignee(c *gin.Context) {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	var req addAssigneeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
-	if err := h.svc.AddAssignee(c.Param("id"), spaceID(c), uid(c), req.UserID); err != nil {
+	if err := h.svc.AddAssignee(id, spaceID(c), uid(c), req.UserID); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -123,12 +143,17 @@ func (h *GoalHandler) AddAssignee(c *gin.Context) {
 }
 
 func (h *GoalHandler) RemoveAssignee(c *gin.Context) {
+	id := c.Param("id")
+	if !validUUID(id) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
 	assigneeUID := c.Param("uid")
 	if assigneeUID == "" {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "assignee uid is required", nil)
 		return
 	}
-	if err := h.svc.RemoveAssignee(c.Param("id"), spaceID(c), uid(c), assigneeUID); err != nil {
+	if err := h.svc.RemoveAssignee(id, spaceID(c), uid(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}

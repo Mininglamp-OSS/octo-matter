@@ -62,15 +62,33 @@ func (r *AttachmentRepo) Delete(id string) error {
 	return nil
 }
 
-func (r *AttachmentRepo) ListByTodo(todoID string) ([]*model.TodoAttachment, error) {
+func (r *AttachmentRepo) ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoAttachment, bool, error) {
+	if limit <= 0 {
+		limit = 50
+	}
 	attachments := make([]*model.TodoAttachment, 0)
-	_, err := r.runner.Select("*").
+	q := r.runner.Select("*").
 		From("todo_attachments").
-		Where("todo_id = ?", todoID).
-		OrderDir("created_at", true).
+		Where("todo_id = ?", todoID)
+
+	if cursor != nil && *cursor != "" {
+		cur, err := DecodeCursor(*cursor)
+		if err != nil {
+			return nil, false, err
+		}
+		q = q.Where("(created_at > ? OR (created_at = ? AND id > ?))", cur.CreatedAt, cur.CreatedAt, cur.ID)
+	}
+
+	_, err := q.OrderDir("created_at", true).
+		OrderDir("id", true).
+		Limit(uint64(limit + 1)).
 		Load(&attachments)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return attachments, nil
+	hasMore := len(attachments) > limit
+	if hasMore {
+		attachments = attachments[:limit]
+	}
+	return attachments, hasMore, nil
 }

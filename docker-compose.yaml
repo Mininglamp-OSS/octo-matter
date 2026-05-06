@@ -7,7 +7,6 @@ services:
       APP_ENV: "dev"
       MYSQL_DSN: "todo:todo@tcp(mysql:3306)/octo_todo?charset=utf8mb4&parseTime=true"
       DMWORKIM_URL: "http://host.docker.internal:8090"
-      WUKONGIM_URL: "http://host.docker.internal:5001"
       SERVER_PORT: "8080"
     depends_on:
       mysql:

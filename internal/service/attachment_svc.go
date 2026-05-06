@@ -9,7 +9,7 @@ type attachmentStore interface {
 	Create(a *model.TodoAttachment) error
 	GetByID(id string) (*model.TodoAttachment, error)
 	Delete(id string) error
-	ListByTodo(todoID string) ([]*model.TodoAttachment, error)
+	ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoAttachment, bool, error)
 }
 
 type AttachmentService struct {
@@ -44,15 +44,15 @@ func (s *AttachmentService) CreateAttachment(todoID, spaceID, userID, fileURL st
 	return a, nil
 }
 
-func (s *AttachmentService) ListAttachments(todoID, spaceID, userID string, sourceChannelID string) ([]*model.TodoAttachment, error) {
+func (s *AttachmentService) ListAttachments(todoID, spaceID, userID string, sourceChannelID string, cursor *string, limit int) ([]*model.TodoAttachment, bool, error) {
 	todo, err := s.todoRepo.GetByID(todoID, spaceID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
-		return nil, apperr.Forbidden("not authorized to access this todo")
+		return nil, false, apperr.Forbidden("not authorized to access this todo")
 	}
-	return s.attachmentRepo.ListByTodo(todoID)
+	return s.attachmentRepo.ListByTodo(todoID, cursor, limit)
 }
 
 func (s *AttachmentService) DeleteAttachment(id, spaceID, userID string, sourceChannelID string) error {

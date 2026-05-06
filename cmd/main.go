@@ -39,6 +39,8 @@ func main() {
 
 	// Notifier — posts to dmworkim /v1/internal/notify (X-Internal-Token auth)
 	notifier := notification.NewDmworkNotifier(cfg.DmworkIMURL, cfg.NotifyInternalToken)
+	notifyWorker := notification.NewWorker(100, 4)
+	defer notifyWorker.Shutdown()
 	log.Printf("notification enabled via dmworkim %s/v1/internal/notify", cfg.DmworkIMURL)
 	if cfg.NotifyInternalToken == "" {
 		log.Printf("WARN: NOTIFY_INTERNAL_TOKEN not set — requests will be sent without X-Internal-Token")
@@ -52,8 +54,8 @@ func main() {
 
 	// Handlers
 	goalH := handler.NewGoalHandler(goalSvc)
-	todoH := handler.NewTodoHandler(todoSvc, notifier)
-	commentH := handler.NewCommentHandler(commentSvc, todoSvc, notifier)
+	todoH := handler.NewTodoHandler(todoSvc, notifier, notifyWorker)
+	commentH := handler.NewCommentHandler(commentSvc, todoSvc, notifier, notifyWorker)
 	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
 	// Auth: call dmworkim /v1/auth/verify + /v1/auth/verify-bot
