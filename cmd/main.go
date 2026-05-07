@@ -34,7 +34,7 @@ func main() {
 	todoRepo := repository.NewTodoRepo(sess)
 	assigneeRepo := repository.NewAssigneeRepo(sess)
 	commentRepo := repository.NewCommentRepo(sess)
-	attachmentRepo := repository.NewAttachmentRepo(sess)
+	commentAttachmentRepo := repository.NewCommentAttachmentRepo(sess)
 	txMgr := repository.NewTxManager(sess)
 
 	// Notifier — posts to dmworkim /v1/internal/notify (X-Internal-Token auth)
@@ -49,14 +49,13 @@ func main() {
 	// Services
 	goalSvc := service.NewGoalService(goalRepo, txMgr)
 	todoSvc := service.NewTodoService(todoRepo, assigneeRepo, goalRepo, txMgr)
-	commentSvc := service.NewCommentService(commentRepo, todoRepo, todoSvc)
-	attachmentSvc := service.NewAttachmentService(attachmentRepo, todoRepo, todoSvc)
+	commentTx := commentTxAdapter{mgr: txMgr}
+	commentSvc := service.NewCommentService(commentRepo, commentAttachmentRepo, todoRepo, todoSvc, commentTx)
 
 	// Handlers
 	goalH := handler.NewGoalHandler(goalSvc)
 	todoH := handler.NewTodoHandler(todoSvc, notifier, notifyWorker)
 	commentH := handler.NewCommentHandler(commentSvc, todoSvc, notifier, notifyWorker)
-	attachmentH := handler.NewAttachmentHandler(attachmentSvc)
 
 	// Auth: call dmworkim /v1/auth/verify + /v1/auth/verify-bot
 	authMW := auth.AuthMiddleware(auth.Config{DmworkIMURL: cfg.DmworkIMURL})
@@ -66,7 +65,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(goalH, todoH, commentH, attachmentH, authMW, spaceMW, readiness)
+	r := handler.SetupRouter(goalH, todoH, commentH, authMW, spaceMW, readiness)
 
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}

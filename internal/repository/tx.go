@@ -8,11 +8,11 @@ import (
 // builds one per Do() call; services use the fields directly inside the
 // closure. Adding a new repo to the service layer means adding a field here.
 type TxRepos struct {
-	Todo       *TodoRepo
-	Goal       *GoalRepo
-	Assignee   *AssigneeRepo
-	Comment    *CommentRepo
-	Attachment *AttachmentRepo
+	Todo              *TodoRepo
+	Goal              *GoalRepo
+	Assignee          *AssigneeRepo
+	Comment           *CommentRepo
+	CommentAttachment *CommentAttachmentRepo
 }
 
 // TxManager coordinates writes that must succeed or fail atomically.
@@ -38,11 +38,11 @@ func (m *TxManager) Do(fn func(r *TxRepos) error) error {
 	defer tx.RollbackUnlessCommitted()
 
 	repos := &TxRepos{
-		Todo:       &TodoRepo{runner: tx},
-		Goal:       &GoalRepo{runner: tx},
-		Assignee:   &AssigneeRepo{runner: tx},
-		Comment:    &CommentRepo{runner: tx},
-		Attachment: &AttachmentRepo{runner: tx},
+		Todo:              &TodoRepo{runner: tx},
+		Goal:              &GoalRepo{runner: tx},
+		Assignee:          &AssigneeRepo{runner: tx},
+		Comment:           &CommentRepo{runner: tx},
+		CommentAttachment: &CommentAttachmentRepo{runner: tx},
 	}
 	if err := fn(repos); err != nil {
 		return err

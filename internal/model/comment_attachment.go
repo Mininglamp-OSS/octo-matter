@@ -2,11 +2,12 @@ package model
 
 import "time"
 
-// TodoAttachment represents a file attached to a todo.
-type TodoAttachment struct {
+// CommentAttachment is a file reference owned by a single comment. Its
+// lifecycle is bound to that comment — deleting the comment deletes the
+// attachment via ON DELETE CASCADE.
+type CommentAttachment struct {
 	ID        string    `db:"id" json:"id"`
-	TodoID    string    `db:"todo_id" json:"todo_id"`
-	UserID    string    `db:"user_id" json:"user_id"`
+	CommentID string    `db:"comment_id" json:"comment_id"`
 	FileURL   string    `db:"file_url" json:"file_url"`
 	FileName  *string   `db:"file_name" json:"file_name,omitempty"`
 	FileSize  *int64    `db:"file_size" json:"file_size,omitempty"`

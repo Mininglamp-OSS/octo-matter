@@ -54,7 +54,7 @@ todos/
 │   │   ├── goal.go               # Goal + GoalAssignee models
 │   │   ├── assignee.go           # TodoAssignee model
 │   │   ├── comment.go            # TodoComment model
-│   │   └── attachment.go         # TodoAttachment model
+│   │   └── comment_attachment.go # CommentAttachment model
 │   ├── repository/               # Data access layer (dbr)
 │   ├── service/                  # Business logic layer
 │   └── handler/                  # HTTP handler layer (Gin)
@@ -103,7 +103,7 @@ export MYSQL_DSN="root:root@tcp(localhost:3306)/octo_todo?charset=utf8mb4&parseT
 export SERVER_PORT="8080"
 
 # Build and run
-go build -o todo-service ./cmd/main.go
+go build -o todo-service ./cmd
 ./todo-service
 
 # Run tests
@@ -175,16 +175,15 @@ PUT /api/v1/todos/:id/status
 
 Creator or assignee can set status to `open` or `closed`. Idempotent — setting the current status is a no-op. 
 
-### Comments & Attachments
+### Comments
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/todos/:id/comments` | Add comment |
-| GET | `/api/v1/todos/:id/comments` | List comments |
-| DELETE | `/api/v1/todos/:id/comments/:cid` | Delete comment (author only) |
-| POST | `/api/v1/todos/:id/attachments` | Add attachment (http/https URL) |
-| GET | `/api/v1/todos/:id/attachments` | List attachments |
-| DELETE | `/api/v1/todos/:id/attachments/:aid` | Delete attachment (uploader only) |
+| POST | `/api/v1/todos/:id/comments` | Add comment (optionally with attachments) |
+| GET | `/api/v1/todos/:id/comments` | List comments (with attachments) |
+| DELETE | `/api/v1/todos/:id/comments/:cid` | Delete comment (author only, cascades attachments) |
+
+A comment may carry `content` (text), `attachments` (array of `{file_url, file_name?, file_size?, mime_type?}`), or both — at least one must be non-empty. Limits: max 10 attachments per comment, max 100 MB per attachment, max 10,000 chars of content.
 
 ### Error Response Format
 

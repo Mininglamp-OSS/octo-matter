@@ -213,23 +213,26 @@ Flat discussion thread on a todo.
 | id | char(36) | PK | Unique identifier |
 | todo\_id | char(36) | NOT NULL, FK | Parent todo |
 | user\_id | varchar(64) | NOT NULL | Author |
-| content | text | NOT NULL | Comment body |
+| content | text | nullable | Comment body (nullable when comment has attachments only) |
 | created\_at | datetime(3) | NOT NULL | Creation timestamp |
 
-#### `todo_attachments`
+A comment must carry either non-empty `content` or at least one attachment (service-enforced).
 
-File references attached to a todo.
+#### `todo_comment_attachments`
+
+File references attached to a comment. Cascade-deleted with the comment.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | char(36) | PK | Unique identifier |
-| todo\_id | char(36) | NOT NULL, FK | Parent todo |
-| user\_id | varchar(64) | NOT NULL | Uploader |
+| comment\_id | char(36) | NOT NULL, FK ON DELETE CASCADE | Parent comment |
 | file\_url | varchar(1024) | NOT NULL | External storage URL |
 | file\_name | varchar(255) | nullable | Original filename |
 | file\_size | bigint | nullable | Size in bytes |
 | mime\_type | varchar(100) | nullable | MIME type |
 | created\_at | datetime(3) | NOT NULL | Upload timestamp |
+
+Service-enforced bounds: max 10 attachments per comment, max 100 MB per attachment.
 
 ### Indexes
 
@@ -248,7 +251,7 @@ CREATE INDEX idx_todos_source ON todos(source_channel_id, source_channel_type);
 CREATE INDEX idx_assignees_user ON todo_assignees(user_id);
 CREATE INDEX idx_assignees_todo ON todo_assignees(todo_id);
 CREATE INDEX idx_assignees_status ON todo_assignees(user_id, status);
-CREATE INDEX idx_attachments_todo ON todo_attachments(todo_id);
+CREATE INDEX idx_comment_attachments_comment ON todo_comment_attachments(comment_id);
 ```
 
 ## State Machine
@@ -346,15 +349,15 @@ Goal detail (`GET /goals/:id`) returns metadata and assignees, scoped to goal as
 
 `title` is required on update and does not support clearing (it is `NOT NULL`).
 
-#### Comments and Attachments
+#### Comments
 
 | Method | Path | Description | Auth |
 |--------|------|-------------|------|
-| GET | /todos/:id/comments | List comments | Required |
-| POST | /todos/:id/comments | Add comment | Required |
-| DELETE | /todos/:id/comments/:cid | Delete comment | Required (author) |
-| POST | /todos/:id/attachments | Upload attachment | Required |
-| DELETE | /todos/:id/attachments/:aid | Delete attachment | Required (uploader) |
+| GET | /todos/:id/comments | List comments (with attachments) | Required |
+| POST | /todos/:id/comments | Add comment (optionally with attachments) | Required |
+| DELETE | /todos/:id/comments/:cid | Delete comment (cascades attachments) | Required (author) |
+
+A comment request body accepts `content` (string, optional) and `attachments` (array, optional). At least one must be non-empty. Each attachment carries `file_url` (required), plus optional `file_name`, `file_size`, `mime_type`. Max 10 attachments per comment, max 100 MB per attachment, max 10,000 chars of content.
 
 ### Pagination
 
@@ -635,7 +638,7 @@ todo-service/
 |   |   |-- todo.go            # open/closed status model
 |   |   |-- assignee.go
 |   |   |-- comment.go
-|   |   |-- attachment.go
+|   |   |-- comment_attachment.go
 |   |-- repository/            # dbr-based data access
 |   |   |-- goal_repo.go
 |   |   |-- todo_repo.go
