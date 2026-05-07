@@ -24,8 +24,16 @@ func NewCommentHandler(svc *service.CommentService, todoSvc *service.TodoService
 	return &CommentHandler{svc: svc, todoSvc: todoSvc, notifier: notifier, worker: worker}
 }
 
+type attachmentInput struct {
+	FileURL  string  `json:"file_url" binding:"required,http_url"`
+	FileName *string `json:"file_name"`
+	FileSize *int64  `json:"file_size"`
+	MimeType *string `json:"mime_type"`
+}
+
 type createCommentReq struct {
-	Content string `json:"content" binding:"required,max=10000"`
+	Content     string            `json:"content" binding:"max=10000"`
+	Attachments []attachmentInput `json:"attachments" binding:"max=10,dive"`
 }
 
 func (h *CommentHandler) Create(c *gin.Context) {
@@ -42,7 +50,18 @@ func (h *CommentHandler) Create(c *gin.Context) {
 	space := spaceID(c)
 	actorUID := uid(c)
 	actorName := userName(c)
-	comment, err := h.svc.CreateComment(todoID, space, actorUID, req.Content, "")
+
+	atts := make([]service.CommentAttachmentInput, 0, len(req.Attachments))
+	for _, a := range req.Attachments {
+		atts = append(atts, service.CommentAttachmentInput{
+			FileURL:  a.FileURL,
+			FileName: a.FileName,
+			FileSize: a.FileSize,
+			MimeType: a.MimeType,
+		})
+	}
+
+	comment, err := h.svc.CreateComment(todoID, space, actorUID, req.Content, atts, "")
 	if err != nil {
 		respondErr(c, err)
 		return

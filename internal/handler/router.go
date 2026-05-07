@@ -35,7 +35,6 @@ func SetupRouter(
 	goalH *GoalHandler,
 	todoH *TodoHandler,
 	commentH *CommentHandler,
-	attachmentH *AttachmentHandler,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
 	ready ReadinessCheck,
@@ -88,10 +87,6 @@ func SetupRouter(
 		todos.POST("/:id/comments", commentH.Create)
 		todos.GET("/:id/comments", commentH.List)
 		todos.DELETE("/:id/comments/:comment_id", commentH.Delete)
-
-		todos.POST("/:id/attachments", attachmentH.Create)
-		todos.GET("/:id/attachments", attachmentH.List)
-		todos.DELETE("/:id/attachments/:attachment_id", attachmentH.Delete)
 	}
 
 	return r

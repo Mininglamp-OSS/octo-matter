@@ -119,12 +119,26 @@ func (f *fakeAssigneeRepo) IsAssignee(todoID, userID string) (bool, error) {
 	return false, nil
 }
 
-// --- tx runner fake (noop — can't build real TxRepos) --------------------
+// --- tx runner fakes -----------------------------------------------------
 
+// noopTxRunner fails any Do() call. Used by TodoService tests that never
+// reach a transactional branch.
 type noopTxRunner struct{}
 
 func (noopTxRunner) Do(fn func(r *repository.TxRepos) error) error {
 	return fmt.Errorf("transaction exercised (test stub — requires integration test)")
+}
+
+// fakeCommentTx runs the closure directly against the supplied fake repos.
+// Every Do() call executes synchronously — there is no rollback or real
+// transaction. Mutations made inside the closure persist on the fakes.
+type fakeCommentTx struct {
+	comments    CommentStore
+	attachments CommentAttachmentStore
+}
+
+func (f fakeCommentTx) Do(fn func(CommentStore, CommentAttachmentStore) error) error {
+	return fn(f.comments, f.attachments)
 }
 
 // --- goal / access fakes ------------------------------------------------
@@ -148,6 +162,21 @@ func newTodoSvc(todoRepo todoStore, assigneeRepo assigneeStore) *TodoService {
 	return NewTodoService(todoRepo, assigneeRepo, fakeGoalAccessChecker{}, noopTxRunner{})
 }
 
+func newCommentSvc(
+	commentRepo *fakeCommentRepo,
+	attachmentRepo *fakeCommentAttachmentRepo,
+	todoRepo *fakeTodoRepo,
+	access TodoAccessChecker,
+) *CommentService {
+	return NewCommentService(
+		commentRepo,
+		attachmentRepo,
+		todoRepo,
+		access,
+		fakeCommentTx{comments: commentRepo, attachments: attachmentRepo},
+	)
+}
+
 // --- comment/attachment fakes -------------------------------------------
 
 type fakeCommentRepo struct {
@@ -164,7 +193,7 @@ func newFakeCommentRepo(cs ...*model.TodoComment) *fakeCommentRepo {
 
 func (f *fakeCommentRepo) Create(c *model.TodoComment) error {
 	if c.ID == "" {
-		c.ID = "c-generated"
+		c.ID = fmt.Sprintf("c-%d", len(f.byID)+1)
 	}
 	f.byID[c.ID] = c
 	return nil
@@ -190,44 +219,37 @@ func (f *fakeCommentRepo) ListByTodo(todoID string, cursor *string, limit int) (
 	return out, false, nil
 }
 
-type fakeAttachmentRepo struct {
-	byID map[string]*model.TodoAttachment
+type fakeCommentAttachmentRepo struct {
+	byCommentID map[string][]*model.CommentAttachment
 }
 
-func newFakeAttachmentRepo(as ...*model.TodoAttachment) *fakeAttachmentRepo {
-	m := make(map[string]*model.TodoAttachment, len(as))
-	for _, a := range as {
-		m[a.ID] = a
-	}
-	return &fakeAttachmentRepo{byID: m}
+func newFakeCommentAttachmentRepo() *fakeCommentAttachmentRepo {
+	return &fakeCommentAttachmentRepo{byCommentID: make(map[string][]*model.CommentAttachment)}
 }
 
-func (f *fakeAttachmentRepo) Create(a *model.TodoAttachment) error {
-	if a.ID == "" {
-		a.ID = "a-generated"
+func (f *fakeCommentAttachmentRepo) CreateMany(atts []*model.CommentAttachment) error {
+	for i, a := range atts {
+		if a.ID == "" {
+			a.ID = fmt.Sprintf("a-%d-%d", len(f.byCommentID), i)
+		}
+		f.byCommentID[a.CommentID] = append(f.byCommentID[a.CommentID], a)
 	}
-	f.byID[a.ID] = a
 	return nil
 }
 
-func (f *fakeAttachmentRepo) GetByID(id string) (*model.TodoAttachment, error) {
-	a, ok := f.byID[id]
-	if !ok {
-		return nil, apperr.ErrNotFound
-	}
-	return a, nil
-}
-
-func (f *fakeAttachmentRepo) Delete(id string) error { delete(f.byID, id); return nil }
-
-func (f *fakeAttachmentRepo) ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoAttachment, bool, error) {
-	var out []*model.TodoAttachment
-	for _, a := range f.byID {
-		if a.TodoID == todoID {
-			out = append(out, a)
+func (f *fakeCommentAttachmentRepo) ListByCommentIDs(ids []string) (map[string][]model.CommentAttachment, error) {
+	out := make(map[string][]model.CommentAttachment, len(ids))
+	for _, id := range ids {
+		for _, a := range f.byCommentID[id] {
+			out[id] = append(out[id], *a)
 		}
 	}
-	return out, false, nil
+	return out, nil
+}
+
+func (f *fakeCommentAttachmentRepo) DeleteByCommentID(commentID string) error {
+	delete(f.byCommentID, commentID)
+	return nil
 }
 
 // --- Tests ---------------------------------------------------------------
@@ -270,30 +292,111 @@ func TestTodoService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 
 func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := NewCommentService(newFakeCommentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
-	_, err := svc.CreateComment("t1", "space-B", "u2", "hi", "")
+	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	_, err := svc.CreateComment("t1", "space-B", "u2", "hi", nil, "")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space CreateComment: got %v, want ErrNotFound", err)
 	}
 }
 
+func TestCommentService_Create_EmptyRejected(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
+	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	_, err := svc.CreateComment("t1", "sp1", "u1", "", nil, "")
+	if !errors.Is(err, apperr.ErrInvalidInput) {
+		t.Fatalf("empty comment should be invalid, got %v", err)
+	}
+}
+
+func TestCommentService_Create_AttachmentsOnly_OK(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
+	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	c, err := svc.CreateComment("t1", "sp1", "u1", "", []CommentAttachmentInput{
+		{FileURL: "https://obj/a.png"},
+	}, "")
+	if err != nil {
+		t.Fatalf("attachment-only create: %v", err)
+	}
+	if c.Content != nil {
+		t.Fatalf("content should be nil, got %v", *c.Content)
+	}
+	if len(c.Attachments) != 1 || c.Attachments[0].FileURL != "https://obj/a.png" {
+		t.Fatalf("attachments mismatch: %#v", c.Attachments)
+	}
+}
+
+func TestCommentService_Create_TooManyAttachments(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
+	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	atts := make([]CommentAttachmentInput, MaxAttachmentsPerComment+1)
+	for i := range atts {
+		atts[i] = CommentAttachmentInput{FileURL: "https://obj/a.png"}
+	}
+	_, err := svc.CreateComment("t1", "sp1", "u1", "hi", atts, "")
+	if !errors.Is(err, apperr.ErrInvalidInput) {
+		t.Fatalf("too-many attachments should be invalid, got %v", err)
+	}
+}
+
+func TestCommentService_Create_AttachmentTooLarge(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
+	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	over := int64(MaxAttachmentSizeBytes + 1)
+	_, err := svc.CreateComment("t1", "sp1", "u1", "", []CommentAttachmentInput{
+		{FileURL: "https://obj/a.png", FileSize: &over},
+	}, "")
+	if !errors.Is(err, apperr.ErrInvalidInput) {
+		t.Fatalf("oversize attachment should be invalid, got %v", err)
+	}
+}
+
+func TestCommentService_Create_WithTextAndAttachments_OK(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
+	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
+	c, err := svc.CreateComment("t1", "sp1", "u1", "look at this", []CommentAttachmentInput{
+		{FileURL: "https://obj/a.png"},
+		{FileURL: "https://obj/b.png"},
+	}, "")
+	if err != nil {
+		t.Fatalf("create with text+attachments: %v", err)
+	}
+	if c.Content == nil || *c.Content != "look at this" {
+		t.Fatalf("content mismatch: %v", c.Content)
+	}
+	if len(c.Attachments) != 2 {
+		t.Fatalf("expected 2 attachments, got %d", len(c.Attachments))
+	}
+}
+
 func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: "hi"}
-	svc := NewCommentService(newFakeCommentRepo(comment), newFakeTodoRepo(todo), fakeAccessChecker{})
+	content := "hi"
+	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: &content}
+	svc := newCommentSvc(newFakeCommentRepo(comment), newFakeCommentAttachmentRepo(), newFakeTodoRepo(todo), fakeAccessChecker{})
 	err := svc.DeleteComment("c1", "space-A", "u2", "")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-author DeleteComment: got %v, want ErrForbidden", err)
 	}
 }
 
-func TestAttachmentService_Delete_NonUploaderReturnsForbidden(t *testing.T) {
-	todo := &model.Todo{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	att := &model.TodoAttachment{ID: "a1", TodoID: "t1", UserID: "u1", FileURL: "http://x"}
-	svc := NewAttachmentService(newFakeAttachmentRepo(att), newFakeTodoRepo(todo), fakeAccessChecker{})
-	err := svc.DeleteAttachment("a1", "space-A", "u2", "")
-	if !errors.Is(err, apperr.ErrForbidden) {
-		t.Fatalf("non-uploader DeleteAttachment: got %v, want ErrForbidden", err)
+func TestCommentService_Delete_AuthorRemovesAttachments(t *testing.T) {
+	todo := &model.Todo{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
+	content := "hi"
+	comment := &model.TodoComment{ID: "c1", TodoID: "t1", UserID: "u1", Content: &content}
+	cmtRepo := newFakeCommentRepo(comment)
+	attRepo := newFakeCommentAttachmentRepo()
+	attRepo.byCommentID["c1"] = []*model.CommentAttachment{
+		{ID: "a1", CommentID: "c1", FileURL: "https://obj/a.png"},
+	}
+	svc := newCommentSvc(cmtRepo, attRepo, newFakeTodoRepo(todo), fakeAccessChecker{})
+	if err := svc.DeleteComment("c1", "sp1", "u1", ""); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if _, ok := cmtRepo.byID["c1"]; ok {
+		t.Fatalf("comment not removed")
+	}
+	if _, ok := attRepo.byCommentID["c1"]; ok {
+		t.Fatalf("attachments not removed")
 	}
 }
 

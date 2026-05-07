@@ -68,23 +68,22 @@ CREATE TABLE IF NOT EXISTS todo_comments (
     id              CHAR(36)        NOT NULL,
     todo_id         CHAR(36)        NOT NULL,
     user_id         VARCHAR(64)     NOT NULL,
-    content         TEXT            NOT NULL,
+    content         TEXT            NULL,
     created_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
     INDEX idx_comments_todo (todo_id),
     CONSTRAINT fk_todo_comments_todo FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS todo_attachments (
+CREATE TABLE IF NOT EXISTS todo_comment_attachments (
     id              CHAR(36)        NOT NULL,
-    todo_id         CHAR(36)        NOT NULL,
-    user_id         VARCHAR(64)     NOT NULL,
+    comment_id      CHAR(36)        NOT NULL,
     file_url        VARCHAR(1024)   NOT NULL,
     file_name       VARCHAR(255)    NULL,
     file_size       BIGINT          NULL,
     mime_type       VARCHAR(100)    NULL,
     created_at      DATETIME(3)     NOT NULL,
     PRIMARY KEY (id),
-    INDEX idx_attachments_todo (todo_id),
-    CONSTRAINT fk_todo_attachments_todo FOREIGN KEY (todo_id) REFERENCES todos(id) ON DELETE CASCADE
+    INDEX idx_comment_attachments_comment (comment_id),
+    CONSTRAINT fk_comment_attachments_comment FOREIGN KEY (comment_id) REFERENCES todo_comments(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
