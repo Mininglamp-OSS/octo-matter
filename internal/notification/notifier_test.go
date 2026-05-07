@@ -44,11 +44,11 @@ func TestTemplates(t *testing.T) {
 
 func TestNoop_ImplementsNotifier(t *testing.T) {
 	var n Notifier = Noop{}
-	todo := &model.Matter{Title: "x", CreatorID: "u1", Status: "open"}
-	n.NotifyMatterCreated(todo, "name", []string{"u2"})
-	n.NotifyStatusChanged(todo, "u1", "name", []string{"u2"})
-	n.NotifyAssigneeAdded(todo, "name", "u3")
-	n.NotifyCommentAdded(todo, "u1", "name", []string{"u2"})
+	matter := &model.Matter{Title: "x", CreatorID: "u1", Status: "open"}
+	n.NotifyMatterCreated(matter, "name", []string{"u2"})
+	n.NotifyStatusChanged(matter, "u1", "name", []string{"u2"})
+	n.NotifyAssigneeAdded(matter, "name", "u3")
+	n.NotifyCommentAdded(matter, "u1", "name", []string{"u2"})
 }
 
 func TestDedupTargets(t *testing.T) {
@@ -104,14 +104,14 @@ func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
 	defer srv.Close()
 
 	n := NewDmworkNotifier(srv.URL, "secret-token")
-	todo := &model.Matter{
+	matter := &model.Matter{
 		ID:        "matter1",
 		SpaceID:   "space1",
 		Title:     "Test",
 		CreatorID: "actor1",
 		Status:    model.MatterStatusOpen,
 	}
-	n.NotifyMatterCreated(todo, "Alice", []string{"u2", "u3"})
+	n.NotifyMatterCreated(matter, "Alice", []string{"u2", "u3"})
 
 	c := <-got
 	if c.method != http.MethodPost {
