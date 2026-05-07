@@ -11,23 +11,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type TodoHandler struct {
-	svc      *service.TodoService
+type MatterHandler struct {
+	svc      *service.MatterService
 	notifier notification.Notifier
 	worker   *notification.Worker
 }
 
-func NewTodoHandler(svc *service.TodoService, notifier notification.Notifier, worker *notification.Worker) *TodoHandler {
+func NewMatterHandler(svc *service.MatterService, notifier notification.Notifier, worker *notification.Worker) *MatterHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &TodoHandler{svc: svc, notifier: notifier, worker: worker}
+	return &MatterHandler{svc: svc, notifier: notifier, worker: worker}
 }
 
-type createTodoReq struct {
+type createMatterReq struct {
 	Title             string   `json:"title" binding:"required,max=500"`
 	Description       *string  `json:"description" binding:"omitempty,max=10000"`
-	GoalID            *string  `json:"goal_id"`
 	AssigneeIDs       []string `json:"assignee_ids"`
 	Deadline          *string  `json:"deadline"`
 	RemindAt          *string  `json:"remind_at"`
@@ -36,32 +35,30 @@ type createTodoReq struct {
 	SourceName        *string  `json:"source_name"`
 }
 
-func (h *TodoHandler) Create(c *gin.Context) {
-	var req createTodoReq
+func (h *MatterHandler) Create(c *gin.Context) {
+	var req createMatterReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
 	sid := spaceID(c)
 	userID := uid(c)
-	todo := &model.Todo{
+	matter := &model.Matter{
 		SpaceID:           sid,
 		Title:             req.Title,
 		Description:       req.Description,
-		GoalID:            req.GoalID,
 		CreatorID:         userID,
 		SourceChannelID:   req.SourceChannelID,
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
 	}
-	// Parse optional deadline and remind_at (P1-7 fix).
 	if req.Deadline != nil {
 		t, err := service.ParseOptionalRFC3339(*req.Deadline)
 		if err != nil {
 			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "deadline must be RFC3339 or empty", nil)
 			return
 		}
-		todo.Deadline = t
+		matter.Deadline = t
 	}
 	if req.RemindAt != nil {
 		t, err := service.ParseOptionalRFC3339(*req.RemindAt)
@@ -69,27 +66,26 @@ func (h *TodoHandler) Create(c *gin.Context) {
 			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "remind_at must be RFC3339 or empty", nil)
 			return
 		}
-		todo.RemindAt = t
+		matter.RemindAt = t
 	}
-	detail, err := h.svc.CreateTodoWithAssignees(todo, req.AssigneeIDs)
+	detail, err := h.svc.CreateMatterWithAssignees(matter, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
 	actorName := userName(c)
 	h.worker.Submit(func() {
-		h.notifier.NotifyTodoCreated(todo, actorName, req.AssigneeIDs)
+		h.notifier.NotifyMatterCreated(matter, actorName, req.AssigneeIDs)
 	})
 	created(c, detail)
 }
 
-func (h *TodoHandler) List(c *gin.Context) {
+func (h *MatterHandler) List(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 	cursor := c.Query("cursor")
-	goalID := c.Query("goal_id")
 	status := c.Query("status")
 	assigneeID := c.Query("assignee_id")
 	creatorID := c.Query("creator_id")
@@ -97,19 +93,16 @@ func (h *TodoHandler) List(c *gin.Context) {
 	sourceChannelID := c.Query("source_channel_id")
 	sourceChannelTypeStr := c.Query("source_channel_type")
 
-	filter := repository.TodoFilter{
+	filter := repository.MatterFilter{
 		CallerUIDs: relatedUIDs(c),
-		Limit:    limit,
+		Limit:      limit,
 	}
 	if cursor != "" {
 		filter.Cursor = &cursor
 	}
-	if goalID != "" {
-		filter.GoalID = &goalID
-	}
 	if status != "" {
-		if !model.IsValidStatus(model.TodoStatus(status)) {
-			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open' or 'closed'", nil)
+		if !model.IsValidStatus(model.MatterStatus(status)) {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open', 'done', or 'archived'", nil)
 			return
 		}
 		filter.Status = &status
@@ -139,7 +132,7 @@ func (h *TodoHandler) List(c *gin.Context) {
 		}
 	}
 
-	result, err := h.svc.ListTodos(spaceID(c), filter)
+	result, err := h.svc.ListMatters(spaceID(c), filter)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -147,13 +140,13 @@ func (h *TodoHandler) List(c *gin.Context) {
 	paginated(c, result.Items, result.HasMore, result.NextCursor)
 }
 
-func (h *TodoHandler) Get(c *gin.Context) {
+func (h *MatterHandler) Get(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
-	detail, err := h.svc.GetTodo(id, spaceID(c), uid(c), c.Query("source_channel_id"))
+	detail, err := h.svc.GetMatter(id, spaceID(c), uid(c), c.Query("source_channel_id"))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -161,38 +154,37 @@ func (h *TodoHandler) Get(c *gin.Context) {
 	ok(c, detail)
 }
 
-type updateTodoReq struct {
+type updateMatterReq struct {
 	Title       *string `json:"title" binding:"omitempty,max=500"`
 	Description *string `json:"description" binding:"omitempty,max=10000"`
-	GoalID      *string `json:"goal_id"`
 	Deadline    *string `json:"deadline"`
 	RemindAt    *string `json:"remind_at"`
 }
 
-func (h *TodoHandler) Update(c *gin.Context) {
+func (h *MatterHandler) Update(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
-	var req updateTodoReq
+	var req updateMatterReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
-	todo, err := h.svc.UpdateTodo(id, spaceID(c), uid(c), req.Title, req.Description, req.GoalID, req.Deadline, req.RemindAt)
+	matter, err := h.svc.UpdateMatter(id, spaceID(c), uid(c), req.Title, req.Description, req.Deadline, req.RemindAt)
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
-	ok(c, todo)
+	ok(c, matter)
 }
 
 type transitionReq struct {
 	Status string `json:"status" binding:"required"`
 }
 
-func (h *TodoHandler) Transition(c *gin.Context) {
+func (h *MatterHandler) Transition(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
@@ -203,11 +195,11 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	if !model.IsValidStatus(model.TodoStatus(req.Status)) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open' or 'closed'", nil)
+	if !model.IsValidStatus(model.MatterStatus(req.Status)) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open', 'done', or 'archived'", nil)
 		return
 	}
-	detail, err := h.svc.SetStatus(id, spaceID(c), uid(c), model.TodoStatus(req.Status))
+	detail, err := h.svc.SetStatus(id, spaceID(c), uid(c), model.MatterStatus(req.Status))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -219,12 +211,12 @@ func (h *TodoHandler) Transition(c *gin.Context) {
 		aIDs = append(aIDs, a.UserID)
 	}
 	h.worker.Submit(func() {
-		h.notifier.NotifyStatusChanged(detail.Todo, actorUID, actorName, aIDs)
+		h.notifier.NotifyStatusChanged(detail.Matter, actorUID, actorName, aIDs)
 	})
 	ok(c, detail)
 }
 
-func (h *TodoHandler) Delete(c *gin.Context) {
+func (h *MatterHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
@@ -237,38 +229,38 @@ func (h *TodoHandler) Delete(c *gin.Context) {
 	ok(c, nil)
 }
 
-type addTodoAssigneeReq struct {
+type addMatterAssigneeReq struct {
 	UserID string `json:"user_id" binding:"required"`
 }
 
-func (h *TodoHandler) AddAssignee(c *gin.Context) {
-	var req addTodoAssigneeReq
+func (h *MatterHandler) AddAssignee(c *gin.Context) {
+	var req addMatterAssigneeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
 		return
 	}
-	todoID := c.Param("id")
-	if !validUUID(todoID) {
+	matterID := c.Param("id")
+	if !validUUID(matterID) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
 	space := spaceID(c)
 	actorName := userName(c)
 	assigneeUID := req.UserID
-	if err := h.svc.AddAssignee(todoID, space, uid(c), assigneeUID); err != nil {
+	if err := h.svc.AddAssignee(matterID, space, uid(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}
 	h.worker.Submit(func() {
-		todo, err := h.svc.GetTodoForNotification(todoID, space)
+		matter, err := h.svc.GetMatterForNotification(matterID, space)
 		if err == nil {
-			h.notifier.NotifyAssigneeAdded(todo, actorName, assigneeUID)
+			h.notifier.NotifyAssigneeAdded(matter, actorName, assigneeUID)
 		}
 	})
 	ok(c, nil)
 }
 
-func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
+func (h *MatterHandler) RemoveAssignee(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
@@ -285,5 +277,3 @@ func (h *TodoHandler) RemoveAssignee(c *gin.Context) {
 	}
 	ok(c, nil)
 }
-
-

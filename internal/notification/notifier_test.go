@@ -27,7 +27,7 @@ func TestTemplates(t *testing.T) {
 		fn   func() string
 		want string
 	}{
-		{"todoCreated", func() string { return todoCreatedMsg("Review PR", "Alice") }, "📋 新任务「Review PR」— Alice 分配给了你"},
+		{"todoCreated", func() string { return matterCreatedMsg("Review PR", "Alice") }, "📋 新任务「Review PR」— Alice 分配给了你"},
 		{"statusClosed", func() string { return statusChangedMsg("Review PR", "Bob", "closed") }, "📋 任务「Review PR」— Bob 关闭了"},
 		{"statusReopened", func() string { return statusChangedMsg("Review PR", "Bob", "open") }, "📋 任务「Review PR」— Bob 重新打开了"},
 		{"assigneeAdded", func() string { return assigneeAddedMsg("Review PR", "Alice") }, "📋 任务「Review PR」— Alice 将你添加为负责人"},
@@ -44,8 +44,8 @@ func TestTemplates(t *testing.T) {
 
 func TestNoop_ImplementsNotifier(t *testing.T) {
 	var n Notifier = Noop{}
-	todo := &model.Todo{Title: "x", CreatorID: "u1", Status: "open"}
-	n.NotifyTodoCreated(todo, "name", []string{"u2"})
+	todo := &model.Matter{Title: "x", CreatorID: "u1", Status: "open"}
+	n.NotifyMatterCreated(todo, "name", []string{"u2"})
 	n.NotifyStatusChanged(todo, "u1", "name", []string{"u2"})
 	n.NotifyAssigneeAdded(todo, "name", "u3")
 	n.NotifyCommentAdded(todo, "u1", "name", []string{"u2"})
@@ -78,7 +78,7 @@ func TestDedupTargets(t *testing.T) {
 	}
 }
 
-func TestDmworkNotifier_NotifyTodoCreated(t *testing.T) {
+func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
 	type captured struct {
 		method string
 		path   string
@@ -104,14 +104,14 @@ func TestDmworkNotifier_NotifyTodoCreated(t *testing.T) {
 	defer srv.Close()
 
 	n := NewDmworkNotifier(srv.URL, "secret-token")
-	todo := &model.Todo{
+	todo := &model.Matter{
 		ID:        "todo1",
 		SpaceID:   "space1",
 		Title:     "Test",
 		CreatorID: "actor1",
-		Status:    model.TodoStatusOpen,
+		Status:    model.MatterStatusOpen,
 	}
-	n.NotifyTodoCreated(todo, "Alice", []string{"u2", "u3"})
+	n.NotifyMatterCreated(todo, "Alice", []string{"u2", "u3"})
 
 	c := <-got
 	if c.method != http.MethodPost {

@@ -18,22 +18,21 @@ func NewCommentRepo(sess *dbr.Session) *CommentRepo {
 	return &CommentRepo{runner: sess}
 }
 
-func (r *CommentRepo) Create(c *model.TodoComment) error {
+func (r *CommentRepo) Create(c *model.MatterComment) error {
 	c.ID = uuid.New().String()
 	c.CreatedAt = time.Now()
-	_, err := r.runner.InsertInto("todo_comments").
-		Columns("id", "todo_id", "user_id", "content", "created_at").
+	_, err := r.runner.InsertInto("matter_comments").
+		Columns("id", "matter_id", "user_id", "content", "created_at").
 		Record(c).
 		Exec()
 	return err
 }
 
-// GetByID loads a comment by id. Returns apperr.ErrNotFound if absent. Caller is
-// responsible for validating the comment's todo lives in the caller's space.
-func (r *CommentRepo) GetByID(id string) (*model.TodoComment, error) {
-	var c model.TodoComment
+// GetByID loads a comment by id. Returns apperr.ErrNotFound if absent.
+func (r *CommentRepo) GetByID(id string) (*model.MatterComment, error) {
+	var c model.MatterComment
 	err := r.runner.Select("*").
-		From("todo_comments").
+		From("matter_comments").
 		Where("id = ?", id).
 		LoadOne(&c)
 	if err != nil {
@@ -46,7 +45,7 @@ func (r *CommentRepo) GetByID(id string) (*model.TodoComment, error) {
 }
 
 func (r *CommentRepo) Delete(id string) error {
-	result, err := r.runner.DeleteFrom("todo_comments").
+	result, err := r.runner.DeleteFrom("matter_comments").
 		Where("id = ?", id).
 		Exec()
 	if err != nil {
@@ -62,14 +61,14 @@ func (r *CommentRepo) Delete(id string) error {
 	return nil
 }
 
-func (r *CommentRepo) ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoComment, bool, error) {
+func (r *CommentRepo) ListByMatter(matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	comments := make([]*model.TodoComment, 0)
+	comments := make([]*model.MatterComment, 0)
 	q := r.runner.Select("*").
-		From("todo_comments").
-		Where("todo_id = ?", todoID)
+		From("matter_comments").
+		Where("matter_id = ?", matterID)
 
 	if cursor != nil && *cursor != "" {
 		cur, err := DecodeCursor(*cursor)
