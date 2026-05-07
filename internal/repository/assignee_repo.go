@@ -17,11 +17,11 @@ func NewAssigneeRepo(sess *dbr.Session) *AssigneeRepo {
 	return &AssigneeRepo{runner: sess}
 }
 
-func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
+func (r *AssigneeRepo) Create(a *model.MatterAssignee) error {
 	a.ID = uuid.New().String()
 	a.CreatedAt = time.Now()
-	_, err := r.runner.InsertInto("todo_assignees").
-		Columns("id", "todo_id", "user_id", "created_at").
+	_, err := r.runner.InsertInto("matter_assignees").
+		Columns("id", "matter_id", "user_id", "created_at").
 		Record(a).
 		Exec()
 	if err != nil {
@@ -33,9 +33,9 @@ func (r *AssigneeRepo) Create(a *model.TodoAssignee) error {
 	return nil
 }
 
-func (r *AssigneeRepo) Delete(todoID, userID string) error {
-	result, err := r.runner.DeleteFrom("todo_assignees").
-		Where("todo_id = ? AND user_id = ?", todoID, userID).
+func (r *AssigneeRepo) Delete(matterID, userID string) error {
+	result, err := r.runner.DeleteFrom("matter_assignees").
+		Where("matter_id = ? AND user_id = ?", matterID, userID).
 		Exec()
 	if err != nil {
 		return err
@@ -50,11 +50,11 @@ func (r *AssigneeRepo) Delete(todoID, userID string) error {
 	return nil
 }
 
-func (r *AssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) {
-	assignees := make([]*model.TodoAssignee, 0)
+func (r *AssigneeRepo) ListByMatter(matterID string) ([]*model.MatterAssignee, error) {
+	assignees := make([]*model.MatterAssignee, 0)
 	_, err := r.runner.Select("*").
-		From("todo_assignees").
-		Where("todo_id = ?", todoID).
+		From("matter_assignees").
+		Where("matter_id = ?", matterID).
 		Load(&assignees)
 	if err != nil {
 		return nil, err
@@ -62,10 +62,10 @@ func (r *AssigneeRepo) ListByTodo(todoID string) ([]*model.TodoAssignee, error) 
 	return assignees, nil
 }
 
-func (r *AssigneeRepo) IsAssignee(todoID, userID string) (bool, error) {
+func (r *AssigneeRepo) IsAssignee(matterID, userID string) (bool, error) {
 	count, err := r.runner.Select("COUNT(*)").
-		From("todo_assignees").
-		Where("todo_id = ? AND user_id = ?", todoID, userID).
+		From("matter_assignees").
+		Where("matter_id = ? AND user_id = ?", matterID, userID).
 		ReturnInt64()
 	if err != nil {
 		return false, err

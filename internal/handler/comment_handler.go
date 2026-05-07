@@ -11,17 +11,17 @@ import (
 )
 
 type CommentHandler struct {
-	svc      *service.CommentService
-	todoSvc  *service.TodoService
-	notifier notification.Notifier
-	worker   *notification.Worker
+	svc       *service.CommentService
+	matterSvc *service.MatterService
+	notifier  notification.Notifier
+	worker    *notification.Worker
 }
 
-func NewCommentHandler(svc *service.CommentService, todoSvc *service.TodoService, notifier notification.Notifier, worker *notification.Worker) *CommentHandler {
+func NewCommentHandler(svc *service.CommentService, matterSvc *service.MatterService, notifier notification.Notifier, worker *notification.Worker) *CommentHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &CommentHandler{svc: svc, todoSvc: todoSvc, notifier: notifier, worker: worker}
+	return &CommentHandler{svc: svc, matterSvc: matterSvc, notifier: notifier, worker: worker}
 }
 
 type attachmentInput struct {
@@ -42,8 +42,8 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	todoID := c.Param("id")
-	if !validUUID(todoID) {
+	matterID := c.Param("id")
+	if !validUUID(matterID) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
@@ -61,25 +61,25 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		})
 	}
 
-	comment, err := h.svc.CreateComment(todoID, space, actorUID, req.Content, atts, "")
+	comment, err := h.svc.CreateComment(matterID, space, actorUID, req.Content, atts, "")
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
 	h.worker.Submit(func() {
-		todo, err := h.todoSvc.GetTodoForNotification(todoID, space)
+		matter, err := h.matterSvc.GetMatterForNotification(matterID, space)
 		if err != nil {
 			return
 		}
-		assignees, _ := h.todoSvc.ListAssigneeIDs(todoID)
-		h.notifier.NotifyCommentAdded(todo, actorUID, actorName, assignees)
+		assignees, _ := h.matterSvc.ListAssigneeIDs(matterID)
+		h.notifier.NotifyCommentAdded(matter, actorUID, actorName, assignees)
 	})
 	created(c, comment)
 }
 
 func (h *CommentHandler) List(c *gin.Context) {
-	todoID := c.Param("id")
-	if !validUUID(todoID) {
+	matterID := c.Param("id")
+	if !validUUID(matterID) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
@@ -91,7 +91,7 @@ func (h *CommentHandler) List(c *gin.Context) {
 	if cur := c.Query("cursor"); cur != "" {
 		cursor = &cur
 	}
-	comments, hasMore, err := h.svc.ListComments(todoID, spaceID(c), uid(c), c.Query("source_channel_id"), cursor, limit)
+	comments, hasMore, err := h.svc.ListComments(matterID, spaceID(c), uid(c), c.Query("source_channel_id"), cursor, limit)
 	if err != nil {
 		respondErr(c, err)
 		return

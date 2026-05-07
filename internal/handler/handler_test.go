@@ -154,12 +154,12 @@ func TestRespondErr_AppError(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	respondErr(c, apperr.TodoNotFound())
+	respondErr(c, apperr.MatterNotFound())
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
 	}
-	assertErrCode(t, w.Body.Bytes(), "TODO_NOT_FOUND")
+	assertErrCode(t, w.Body.Bytes(), "MATTER_NOT_FOUND")
 }
 
 func TestRespondErr_DuplicateAssignee(t *testing.T) {
@@ -224,13 +224,9 @@ func TestMaxBodySize_Rejected(t *testing.T) {
 // ─── Route registration ─────────────────────────────────
 
 func TestSetupRouter_RoutesRegistered(t *testing.T) {
-	// We can't easily create real handlers without DB, but we can verify
-	// the router setup by checking route count and key patterns.
-	// For now, just verify the exported functions exist and the health route works.
 	r := gin.New()
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 
-	// Verify the health route is reachable
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	r.ServeHTTP(w, req)
@@ -260,8 +256,6 @@ func TestOk_Nil(t *testing.T) {
 
 	ok(c, nil)
 
-	// gin's c.Status() sets the writer status but may not flush to recorder.
-	// Check c.Writer.Status() which is always correct.
 	if c.Writer.Status() != http.StatusNoContent {
 		t.Errorf("expected 204, got %d", c.Writer.Status())
 	}

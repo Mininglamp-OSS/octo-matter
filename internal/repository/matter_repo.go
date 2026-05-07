@@ -1,0 +1,209 @@
+package repository
+
+import (
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/model"
+	"github.com/gocraft/dbr/v2"
+	"github.com/google/uuid"
+)
+
+type MatterFilter struct {
+	CallerUIDs        []string
+	Status            *string
+	AssigneeID        *string
+	CreatorID         *string
+	SourceChannelID   *string
+	SourceChannelType *uint8
+	DeadlineBefore    *time.Time
+	DeadlineAfter     *time.Time
+	Query             *string
+	Cursor            *string
+	Limit             int
+}
+
+type MatterRepo struct {
+	runner dbr.SessionRunner
+}
+
+func NewMatterRepo(sess *dbr.Session) *MatterRepo {
+	return &MatterRepo{runner: sess}
+}
+
+func (r *MatterRepo) Create(matter *model.Matter) error {
+	matter.ID = uuid.New().String()
+	now := time.Now()
+	matter.CreatedAt = now
+	matter.UpdatedAt = now
+	_, err := r.runner.InsertInto("matters").
+		Columns("id", "space_id", "title", "description", "creator_id",
+			"status", "deadline", "remind_at", "source_channel_id", "source_channel_type",
+			"source_name", "created_at", "updated_at", "deleted_at").
+		Record(matter).
+		Exec()
+	return err
+}
+
+func (r *MatterRepo) GetByID(id, spaceID string) (*model.Matter, error) {
+	var matter model.Matter
+	err := r.runner.Select("*").
+		From("matters").
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
+		LoadOne(&matter)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.MatterNotFound()
+		}
+		return nil, err
+	}
+	return &matter, nil
+}
+
+func (r *MatterRepo) ListBySpace(spaceID string, filter MatterFilter) ([]*model.Matter, bool, error) {
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+
+	q := r.runner.Select("*").
+		From("matters").
+		Where("space_id = ? AND deleted_at IS NULL", spaceID)
+
+	// Visibility: user must be creator or assignee. When a source_channel_id
+	// is provided, matters originating from that channel are also visible.
+	if filter.SourceChannelID != nil {
+		q = q.Where(
+			"(creator_id IN ? OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?) OR source_channel_id = ?)",
+			filter.CallerUIDs, filter.CallerUIDs, *filter.SourceChannelID,
+		)
+	} else {
+		q = q.Where(
+			"(creator_id IN ? OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?))",
+			filter.CallerUIDs, filter.CallerUIDs,
+		)
+	}
+
+	if filter.Status != nil {
+		q = q.Where("status = ?", *filter.Status)
+	}
+	if filter.AssigneeID != nil {
+		q = q.Where("id IN (SELECT matter_id FROM matter_assignees WHERE user_id = ?)", *filter.AssigneeID)
+	}
+	if filter.CreatorID != nil {
+		q = q.Where("creator_id = ?", *filter.CreatorID)
+	}
+	if filter.SourceChannelType != nil {
+		q = q.Where("source_channel_type = ?", *filter.SourceChannelType)
+	}
+	if filter.DeadlineBefore != nil {
+		q = q.Where("deadline < ?", *filter.DeadlineBefore)
+	}
+	if filter.DeadlineAfter != nil {
+		q = q.Where("deadline > ?", *filter.DeadlineAfter)
+	}
+	if filter.Query != nil && *filter.Query != "" {
+		escaped := escapeLikePattern(*filter.Query)
+		q = q.Where("title LIKE ?", "%"+escaped+"%")
+	}
+
+	if filter.Cursor != nil && *filter.Cursor != "" {
+		cur, err := DecodeCursor(*filter.Cursor)
+		if err != nil {
+			return nil, false, err
+		}
+		q = q.Where("(created_at < ? OR (created_at = ? AND id < ?))", cur.CreatedAt, cur.CreatedAt, cur.ID)
+	}
+
+	var matters []*model.Matter
+	_, err := q.OrderBy("created_at DESC").
+		OrderBy("id DESC").
+		Limit(uint64(limit + 1)).
+		Load(&matters)
+	if err != nil {
+		return nil, false, err
+	}
+	if matters == nil {
+		matters = make([]*model.Matter, 0)
+	}
+
+	hasMore := len(matters) > limit
+	if hasMore {
+		matters = matters[:limit]
+	}
+	return matters, hasMore, nil
+}
+
+func (r *MatterRepo) GetByIDForUpdate(id, spaceID string) (*model.Matter, error) {
+	var matter model.Matter
+	err := r.runner.SelectBySql(
+		"SELECT * FROM matters WHERE id = ? AND space_id = ? AND deleted_at IS NULL FOR UPDATE",
+		id, spaceID,
+	).LoadOne(&matter)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.MatterNotFound()
+		}
+		return nil, err
+	}
+	return &matter, nil
+}
+
+func (r *MatterRepo) Update(matter *model.Matter) error {
+	matter.UpdatedAt = time.Now()
+	result, err := r.runner.Update("matters").
+		Set("title", matter.Title).
+		Set("description", matter.Description).
+		Set("deadline", matter.Deadline).
+		Set("remind_at", matter.RemindAt).
+		Set("updated_at", matter.UpdatedAt).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", matter.ID, matter.SpaceID).
+		Exec()
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return apperr.MatterNotFound()
+	}
+	return nil
+}
+
+func (r *MatterRepo) UpdateStatus(id, spaceID, status string) error {
+	result, err := r.runner.Update("matters").
+		Set("status", status).
+		Set("updated_at", time.Now()).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
+		Exec()
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return apperr.MatterNotFound()
+	}
+	return nil
+}
+
+func (r *MatterRepo) SoftDelete(id, spaceID string) error {
+	result, err := r.runner.Update("matters").
+		Set("deleted_at", time.Now()).
+		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
+		Exec()
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return apperr.MatterNotFound()
+	}
+	return nil
+}
+
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}
