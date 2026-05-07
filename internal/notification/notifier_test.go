@@ -27,8 +27,8 @@ func TestTemplates(t *testing.T) {
 		fn   func() string
 		want string
 	}{
-		{"todoCreated", func() string { return matterCreatedMsg("Review PR", "Alice") }, "📋 新任务「Review PR」— Alice 分配给了你"},
-		{"statusClosed", func() string { return statusChangedMsg("Review PR", "Bob", "closed") }, "📋 任务「Review PR」— Bob 关闭了"},
+		{"matterCreated", func() string { return matterCreatedMsg("Review PR", "Alice") }, "📋 新任务「Review PR」— Alice 分配给了你"},
+		{"statusDone", func() string { return statusChangedMsg("Review PR", "Bob", "done") }, "📋 任务「Review PR」— Bob 完成了"},
 		{"statusReopened", func() string { return statusChangedMsg("Review PR", "Bob", "open") }, "📋 任务「Review PR」— Bob 重新打开了"},
 		{"assigneeAdded", func() string { return assigneeAddedMsg("Review PR", "Alice") }, "📋 任务「Review PR」— Alice 将你添加为负责人"},
 		{"commentAdded", func() string { return commentAddedMsg("Review PR", "Charlie") }, "📋 任务「Review PR」— Charlie 添加了评论"},
@@ -105,7 +105,7 @@ func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
 
 	n := NewDmworkNotifier(srv.URL, "secret-token")
 	todo := &model.Matter{
-		ID:        "todo1",
+		ID:        "matter1",
 		SpaceID:   "space1",
 		Title:     "Test",
 		CreatorID: "actor1",
@@ -129,8 +129,8 @@ func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
 	if c.body.Service != notifyService {
 		t.Errorf("service = %q, want %q", c.body.Service, notifyService)
 	}
-	if c.body.Event != eventTodoCreated {
-		t.Errorf("event = %q, want %q", c.body.Event, eventTodoCreated)
+	if c.body.Event != eventMatterCreated {
+		t.Errorf("event = %q, want %q", c.body.Event, eventMatterCreated)
 	}
 	if c.body.ActorUID != "actor1" {
 		t.Errorf("actor_uid = %q, want actor1", c.body.ActorUID)
@@ -140,11 +140,11 @@ func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
 	if !reflect.DeepEqual(c.body.Targets, wantTargets) {
 		t.Errorf("targets = %v, want %v", c.body.Targets, wantTargets)
 	}
-	if c.body.Payload["todo_id"] != "todo1" {
-		t.Errorf("payload.todo_id = %v, want todo1", c.body.Payload["todo_id"])
+	if c.body.Payload["matter_id"] != "matter1" {
+		t.Errorf("payload.todo_id = %v, want matter1", c.body.Payload["matter_id"])
 	}
-	if c.body.Payload["todo_title"] != "Test" {
-		t.Errorf("payload.todo_title = %v, want Test", c.body.Payload["todo_title"])
+	if c.body.Payload["matter_title"] != "Test" {
+		t.Errorf("payload.todo_title = %v, want Test", c.body.Payload["matter_title"])
 	}
 	if _, ok := c.body.Payload["message"].(string); !ok {
 		t.Errorf("payload.message missing or not string: %v", c.body.Payload["message"])

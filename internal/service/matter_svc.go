@@ -224,6 +224,11 @@ func (s *MatterService) SetStatus(id, spaceID, userID string, target model.Matte
 			return nil // idempotent — no-op
 		}
 
+		// archived is terminal — can only reopen (→ open), not go to done
+		if matter.Status == model.MatterStatusArchived && target == model.MatterStatusDone {
+			return apperr.InvalidInput("cannot transition from archived to done; reopen first")
+		}
+
 		if err := r.Matter.UpdateStatus(id, spaceID, string(target)); err != nil {
 			return err
 		}

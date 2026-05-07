@@ -24,7 +24,7 @@ func Load() *Config {
 	env := AppEnv(envOrDefault("APP_ENV", string(AppEnvDev)))
 	return &Config{
 		AppEnv:              env,
-		MySQLDSN:            devDefault(env, "MYSQL_DSN", "todo:todo@tcp(127.0.0.1:3306)/octo_todo?charset=utf8mb4&parseTime=true"),
+		MySQLDSN:            devDefault(env, "MYSQL_DSN", "matter:matter@tcp(127.0.0.1:3306)/octo_matters?charset=utf8mb4&parseTime=true"),
 		DmworkIMURL:         devDefault(env, "DMWORKIM_URL", "http://127.0.0.1:8090"),
 		NotifyInternalToken: envOrDefault("NOTIFY_INTERNAL_TOKEN", ""),
 		ServerPort:          envOrDefault("SERVER_PORT", "8080"),
