@@ -1,4 +1,8 @@
 -- 002_rename_to_matters.up.sql
+-- NOTE: Users who previously had access via Goal assignee relationship will
+-- lose visibility after this migration. Ensure all relevant matters have
+-- direct assignees added before running.
+
 
 -- Drop goal tables
 DROP TABLE IF EXISTS goal_assignees;
@@ -8,6 +12,9 @@ DROP TABLE IF EXISTS goals;
 ALTER TABLE todos DROP FOREIGN KEY fk_todos_goal;
 ALTER TABLE todos DROP INDEX idx_todos_goal;
 ALTER TABLE todos DROP COLUMN goal_id;
+
+-- Migrate existing closed → done before changing enum
+UPDATE todos SET status = 'done' WHERE status = 'closed';
 
 -- Expand status enum
 ALTER TABLE todos MODIFY status ENUM('open','done','archived') NOT NULL DEFAULT 'open';
