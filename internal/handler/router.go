@@ -18,8 +18,7 @@ func MaxBodySize(n int64) gin.HandlerFunc {
 	}
 }
 
-// RequestTimeout sets a deadline on the request context. When the deadline
-// expires, downstream DB queries (if context-aware) and HTTP clients abort.
+// RequestTimeout sets a deadline on the request context.
 func RequestTimeout(d time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), d)
@@ -32,8 +31,7 @@ func RequestTimeout(d time.Duration) gin.HandlerFunc {
 type ReadinessCheck func() error
 
 func SetupRouter(
-	goalH *GoalHandler,
-	todoH *TodoHandler,
+	matterH *MatterHandler,
 	commentH *CommentHandler,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
@@ -60,33 +58,21 @@ func SetupRouter(
 	api := r.Group("/api/v1")
 	api.Use(RequestTimeout(30*time.Second), MaxBodySize(maxBodySize), authMW, spaceMW)
 
-	// Goals
-	goals := api.Group("/goals")
+	// Matters
+	matters := api.Group("/matters")
 	{
-		goals.POST("", goalH.Create)
-		goals.GET("", goalH.List)
-		goals.GET("/:id", goalH.Get)
-		goals.PUT("/:id", goalH.Update)
-		goals.DELETE("/:id", goalH.Archive)
-		goals.POST("/:id/assignees", goalH.AddAssignee)
-		goals.DELETE("/:id/assignees/:uid", goalH.RemoveAssignee)
-	}
+		matters.POST("", matterH.Create)
+		matters.GET("", matterH.List)
+		matters.GET("/:id", matterH.Get)
+		matters.PUT("/:id", matterH.Update)
+		matters.PUT("/:id/status", matterH.Transition)
+		matters.DELETE("/:id", matterH.Delete)
+		matters.POST("/:id/assignees", matterH.AddAssignee)
+		matters.DELETE("/:id/assignees/:uid", matterH.RemoveAssignee)
 
-	// Todos
-	todos := api.Group("/todos")
-	{
-		todos.POST("", todoH.Create)
-		todos.GET("", todoH.List)
-		todos.GET("/:id", todoH.Get)
-		todos.PUT("/:id", todoH.Update)
-		todos.PUT("/:id/status", todoH.Transition)
-		todos.DELETE("/:id", todoH.Delete)
-		todos.POST("/:id/assignees", todoH.AddAssignee)
-		todos.DELETE("/:id/assignees/:uid", todoH.RemoveAssignee)
-
-		todos.POST("/:id/comments", commentH.Create)
-		todos.GET("/:id/comments", commentH.List)
-		todos.DELETE("/:id/comments/:comment_id", commentH.Delete)
+		matters.POST("/:id/comments", commentH.Create)
+		matters.GET("/:id/comments", commentH.List)
+		matters.DELETE("/:id/comments/:comment_id", commentH.Delete)
 	}
 
 	return r

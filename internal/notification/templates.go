@@ -2,18 +2,21 @@ package notification
 
 import "fmt"
 
-// Message templates for system notifications. All return plain text —
-// the notification bot renders them as regular text messages in the
-// user's "通知助手" conversation.
-
-func todoCreatedMsg(title, actorName string) string {
+func matterCreatedMsg(title, actorName string) string {
 	return fmt.Sprintf("📋 新任务「%s」— %s 分配给了你", title, actorName)
 }
 
 func statusChangedMsg(title, actorName, newStatus string) string {
-	action := "关闭了"
-	if newStatus == "open" {
+	var action string
+	switch newStatus {
+	case "done":
+		action = "完成了"
+	case "archived":
+		action = "归档了"
+	case "open":
 		action = "重新打开了"
+	default:
+		action = "更新了"
 	}
 	return fmt.Sprintf("📋 任务「%s」— %s %s", title, actorName, action)
 }

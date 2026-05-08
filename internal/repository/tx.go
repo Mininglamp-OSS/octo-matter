@@ -4,21 +4,15 @@ import (
 	"github.com/gocraft/dbr/v2"
 )
 
-// TxRepos bundles every repo bound to the same transaction. The TxManager
-// builds one per Do() call; services use the fields directly inside the
-// closure. Adding a new repo to the service layer means adding a field here.
+// TxRepos bundles every repo bound to the same transaction.
 type TxRepos struct {
-	Todo              *TodoRepo
-	Goal              *GoalRepo
+	Matter            *MatterRepo
 	Assignee          *AssigneeRepo
 	Comment           *CommentRepo
 	CommentAttachment *CommentAttachmentRepo
 }
 
 // TxManager coordinates writes that must succeed or fail atomically.
-// Transactional scope lives at the service layer: a service calls Do() and
-// operates on the tx-bound repos inside the closure. Outside the closure
-// services keep using their normal (session-bound) repos for read paths.
 type TxManager struct {
 	sess *dbr.Session
 }
@@ -27,9 +21,7 @@ func NewTxManager(sess *dbr.Session) *TxManager {
 	return &TxManager{sess: sess}
 }
 
-// Do runs fn inside a dbr transaction. Any error from fn (or from Commit)
-// causes a rollback; panics rollback too. The repos handed to fn share the
-// same tx; mutations outside the callback are NOT covered.
+// Do runs fn inside a dbr transaction.
 func (m *TxManager) Do(fn func(r *TxRepos) error) error {
 	tx, err := m.sess.Begin()
 	if err != nil {
@@ -38,8 +30,7 @@ func (m *TxManager) Do(fn func(r *TxRepos) error) error {
 	defer tx.RollbackUnlessCommitted()
 
 	repos := &TxRepos{
-		Todo:              &TodoRepo{runner: tx},
-		Goal:              &GoalRepo{runner: tx},
+		Matter:            &MatterRepo{runner: tx},
 		Assignee:          &AssigneeRepo{runner: tx},
 		Comment:           &CommentRepo{runner: tx},
 		CommentAttachment: &CommentAttachmentRepo{runner: tx},

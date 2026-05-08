@@ -7,8 +7,7 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
-// Bounds on a single comment's attachments. Hard-enforced in the service
-// layer so a client bypassing the upload gateway still can't exceed them.
+// Bounds on a single comment's attachments.
 const (
 	MaxAttachmentsPerComment = 10
 	MaxAttachmentSizeBytes   = 100 << 20 // 100 MB
@@ -17,10 +16,10 @@ const (
 
 // CommentStore is the narrow CommentRepo surface CommentService depends on.
 type CommentStore interface {
-	Create(c *model.TodoComment) error
-	GetByID(id string) (*model.TodoComment, error)
+	Create(c *model.MatterComment) error
+	GetByID(id string) (*model.MatterComment, error)
 	Delete(id string) error
-	ListByTodo(todoID string, cursor *string, limit int) ([]*model.TodoComment, bool, error)
+	ListByMatter(matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error)
 }
 
 // CommentAttachmentStore is the narrow CommentAttachmentRepo surface.
@@ -31,19 +30,17 @@ type CommentAttachmentStore interface {
 }
 
 // commentTxRunner runs a closure that mutates a comment and its attachments
-// inside a single transaction. The production adapter wires this to
-// repository.TxManager; tests supply a passthrough that reuses fake repos.
+// inside a single transaction.
 type commentTxRunner interface {
 	Do(fn func(CommentStore, CommentAttachmentStore) error) error
 }
 
-// todoScopeChecker resolves a todo within a space to reject cross-space access.
-type todoScopeChecker interface {
-	GetByID(id, spaceID string) (*model.Todo, error)
+// matterScopeChecker resolves a matter within a space to reject cross-space access.
+type matterScopeChecker interface {
+	GetByID(id, spaceID string) (*model.Matter, error)
 }
 
-// CommentAttachmentInput is the service-level representation of one attachment
-// riding along with a comment on create.
+// CommentAttachmentInput is the service-level representation of one attachment.
 type CommentAttachmentInput struct {
 	FileURL  string
 	FileName *string
@@ -54,32 +51,32 @@ type CommentAttachmentInput struct {
 type CommentService struct {
 	commentRepo    CommentStore
 	attachmentRepo CommentAttachmentStore
-	todoRepo       todoScopeChecker
-	access         TodoAccessChecker
+	matterRepo     matterScopeChecker
+	access         MatterAccessChecker
 	tx             commentTxRunner
 }
 
 func NewCommentService(
 	commentRepo CommentStore,
 	attachmentRepo CommentAttachmentStore,
-	todoRepo todoScopeChecker,
-	access TodoAccessChecker,
+	matterRepo matterScopeChecker,
+	access MatterAccessChecker,
 	tx commentTxRunner,
 ) *CommentService {
 	return &CommentService{
 		commentRepo:    commentRepo,
 		attachmentRepo: attachmentRepo,
-		todoRepo:       todoRepo,
+		matterRepo:     matterRepo,
 		access:         access,
 		tx:             tx,
 	}
 }
 
 func (s *CommentService) CreateComment(
-	todoID, spaceID, userID, content string,
+	matterID, spaceID, userID, content string,
 	attachments []CommentAttachmentInput,
 	sourceChannelID string,
-) (*model.TodoComment, error) {
+) (*model.MatterComment, error) {
 	content = strings.TrimSpace(content)
 	if content == "" && len(attachments) == 0 {
 		return nil, apperr.ValidationError("content or attachments required", "")
@@ -99,22 +96,22 @@ func (s *CommentService) CreateComment(
 		}
 	}
 
-	todo, err := s.todoRepo.GetByID(todoID, spaceID)
+	matter, err := s.matterRepo.GetByID(matterID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
-		return nil, apperr.Forbidden("not authorized to access this todo")
+	if !s.access.CanAccessMatter(matter, userID, sourceChannelID) {
+		return nil, apperr.Forbidden("not authorized to access this matter")
 	}
 
 	var contentPtr *string
 	if content != "" {
 		contentPtr = &content
 	}
-	c := &model.TodoComment{
-		TodoID:  todoID,
-		UserID:  userID,
-		Content: contentPtr,
+	c := &model.MatterComment{
+		MatterID: matterID,
+		UserID:   userID,
+		Content:  contentPtr,
 	}
 
 	err = s.tx.Do(func(cs CommentStore, as CommentAttachmentStore) error {
@@ -153,19 +150,19 @@ func (s *CommentService) CreateComment(
 }
 
 func (s *CommentService) ListComments(
-	todoID, spaceID, userID string,
+	matterID, spaceID, userID string,
 	sourceChannelID string,
 	cursor *string,
 	limit int,
-) ([]*model.TodoComment, bool, error) {
-	todo, err := s.todoRepo.GetByID(todoID, spaceID)
+) ([]*model.MatterComment, bool, error) {
+	matter, err := s.matterRepo.GetByID(matterID, spaceID)
 	if err != nil {
 		return nil, false, err
 	}
-	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
-		return nil, false, apperr.Forbidden("not authorized to access this todo")
+	if !s.access.CanAccessMatter(matter, userID, sourceChannelID) {
+		return nil, false, apperr.Forbidden("not authorized to access this matter")
 	}
-	comments, hasMore, err := s.commentRepo.ListByTodo(todoID, cursor, limit)
+	comments, hasMore, err := s.commentRepo.ListByMatter(matterID, cursor, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -195,18 +192,16 @@ func (s *CommentService) DeleteComment(id, spaceID, userID string, sourceChannel
 	if err != nil {
 		return err
 	}
-	todo, err := s.todoRepo.GetByID(c.TodoID, spaceID)
+	matter, err := s.matterRepo.GetByID(c.MatterID, spaceID)
 	if err != nil {
 		return err
 	}
-	if !s.access.CanAccessTodo(todo, userID, sourceChannelID) {
-		return apperr.Forbidden("not authorized to access this todo")
+	if !s.access.CanAccessMatter(matter, userID, sourceChannelID) {
+		return apperr.Forbidden("not authorized to access this matter")
 	}
 	if c.UserID != userID {
 		return apperr.ErrForbidden
 	}
-	// FK ON DELETE CASCADE removes attachments, but we run both in a tx to
-	// keep the intent explicit and to leave room for future side effects.
 	return s.tx.Do(func(cs CommentStore, as CommentAttachmentStore) error {
 		if err := as.DeleteByCommentID(id); err != nil {
 			return err
