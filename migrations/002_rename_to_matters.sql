@@ -1,0 +1,106 @@
+-- 002_rename_to_matters.sql
+-- NOTE: Users who previously had access via Goal assignee relationship will
+-- lose visibility after this migration. Ensure all relevant matters have
+-- direct assignees added before running.
+
+-- +migrate Up
+-- Drop goal_id FK/index/column from todos BEFORE dropping goals table.
+ALTER TABLE todos DROP FOREIGN KEY fk_todos_goal;
+ALTER TABLE todos DROP INDEX idx_todos_goal;
+ALTER TABLE todos DROP COLUMN goal_id;
+
+-- Drop goal tables (now safe: no FK references them).
+DROP TABLE IF EXISTS goal_assignees;
+DROP TABLE IF EXISTS goals;
+
+-- Migrate existing closed → done before changing enum
+UPDATE todos SET status = 'done' WHERE status = 'closed';
+
+-- Expand status enum
+ALTER TABLE todos MODIFY status ENUM('open','done','archived') NOT NULL DEFAULT 'open';
+
+-- Rename tables
+RENAME TABLE todos TO matters;
+RENAME TABLE todo_assignees TO matter_assignees;
+RENAME TABLE todo_comments TO matter_comments;
+RENAME TABLE todo_comment_attachments TO matter_comment_attachments;
+
+-- Fix foreign keys and column names
+ALTER TABLE matter_assignees DROP FOREIGN KEY fk_todo_assignees_todo;
+ALTER TABLE matter_assignees CHANGE todo_id matter_id CHAR(36) NOT NULL;
+ALTER TABLE matter_assignees ADD CONSTRAINT fk_matter_assignees_matter FOREIGN KEY (matter_id) REFERENCES matters(id) ON DELETE CASCADE;
+
+ALTER TABLE matter_comments DROP FOREIGN KEY fk_todo_comments_todo;
+ALTER TABLE matter_comments CHANGE todo_id matter_id CHAR(36) NOT NULL;
+ALTER TABLE matter_comments ADD CONSTRAINT fk_matter_comments_matter FOREIGN KEY (matter_id) REFERENCES matters(id) ON DELETE CASCADE;
+
+ALTER TABLE matter_comment_attachments DROP FOREIGN KEY fk_comment_attachments_comment;
+ALTER TABLE matter_comment_attachments ADD CONSTRAINT fk_matter_comment_attachments_comment FOREIGN KEY (comment_id) REFERENCES matter_comments(id) ON DELETE CASCADE;
+
+-- Fix index names
+ALTER TABLE matter_assignees DROP INDEX uk_todo_user;
+ALTER TABLE matter_assignees ADD UNIQUE KEY uk_matter_user (matter_id, user_id);
+ALTER TABLE matter_assignees DROP INDEX idx_assignees_todo;
+ALTER TABLE matter_assignees ADD INDEX idx_assignees_matter (matter_id);
+
+-- +migrate Down
+-- Revert index names
+ALTER TABLE matter_assignees DROP INDEX uk_matter_user;
+ALTER TABLE matter_assignees ADD UNIQUE KEY uk_todo_user (matter_id, user_id);
+ALTER TABLE matter_assignees DROP INDEX idx_assignees_matter;
+ALTER TABLE matter_assignees ADD INDEX idx_assignees_todo (matter_id);
+
+-- Revert foreign keys and column names
+ALTER TABLE matter_comment_attachments DROP FOREIGN KEY fk_matter_comment_attachments_comment;
+ALTER TABLE matter_comment_attachments ADD CONSTRAINT fk_comment_attachments_comment FOREIGN KEY (comment_id) REFERENCES matter_comments(id) ON DELETE CASCADE;
+
+ALTER TABLE matter_comments DROP FOREIGN KEY fk_matter_comments_matter;
+ALTER TABLE matter_comments CHANGE matter_id todo_id CHAR(36) NOT NULL;
+ALTER TABLE matter_comments ADD CONSTRAINT fk_todo_comments_todo FOREIGN KEY (todo_id) REFERENCES matters(id) ON DELETE CASCADE;
+
+ALTER TABLE matter_assignees DROP FOREIGN KEY fk_matter_assignees_matter;
+ALTER TABLE matter_assignees CHANGE matter_id todo_id CHAR(36) NOT NULL;
+ALTER TABLE matter_assignees ADD CONSTRAINT fk_todo_assignees_todo FOREIGN KEY (todo_id) REFERENCES matters(id) ON DELETE CASCADE;
+
+-- Rename tables back
+RENAME TABLE matters TO todos;
+RENAME TABLE matter_assignees TO todo_assignees;
+RENAME TABLE matter_comments TO todo_comments;
+RENAME TABLE matter_comment_attachments TO todo_comment_attachments;
+
+-- Revert status enum
+ALTER TABLE todos MODIFY status ENUM('open','closed') NOT NULL DEFAULT 'open';
+
+-- Add goal_id back
+ALTER TABLE todos ADD COLUMN goal_id CHAR(36) NULL AFTER space_id;
+ALTER TABLE todos ADD INDEX idx_todos_goal (goal_id);
+
+-- Recreate goal tables
+CREATE TABLE IF NOT EXISTS goals (
+    id              CHAR(36)        NOT NULL,
+    space_id        VARCHAR(64)     NOT NULL,
+    title           VARCHAR(200)    NOT NULL,
+    description     TEXT            NULL,
+    creator_id      VARCHAR(64)     NOT NULL,
+    status          ENUM('active','completed','archived') NOT NULL DEFAULT 'active',
+    deadline        DATETIME(3)     NULL,
+    created_at      DATETIME(3)     NOT NULL,
+    updated_at      DATETIME(3)     NOT NULL,
+    PRIMARY KEY (id),
+    INDEX idx_goals_space_creator (space_id, creator_id),
+    INDEX idx_goals_space_status (space_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS goal_assignees (
+    id              CHAR(36)        NOT NULL,
+    goal_id         CHAR(36)        NOT NULL,
+    user_id         VARCHAR(64)     NOT NULL,
+    created_at      DATETIME(3)     NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_goal_user (goal_id, user_id),
+    INDEX idx_goal_assignees_user (user_id),
+    INDEX idx_goal_assignees_goal (goal_id),
+    CONSTRAINT fk_goal_assignees_goal FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE todos ADD CONSTRAINT fk_todos_goal FOREIGN KEY (goal_id) REFERENCES goals(id) ON DELETE SET NULL;
