@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -18,23 +19,23 @@ func NewCommentRepo(sess *dbr.Session) *CommentRepo {
 	return &CommentRepo{runner: sess}
 }
 
-func (r *CommentRepo) Create(c *model.MatterComment) error {
+func (r *CommentRepo) Create(ctx context.Context, c *model.MatterComment) error {
 	c.ID = uuid.New().String()
 	c.CreatedAt = time.Now()
 	_, err := r.runner.InsertInto("matter_comments").
 		Columns("id", "matter_id", "user_id", "content", "created_at").
 		Record(c).
-		Exec()
+		ExecContext(ctx)
 	return err
 }
 
 // GetByID loads a comment by id. Returns apperr.ErrNotFound if absent.
-func (r *CommentRepo) GetByID(id string) (*model.MatterComment, error) {
+func (r *CommentRepo) GetByID(ctx context.Context, id string) (*model.MatterComment, error) {
 	var c model.MatterComment
 	err := r.runner.Select("*").
 		From("matter_comments").
 		Where("id = ?", id).
-		LoadOne(&c)
+		LoadOneContext(ctx, &c)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
 			return nil, apperr.ErrNotFound
@@ -44,10 +45,10 @@ func (r *CommentRepo) GetByID(id string) (*model.MatterComment, error) {
 	return &c, nil
 }
 
-func (r *CommentRepo) Delete(id string) error {
+func (r *CommentRepo) Delete(ctx context.Context, id string) error {
 	result, err := r.runner.DeleteFrom("matter_comments").
 		Where("id = ?", id).
-		Exec()
+		ExecContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -61,7 +62,7 @@ func (r *CommentRepo) Delete(id string) error {
 	return nil
 }
 
-func (r *CommentRepo) ListByMatter(matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error) {
+func (r *CommentRepo) ListByMatter(ctx context.Context, matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -81,7 +82,7 @@ func (r *CommentRepo) ListByMatter(matterID string, cursor *string, limit int) (
 	_, err := q.OrderDir("created_at", true).
 		OrderDir("id", true).
 		Limit(uint64(limit + 1)).
-		Load(&comments)
+		LoadContext(ctx, &comments)
 	if err != nil {
 		return nil, false, err
 	}

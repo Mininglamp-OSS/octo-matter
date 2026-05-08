@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 )
@@ -12,8 +14,8 @@ type commentTxAdapter struct {
 	mgr *repository.TxManager
 }
 
-func (a commentTxAdapter) Do(fn func(service.CommentStore, service.CommentAttachmentStore, service.ParticipantUpserter) error) error {
-	return a.mgr.Do(func(r *repository.TxRepos) error {
+func (a commentTxAdapter) Do(ctx context.Context, fn func(service.CommentStore, service.CommentAttachmentStore, service.ParticipantUpserter) error) error {
+	return a.mgr.Do(ctx, func(r *repository.TxRepos) error {
 		return fn(r.Comment, r.CommentAttachment, r.Participant)
 	})
 }

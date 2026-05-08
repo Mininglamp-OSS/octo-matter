@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -61,18 +62,18 @@ func (h *CommentHandler) Create(c *gin.Context) {
 		})
 	}
 
-	comment, err := h.svc.CreateComment(matterID, space, relatedUIDs(c), actorUID, req.Content, atts, "")
+	comment, err := h.svc.CreateComment(c.Request.Context(), matterID, space, relatedUIDs(c), actorUID, req.Content, atts, "")
 	if err != nil {
 		respondErr(c, err)
 		return
 	}
 	h.worker.Submit(func() {
-		matter, err := h.matterSvc.GetMatterForNotification(matterID, space)
+		matter, err := h.matterSvc.GetMatterForNotification(context.Background(), matterID, space)
 		if err != nil {
 			return
 		}
-		assignees, _ := h.matterSvc.ListAssigneeIDs(matterID)
-		participants, _ := h.matterSvc.ListParticipantIDs(matterID)
+		assignees, _ := h.matterSvc.ListAssigneeIDs(context.Background(), matterID)
+		participants, _ := h.matterSvc.ListParticipantIDs(context.Background(), matterID)
 		h.notifier.NotifyCommentAdded(matter, actorUID, actorName, assignees, participants)
 	})
 	created(c, comment)
@@ -92,7 +93,7 @@ func (h *CommentHandler) List(c *gin.Context) {
 	if cur := c.Query("cursor"); cur != "" {
 		cursor = &cur
 	}
-	comments, hasMore, err := h.svc.ListComments(matterID, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"), cursor, limit)
+	comments, hasMore, err := h.svc.ListComments(c.Request.Context(), matterID, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"), cursor, limit)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -106,7 +107,7 @@ func (h *CommentHandler) List(c *gin.Context) {
 }
 
 func (h *CommentHandler) Delete(c *gin.Context) {
-	if err := h.svc.DeleteComment(c.Param("comment_id"), spaceID(c), relatedUIDs(c), uid(c), ""); err != nil {
+	if err := h.svc.DeleteComment(c.Request.Context(), c.Param("comment_id"), spaceID(c), relatedUIDs(c), uid(c), ""); err != nil {
 		respondErr(c, err)
 		return
 	}
