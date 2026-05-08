@@ -32,6 +32,8 @@ func main() {
 	// Repos
 	matterRepo := repository.NewMatterRepo(sess)
 	assigneeRepo := repository.NewAssigneeRepo(sess)
+	participantRepo := repository.NewParticipantRepo(sess)
+	channelRepo := repository.NewMatterChannelRepo(sess)
 	commentRepo := repository.NewCommentRepo(sess)
 	commentAttachmentRepo := repository.NewCommentAttachmentRepo(sess)
 	txMgr := repository.NewTxManager(sess)
@@ -46,7 +48,7 @@ func main() {
 	}
 
 	// Services
-	matterSvc := service.NewMatterService(matterRepo, assigneeRepo, txMgr)
+	matterSvc := service.NewMatterService(matterRepo, assigneeRepo, participantRepo, channelRepo, txMgr)
 	commentTx := commentTxAdapter{mgr: txMgr}
 	commentSvc := service.NewCommentService(commentRepo, commentAttachmentRepo, matterRepo, matterSvc, commentTx)
 

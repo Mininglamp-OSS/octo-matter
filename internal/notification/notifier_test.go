@@ -46,9 +46,9 @@ func TestNoop_ImplementsNotifier(t *testing.T) {
 	var n Notifier = Noop{}
 	matter := &model.Matter{Title: "x", CreatorID: "u1", Status: "open"}
 	n.NotifyMatterCreated(matter, "name", []string{"u2"})
-	n.NotifyStatusChanged(matter, "u1", "name", []string{"u2"})
+	n.NotifyStatusChanged(matter, "u1", "name", []string{"u2"}, []string{"u4"})
 	n.NotifyAssigneeAdded(matter, "name", "u3")
-	n.NotifyCommentAdded(matter, "u1", "name", []string{"u2"})
+	n.NotifyCommentAdded(matter, "u1", "name", []string{"u2"}, []string{"u4"})
 }
 
 func TestDedupTargets(t *testing.T) {

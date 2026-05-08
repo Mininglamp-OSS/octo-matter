@@ -72,17 +72,23 @@ func (r *MatterRepo) ListBySpace(spaceID string, filter MatterFilter) ([]*model.
 		From("matters").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID)
 
-	// Visibility: user must be creator or assignee. When a source_channel_id
-	// is provided, matters originating from that channel are also visible.
+	// Visibility: user must be creator, assignee, or participant. When a
+	// source_channel_id is provided, matters whose linked channels include
+	// that channel id are also visible.
 	if filter.SourceChannelID != nil {
 		q = q.Where(
-			"(creator_id IN ? OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?) OR source_channel_id = ?)",
-			filter.CallerUIDs, filter.CallerUIDs, *filter.SourceChannelID,
+			"(creator_id IN ?"+
+				" OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?)"+
+				" OR EXISTS (SELECT 1 FROM matter_participants WHERE matter_participants.matter_id = matters.id AND matter_participants.user_id IN ?)"+
+				" OR EXISTS (SELECT 1 FROM matter_channels WHERE matter_channels.matter_id = matters.id AND matter_channels.channel_id = ?))",
+			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs, *filter.SourceChannelID,
 		)
 	} else {
 		q = q.Where(
-			"(creator_id IN ? OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?))",
-			filter.CallerUIDs, filter.CallerUIDs,
+			"(creator_id IN ?"+
+				" OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?)"+
+				" OR EXISTS (SELECT 1 FROM matter_participants WHERE matter_participants.matter_id = matters.id AND matter_participants.user_id IN ?))",
+			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs,
 		)
 	}
 
@@ -203,7 +209,48 @@ func (r *MatterRepo) SoftDelete(id, spaceID string) error {
 }
 
 func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "%", "\\%")
 	s = strings.ReplaceAll(s, "_", "\\_")
 	return s
+}
+
+// HasAccess checks in a single query whether any of callerUIDs has access to
+// the matter via assignee or participant role, or whether channelID is linked.
+// Creator check is done in-memory by the caller so not included here.
+func (r *MatterRepo) HasAccess(matterID string, callerUIDs []string, channelID string) (bool, error) {
+	if len(callerUIDs) == 0 && channelID == "" {
+		return false, nil
+	}
+	q := r.runner.Select("1")
+
+	if channelID != "" && len(callerUIDs) > 0 {
+		q = q.From("dual").Where(
+			`(EXISTS (SELECT 1 FROM matter_assignees WHERE matter_id = ? AND user_id IN ?)
+			  OR EXISTS (SELECT 1 FROM matter_participants WHERE matter_id = ? AND user_id IN ?)
+			  OR EXISTS (SELECT 1 FROM matter_channels WHERE matter_id = ? AND channel_id = ?))`,
+			matterID, callerUIDs, matterID, callerUIDs, matterID, channelID,
+		)
+	} else if len(callerUIDs) > 0 {
+		q = q.From("dual").Where(
+			`(EXISTS (SELECT 1 FROM matter_assignees WHERE matter_id = ? AND user_id IN ?)
+			  OR EXISTS (SELECT 1 FROM matter_participants WHERE matter_id = ? AND user_id IN ?))`,
+			matterID, callerUIDs, matterID, callerUIDs,
+		)
+	} else {
+		q = q.From("dual").Where(
+			`EXISTS (SELECT 1 FROM matter_channels WHERE matter_id = ? AND channel_id = ?)`,
+			matterID, channelID,
+		)
+	}
+
+	var dummy int
+	err := q.LoadOne(&dummy)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }

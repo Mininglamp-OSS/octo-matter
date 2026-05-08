@@ -114,8 +114,10 @@ func (n *DmworkNotifier) NotifyMatterCreated(matter *model.Matter, actorName str
 		payloadFor(matter, matterCreatedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyStatusChanged(matter *model.Matter, actorID, actorName string, assigneeIDs []string) {
-	targets := dedupTargets(actorID, append([]string{matter.CreatorID}, assigneeIDs...))
+func (n *DmworkNotifier) NotifyStatusChanged(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
+	all := append([]string{matter.CreatorID}, assigneeIDs...)
+	all = append(all, participantIDs...)
+	targets := dedupTargets(actorID, all)
 	n.send(matter.SpaceID, eventStatusChanged, actorID, targets,
 		payloadFor(matter, statusChangedMsg(matter.Title, actorName, string(matter.Status))))
 }
@@ -126,8 +128,10 @@ func (n *DmworkNotifier) NotifyAssigneeAdded(matter *model.Matter, actorName, ne
 		payloadFor(matter, assigneeAddedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyCommentAdded(matter *model.Matter, actorID, actorName string, assigneeIDs []string) {
-	targets := dedupTargets(actorID, append([]string{matter.CreatorID}, assigneeIDs...))
+func (n *DmworkNotifier) NotifyCommentAdded(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
+	all := append([]string{matter.CreatorID}, assigneeIDs...)
+	all = append(all, participantIDs...)
+	targets := dedupTargets(actorID, all)
 	n.send(matter.SpaceID, eventCommentAdded, actorID, targets,
 		payloadFor(matter, commentAddedMsg(matter.Title, actorName)))
 }
