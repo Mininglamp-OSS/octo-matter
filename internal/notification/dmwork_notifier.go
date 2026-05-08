@@ -21,12 +21,12 @@ type DmworkNotifier struct {
 }
 
 const (
-	notifyService = "todo-service"
+	notifyService = "matter-service"
 
-	eventTodoCreated    = "todo.created"
-	eventStatusChanged  = "todo.status_changed"
-	eventAssigneeAdded  = "todo.assignee_added"
-	eventCommentAdded   = "todo.comment_added"
+	eventMatterCreated  = "matter.created"
+	eventStatusChanged  = "matter.status_changed"
+	eventAssigneeAdded  = "matter.assignee_added"
+	eventCommentAdded   = "matter.comment_added"
 )
 
 type notifyRequest struct {
@@ -100,36 +100,36 @@ func (n *DmworkNotifier) send(spaceID, event, actorID string, targets []string, 
 	}
 }
 
-func payloadFor(todo *model.Todo, message string) map[string]interface{} {
+func payloadFor(matter *model.Matter, message string) map[string]interface{} {
 	return map[string]interface{}{
-		"todo_id":    todo.ID,
-		"todo_title": todo.Title,
+		"matter_id":    matter.ID,
+		"matter_title": matter.Title,
 		"message":    message,
 	}
 }
 
-func (n *DmworkNotifier) NotifyTodoCreated(todo *model.Todo, actorName string, assigneeIDs []string) {
-	targets := dedupTargets(todo.CreatorID, assigneeIDs)
-	n.send(todo.SpaceID, eventTodoCreated, todo.CreatorID, targets,
-		payloadFor(todo, todoCreatedMsg(todo.Title, actorName)))
+func (n *DmworkNotifier) NotifyMatterCreated(matter *model.Matter, actorName string, assigneeIDs []string) {
+	targets := dedupTargets(matter.CreatorID, assigneeIDs)
+	n.send(matter.SpaceID, eventMatterCreated, matter.CreatorID, targets,
+		payloadFor(matter, matterCreatedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyStatusChanged(todo *model.Todo, actorID, actorName string, assigneeIDs []string) {
-	targets := dedupTargets(actorID, append([]string{todo.CreatorID}, assigneeIDs...))
-	n.send(todo.SpaceID, eventStatusChanged, actorID, targets,
-		payloadFor(todo, statusChangedMsg(todo.Title, actorName, string(todo.Status))))
+func (n *DmworkNotifier) NotifyStatusChanged(matter *model.Matter, actorID, actorName string, assigneeIDs []string) {
+	targets := dedupTargets(actorID, append([]string{matter.CreatorID}, assigneeIDs...))
+	n.send(matter.SpaceID, eventStatusChanged, actorID, targets,
+		payloadFor(matter, statusChangedMsg(matter.Title, actorName, string(matter.Status))))
 }
 
-func (n *DmworkNotifier) NotifyAssigneeAdded(todo *model.Todo, actorName, newAssigneeID string) {
+func (n *DmworkNotifier) NotifyAssigneeAdded(matter *model.Matter, actorName, newAssigneeID string) {
 	targets := dedupTargets("", []string{newAssigneeID})
-	n.send(todo.SpaceID, eventAssigneeAdded, "", targets,
-		payloadFor(todo, assigneeAddedMsg(todo.Title, actorName)))
+	n.send(matter.SpaceID, eventAssigneeAdded, "", targets,
+		payloadFor(matter, assigneeAddedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyCommentAdded(todo *model.Todo, actorID, actorName string, assigneeIDs []string) {
-	targets := dedupTargets(actorID, append([]string{todo.CreatorID}, assigneeIDs...))
-	n.send(todo.SpaceID, eventCommentAdded, actorID, targets,
-		payloadFor(todo, commentAddedMsg(todo.Title, actorName)))
+func (n *DmworkNotifier) NotifyCommentAdded(matter *model.Matter, actorID, actorName string, assigneeIDs []string) {
+	targets := dedupTargets(actorID, append([]string{matter.CreatorID}, assigneeIDs...))
+	n.send(matter.SpaceID, eventCommentAdded, actorID, targets,
+		payloadFor(matter, commentAddedMsg(matter.Title, actorName)))
 }
 
 // static check that DmworkNotifier satisfies Notifier
