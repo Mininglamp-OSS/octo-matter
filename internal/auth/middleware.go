@@ -196,9 +196,6 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 			c.Set("space_id", result.SpaceID)
 		}
 		relatedUIDs := []string{result.BotUID}
-		if result.OwnerUID != "" {
-			relatedUIDs = append(relatedUIDs, result.OwnerUID)
-		}
 		c.Set("related_uids", relatedUIDs)
 		c.Next()
 		return
@@ -237,11 +234,9 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 		c.Set("space_id", result.SpaceID)
 	}
 
-	// Build related UIDs: [self, owner]
+	// Build related UIDs: [self] only. Owner-side visibility of bot matters
+	// is handled via the user-auth path's owned_bots expansion.
 	relatedUIDs := []string{result.BotUID}
-	if result.OwnerUID != "" {
-		relatedUIDs = append(relatedUIDs, result.OwnerUID)
-	}
 	c.Set("related_uids", relatedUIDs)
 
 	cache.set("bot:"+botToken, &result, 60*time.Second)

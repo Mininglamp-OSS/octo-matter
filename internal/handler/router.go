@@ -70,6 +70,9 @@ func SetupRouter(
 		matters.POST("/:id/assignees", matterH.AddAssignee)
 		matters.DELETE("/:id/assignees/:uid", matterH.RemoveAssignee)
 
+		matters.POST("/:id/channels", matterH.LinkChannel)
+		matters.DELETE("/:id/channels/:channel_id", matterH.UnlinkChannel)
+
 		matters.POST("/:id/comments", commentH.Create)
 		matters.GET("/:id/comments", commentH.List)
 		matters.DELETE("/:id/comments/:comment_id", commentH.Delete)

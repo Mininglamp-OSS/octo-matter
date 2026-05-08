@@ -72,3 +72,18 @@ func (r *AssigneeRepo) IsAssignee(matterID, userID string) (bool, error) {
 	}
 	return count > 0, nil
 }
+
+// IsAssigneeAny reports whether any of userIDs is an assignee of matterID.
+func (r *AssigneeRepo) IsAssigneeAny(matterID string, userIDs []string) (bool, error) {
+	if len(userIDs) == 0 {
+		return false, nil
+	}
+	count, err := r.runner.Select("COUNT(*)").
+		From("matter_assignees").
+		Where("matter_id = ? AND user_id IN ?", matterID, userIDs).
+		ReturnInt64()
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}

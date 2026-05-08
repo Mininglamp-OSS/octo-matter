@@ -10,7 +10,7 @@ import (
 // Bounds on a single comment's attachments.
 const (
 	MaxAttachmentsPerComment = 10
-	MaxAttachmentSizeBytes   = 100 << 20 // 100 MB
+	MaxAttachmentSizeBytes   = int64(100) << 20 // 100 MB
 	MaxContentLength         = 10000
 )
 
@@ -29,10 +29,16 @@ type CommentAttachmentStore interface {
 	DeleteByCommentID(commentID string) error
 }
 
-// commentTxRunner runs a closure that mutates a comment and its attachments
-// inside a single transaction.
+// ParticipantUpserter is the single-method interface for upserting a participant
+// within a transaction.
+type ParticipantUpserter interface {
+	Upsert(matterID, userID string) error
+}
+
+// commentTxRunner runs a closure that mutates a comment, its attachments,
+// and participant records inside a single transaction.
 type commentTxRunner interface {
-	Do(fn func(CommentStore, CommentAttachmentStore) error) error
+	Do(fn func(CommentStore, CommentAttachmentStore, ParticipantUpserter) error) error
 }
 
 // matterScopeChecker resolves a matter within a space to reject cross-space access.
@@ -72,8 +78,16 @@ func NewCommentService(
 	}
 }
 
+// CreateComment posts a comment authored by actorUID. Access is checked
+// against the full callerUIDs set (so bots can post on behalf of their owner).
+// On success, actorUID is upserted as a participant (GAP #8).
+// NOTE: actorUID is not required to be in callerUIDs — this is intentional for
+// delegation scenarios where a bot (in callerUIDs) posts on behalf of its owner
+// (actorUID). The authorship is always attributed to actorUID.
 func (s *CommentService) CreateComment(
-	matterID, spaceID, userID, content string,
+	matterID, spaceID string,
+	callerUIDs []string,
+	actorUID, content string,
 	attachments []CommentAttachmentInput,
 	sourceChannelID string,
 ) (*model.MatterComment, error) {
@@ -100,7 +114,11 @@ func (s *CommentService) CreateComment(
 	if err != nil {
 		return nil, err
 	}
-	if !s.access.CanAccessMatter(matter, userID, sourceChannelID) {
+	ok, accessErr := s.access.CanAccessMatter(matter, callerUIDs, sourceChannelID)
+	if accessErr != nil {
+		return nil, accessErr
+	}
+	if !ok {
 		return nil, apperr.Forbidden("not authorized to access this matter")
 	}
 
@@ -110,35 +128,35 @@ func (s *CommentService) CreateComment(
 	}
 	c := &model.MatterComment{
 		MatterID: matterID,
-		UserID:   userID,
+		UserID:   actorUID,
 		Content:  contentPtr,
 	}
 
-	err = s.tx.Do(func(cs CommentStore, as CommentAttachmentStore) error {
+	err = s.tx.Do(func(cs CommentStore, as CommentAttachmentStore, ps ParticipantUpserter) error {
 		if err := cs.Create(c); err != nil {
 			return err
 		}
-		if len(attachments) == 0 {
-			return nil
+		if len(attachments) > 0 {
+			atts := make([]*model.CommentAttachment, 0, len(attachments))
+			for _, in := range attachments {
+				atts = append(atts, &model.CommentAttachment{
+					CommentID: c.ID,
+					FileURL:   in.FileURL,
+					FileName:  in.FileName,
+					FileSize:  in.FileSize,
+					MimeType:  in.MimeType,
+				})
+			}
+			if err := as.CreateMany(atts); err != nil {
+				return err
+			}
+			c.Attachments = make([]model.CommentAttachment, 0, len(atts))
+			for _, a := range atts {
+				c.Attachments = append(c.Attachments, *a)
+			}
 		}
-		atts := make([]*model.CommentAttachment, 0, len(attachments))
-		for _, in := range attachments {
-			atts = append(atts, &model.CommentAttachment{
-				CommentID: c.ID,
-				FileURL:   in.FileURL,
-				FileName:  in.FileName,
-				FileSize:  in.FileSize,
-				MimeType:  in.MimeType,
-			})
-		}
-		if err := as.CreateMany(atts); err != nil {
-			return err
-		}
-		c.Attachments = make([]model.CommentAttachment, 0, len(atts))
-		for _, a := range atts {
-			c.Attachments = append(c.Attachments, *a)
-		}
-		return nil
+		// GAP #8: participant upsert inside tx for atomicity
+		return ps.Upsert(matterID, actorUID)
 	})
 	if err != nil {
 		return nil, err
@@ -146,11 +164,13 @@ func (s *CommentService) CreateComment(
 	if c.Attachments == nil {
 		c.Attachments = []model.CommentAttachment{}
 	}
+
 	return c, nil
 }
 
 func (s *CommentService) ListComments(
-	matterID, spaceID, userID string,
+	matterID, spaceID string,
+	callerUIDs []string,
 	sourceChannelID string,
 	cursor *string,
 	limit int,
@@ -159,7 +179,11 @@ func (s *CommentService) ListComments(
 	if err != nil {
 		return nil, false, err
 	}
-	if !s.access.CanAccessMatter(matter, userID, sourceChannelID) {
+	ok, accessErr := s.access.CanAccessMatter(matter, callerUIDs, sourceChannelID)
+	if accessErr != nil {
+		return nil, false, accessErr
+	}
+	if !ok {
 		return nil, false, apperr.Forbidden("not authorized to access this matter")
 	}
 	comments, hasMore, err := s.commentRepo.ListByMatter(matterID, cursor, limit)
@@ -187,7 +211,7 @@ func (s *CommentService) ListComments(
 	return comments, hasMore, nil
 }
 
-func (s *CommentService) DeleteComment(id, spaceID, userID string, sourceChannelID string) error {
+func (s *CommentService) DeleteComment(id, spaceID string, callerUIDs []string, actorUID, sourceChannelID string) error {
 	c, err := s.commentRepo.GetByID(id)
 	if err != nil {
 		return err
@@ -196,13 +220,17 @@ func (s *CommentService) DeleteComment(id, spaceID, userID string, sourceChannel
 	if err != nil {
 		return err
 	}
-	if !s.access.CanAccessMatter(matter, userID, sourceChannelID) {
+	ok, accessErr := s.access.CanAccessMatter(matter, callerUIDs, sourceChannelID)
+	if accessErr != nil {
+		return accessErr
+	}
+	if !ok {
 		return apperr.Forbidden("not authorized to access this matter")
 	}
-	if c.UserID != userID {
+	if c.UserID != actorUID {
 		return apperr.ErrForbidden
 	}
-	return s.tx.Do(func(cs CommentStore, as CommentAttachmentStore) error {
+	return s.tx.Do(func(cs CommentStore, as CommentAttachmentStore, _ ParticipantUpserter) error {
 		if err := as.DeleteByCommentID(id); err != nil {
 			return err
 		}

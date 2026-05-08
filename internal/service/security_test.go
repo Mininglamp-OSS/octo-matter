@@ -79,6 +79,12 @@ func (f *fakeMatterRepo) SoftDelete(id, spaceID string) error {
 	return nil
 }
 
+func (f *fakeMatterRepo) HasAccess(matterID string, callerUIDs []string, channelID string) (bool, error) {
+	// For unit tests: always return false (creator check is in-memory anyway).
+	// Tests needing participant/assignee/channel access use tracking fakes via full constructor.
+	return false, nil
+}
+
 // --- assignee fake -------------------------------------------------------
 
 type fakeAssigneeRepo struct {
@@ -119,6 +125,17 @@ func (f *fakeAssigneeRepo) IsAssignee(matterID, userID string) (bool, error) {
 	return false, nil
 }
 
+func (f *fakeAssigneeRepo) IsAssigneeAny(matterID string, userIDs []string) (bool, error) {
+	for _, a := range f.byMatter[matterID] {
+		for _, uid := range userIDs {
+			if a.UserID == uid {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // --- tx runner fakes -----------------------------------------------------
 
 // noopTxRunner fails any Do() call.
@@ -134,22 +151,39 @@ type fakeCommentTx struct {
 	attachments CommentAttachmentStore
 }
 
-func (f fakeCommentTx) Do(fn func(CommentStore, CommentAttachmentStore) error) error {
-	return fn(f.comments, f.attachments)
+func (f fakeCommentTx) Do(fn func(CommentStore, CommentAttachmentStore, ParticipantUpserter) error) error {
+	return fn(f.comments, f.attachments, fakeParticipantRepo{})
 }
 
 // --- access fakes --------------------------------------------------------
 
 type fakeAccessChecker struct{}
 
-func (fakeAccessChecker) CanAccessMatter(matter *model.Matter, userID string, sourceChannelID string) bool {
-	return true
+func (fakeAccessChecker) CanAccessMatter(matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
+	return true, nil
 }
+
+// --- participant fake ---
+
+type fakeParticipantRepo struct{}
+
+func (fakeParticipantRepo) Upsert(matterID, userID string) error                          { return nil }
+func (fakeParticipantRepo) IsParticipantAny(matterID string, userIDs []string) (bool, error) { return false, nil }
+func (fakeParticipantRepo) ListUserIDs(matterID string) ([]string, error)                 { return nil, nil }
+
+// --- channel fake ---
+
+type fakeChannelRepo struct{}
+
+func (fakeChannelRepo) Create(mc *model.MatterChannel) error                    { return nil }
+func (fakeChannelRepo) Delete(matterID, channelID string) error                 { return nil }
+func (fakeChannelRepo) IsLinkedChannel(matterID, channelID string) (bool, error) { return false, nil }
+func (fakeChannelRepo) ListByMatter(matterID string) ([]*model.MatterChannel, error) { return nil, nil }
 
 // --- helpers -------------------------------------------------------------
 
 func newMatterSvc(matterRepo matterStore, assigneeRepo assigneeStore) *MatterService {
-	return NewMatterService(matterRepo, assigneeRepo, noopTxRunner{})
+	return NewMatterService(matterRepo, assigneeRepo, fakeParticipantRepo{}, fakeChannelRepo{}, noopTxRunner{})
 }
 
 func newCommentSvc(
@@ -247,7 +281,7 @@ func (f *fakeCommentAttachmentRepo) DeleteByCommentID(commentID string) error {
 func TestMatterService_GetMatter_CrossSpaceReturnsNotFound(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
-	_, err := svc.GetMatter("t1", "space-B", "caller", "")
+	_, err := svc.GetMatter("t1", "space-B", []string{"caller"}, "")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space GetMatter: got %v, want ErrNotFound", err)
 	}
@@ -256,7 +290,7 @@ func TestMatterService_GetMatter_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestMatterService_UpdateMatter_CrossSpaceReturnsNotFound(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
-	_, err := svc.UpdateMatter("t1", "space-B", "u1", strPtr("new title"), nil, nil, nil)
+	_, err := svc.UpdateMatter("t1", "space-B", []string{"u1"}, strPtr("new title"), nil, nil, nil)
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space UpdateMatter: got %v, want ErrNotFound", err)
 	}
@@ -265,7 +299,7 @@ func TestMatterService_UpdateMatter_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestMatterService_UpdateMatter_NonCreatorReturnsForbidden(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
-	_, err := svc.UpdateMatter("t1", "space-A", "u2", strPtr("new"), nil, nil, nil)
+	_, err := svc.UpdateMatter("t1", "space-A", []string{"u2"}, strPtr("new"), nil, nil, nil)
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-creator UpdateMatter: got %v, want ErrForbidden", err)
 	}
@@ -274,7 +308,7 @@ func TestMatterService_UpdateMatter_NonCreatorReturnsForbidden(t *testing.T) {
 func TestMatterService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
-	err := svc.SoftDelete("t1", "space-B", "u1")
+	err := svc.SoftDelete("t1", "space-B", []string{"u1"})
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space SoftDelete: got %v, want ErrNotFound", err)
 	}
@@ -283,7 +317,7 @@ func TestMatterService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	_, err := svc.CreateComment("t1", "space-B", "u2", "hi", nil, "")
+	_, err := svc.CreateComment("t1", "space-B", []string{"u2"}, "u2", "hi", nil, "")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space CreateComment: got %v, want ErrNotFound", err)
 	}
@@ -292,7 +326,7 @@ func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 func TestCommentService_Create_EmptyRejected(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
 	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	_, err := svc.CreateComment("t1", "sp1", "u1", "", nil, "")
+	_, err := svc.CreateComment("t1", "sp1", []string{"u1"}, "u1", "", nil, "")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("empty comment should be invalid, got %v", err)
 	}
@@ -301,7 +335,7 @@ func TestCommentService_Create_EmptyRejected(t *testing.T) {
 func TestCommentService_Create_AttachmentsOnly_OK(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
 	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	c, err := svc.CreateComment("t1", "sp1", "u1", "", []CommentAttachmentInput{
+	c, err := svc.CreateComment("t1", "sp1", []string{"u1"}, "u1", "", []CommentAttachmentInput{
 		{FileURL: "https://obj/a.png"},
 	}, "")
 	if err != nil {
@@ -322,7 +356,7 @@ func TestCommentService_Create_TooManyAttachments(t *testing.T) {
 	for i := range atts {
 		atts[i] = CommentAttachmentInput{FileURL: "https://obj/a.png"}
 	}
-	_, err := svc.CreateComment("t1", "sp1", "u1", "hi", atts, "")
+	_, err := svc.CreateComment("t1", "sp1", []string{"u1"}, "u1", "hi", atts, "")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("too-many attachments should be invalid, got %v", err)
 	}
@@ -332,7 +366,7 @@ func TestCommentService_Create_AttachmentTooLarge(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
 	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
 	over := int64(MaxAttachmentSizeBytes + 1)
-	_, err := svc.CreateComment("t1", "sp1", "u1", "", []CommentAttachmentInput{
+	_, err := svc.CreateComment("t1", "sp1", []string{"u1"}, "u1", "", []CommentAttachmentInput{
 		{FileURL: "https://obj/a.png", FileSize: &over},
 	}, "")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
@@ -343,7 +377,7 @@ func TestCommentService_Create_AttachmentTooLarge(t *testing.T) {
 func TestCommentService_Create_WithTextAndAttachments_OK(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
 	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	c, err := svc.CreateComment("t1", "sp1", "u1", "look at this", []CommentAttachmentInput{
+	c, err := svc.CreateComment("t1", "sp1", []string{"u1"}, "u1", "look at this", []CommentAttachmentInput{
 		{FileURL: "https://obj/a.png"},
 		{FileURL: "https://obj/b.png"},
 	}, "")
@@ -363,7 +397,7 @@ func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	content := "hi"
 	comment := &model.MatterComment{ID: "c1", MatterID: "t1", UserID: "u1", Content: &content}
 	svc := newCommentSvc(newFakeCommentRepo(comment), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	err := svc.DeleteComment("c1", "space-A", "u2", "")
+	err := svc.DeleteComment("c1", "space-A", []string{"u2"}, "u2", "")
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-author DeleteComment: got %v, want ErrForbidden", err)
 	}
@@ -379,7 +413,7 @@ func TestCommentService_Delete_AuthorRemovesAttachments(t *testing.T) {
 		{ID: "a1", CommentID: "c1", FileURL: "https://obj/a.png"},
 	}
 	svc := newCommentSvc(cmtRepo, attRepo, newFakeMatterRepo(matter), fakeAccessChecker{})
-	if err := svc.DeleteComment("c1", "sp1", "u1", ""); err != nil {
+	if err := svc.DeleteComment("c1", "sp1", []string{"u1"}, "u1", ""); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, ok := cmtRepo.byID["c1"]; ok {
@@ -393,10 +427,132 @@ func TestCommentService_Delete_AuthorRemovesAttachments(t *testing.T) {
 func TestSetStatus_RejectsInvalidStatus(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
-	_, err := svc.SetStatus("t1", "sp1", "u1", "banana")
+	_, err := svc.SetStatus("t1", "sp1", []string{"u1"}, "banana")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("invalid status should return ErrInvalidInput, got %v", err)
 	}
 }
 
 func strPtr(s string) *string { return &s }
+
+// --- New permission path tests (review feedback #1) ---
+
+func TestMatterService_GetMatter_ParticipantCanAccess(t *testing.T) {
+	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
+	// HasAccess returns true when userID is a participant
+	matterRepo := &hasAccessFakeMatterRepo{fakeMatterRepo: *newFakeMatterRepo(matter), accessGrants: map[string]bool{"t1:viewer:": true}}
+	svc := NewMatterService(matterRepo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, noopTxRunner{})
+	_, err := svc.GetMatter("t1", "sp1", []string{"viewer"}, "")
+	if err != nil {
+		t.Fatalf("participant should have access, got %v", err)
+	}
+}
+
+func TestMatterService_GetMatter_ChannelMemberCanAccess(t *testing.T) {
+	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
+	matterRepo := &hasAccessFakeMatterRepo{fakeMatterRepo: *newFakeMatterRepo(matter), accessGrants: map[string]bool{"t1:stranger:ch-123": true}}
+	svc := NewMatterService(matterRepo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, noopTxRunner{})
+	_, err := svc.GetMatter("t1", "sp1", []string{"stranger"}, "ch-123")
+	if err != nil {
+		t.Fatalf("channel member should have access, got %v", err)
+	}
+}
+
+func TestMatterService_SetStatus_AssigneeCannotArchive(t *testing.T) {
+	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
+	assigneeRepo := newFakeAssigneeRepo()
+	_ = assigneeRepo.Create(&model.MatterAssignee{MatterID: "t1", UserID: "worker"})
+	svc := newMatterSvc(newFakeMatterRepo(matter), assigneeRepo)
+	_, err := svc.SetStatus("t1", "sp1", []string{"worker"}, model.MatterStatusArchived)
+	if !errors.Is(err, apperr.ErrForbidden) {
+		t.Fatalf("assignee should not be able to archive, got %v", err)
+	}
+}
+
+func TestMatterService_SetStatus_CreatorCanArchive(t *testing.T) {
+	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
+	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
+	// Pre-check passes (creator), but noopTxRunner errors — verify it's not ErrForbidden
+	_, err := svc.SetStatus("t1", "sp1", []string{"owner"}, model.MatterStatusArchived)
+	if errors.Is(err, apperr.ErrForbidden) {
+		t.Fatalf("creator should be able to archive, got forbidden")
+	}
+}
+
+func TestMatterService_RemoveAssignee_SelfUnassign(t *testing.T) {
+	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
+	assigneeRepo := newFakeAssigneeRepo()
+	_ = assigneeRepo.Create(&model.MatterAssignee{MatterID: "t1", UserID: "worker"})
+	svc := newMatterSvc(newFakeMatterRepo(matter), assigneeRepo)
+	err := svc.RemoveAssignee("t1", "sp1", []string{"worker"}, "worker")
+	if err != nil {
+		t.Fatalf("self-unassign should succeed, got %v", err)
+	}
+}
+
+func TestMatterService_RemoveAssignee_NonCreatorCannotRemoveOthers(t *testing.T) {
+	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
+	assigneeRepo := newFakeAssigneeRepo()
+	_ = assigneeRepo.Create(&model.MatterAssignee{MatterID: "t1", UserID: "worker1"})
+	_ = assigneeRepo.Create(&model.MatterAssignee{MatterID: "t1", UserID: "worker2"})
+	svc := newMatterSvc(newFakeMatterRepo(matter), assigneeRepo)
+	err := svc.RemoveAssignee("t1", "sp1", []string{"worker1"}, "worker2")
+	if !errors.Is(err, apperr.ErrForbidden) {
+		t.Fatalf("non-creator should not remove others, got %v", err)
+	}
+}
+
+// --- tracking fakes for new permission paths ---
+
+// hasAccessFakeMatterRepo extends fakeMatterRepo with configurable HasAccess results.
+type hasAccessFakeMatterRepo struct {
+	fakeMatterRepo
+	accessGrants map[string]bool // key: "matterID:uid:channelID"
+}
+
+func (f *hasAccessFakeMatterRepo) HasAccess(matterID string, callerUIDs []string, channelID string) (bool, error) {
+	for _, uid := range callerUIDs {
+		key := matterID + ":" + uid + ":" + channelID
+		if f.accessGrants[key] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+type trackingParticipantRepo struct {
+	participants map[string][]string // matterID -> []userID
+}
+
+func (f *trackingParticipantRepo) Upsert(matterID, userID string) error { return nil }
+func (f *trackingParticipantRepo) IsParticipantAny(matterID string, userIDs []string) (bool, error) {
+	for _, pid := range f.participants[matterID] {
+		for _, uid := range userIDs {
+			if pid == uid {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+func (f *trackingParticipantRepo) ListUserIDs(matterID string) ([]string, error) {
+	return f.participants[matterID], nil
+}
+
+type trackingChannelRepo struct {
+	links map[string][]string // matterID -> []channelID
+}
+
+func (f *trackingChannelRepo) Create(mc *model.MatterChannel) error    { return nil }
+func (f *trackingChannelRepo) Delete(matterID, channelID string) error { return nil }
+func (f *trackingChannelRepo) IsLinkedChannel(matterID, channelID string) (bool, error) {
+	for _, cid := range f.links[matterID] {
+		if cid == channelID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+func (f *trackingChannelRepo) ListByMatter(matterID string) ([]*model.MatterChannel, error) {
+	return nil, nil
+}

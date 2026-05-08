@@ -8,6 +8,8 @@ import (
 type TxRepos struct {
 	Matter            *MatterRepo
 	Assignee          *AssigneeRepo
+	Participant       *ParticipantRepo
+	MatterChannel     *MatterChannelRepo
 	Comment           *CommentRepo
 	CommentAttachment *CommentAttachmentRepo
 }
@@ -32,6 +34,8 @@ func (m *TxManager) Do(fn func(r *TxRepos) error) error {
 	repos := &TxRepos{
 		Matter:            &MatterRepo{runner: tx},
 		Assignee:          &AssigneeRepo{runner: tx},
+		Participant:       &ParticipantRepo{runner: tx},
+		MatterChannel:     &MatterChannelRepo{runner: tx},
 		Comment:           &CommentRepo{runner: tx},
 		CommentAttachment: &CommentAttachmentRepo{runner: tx},
 	}
