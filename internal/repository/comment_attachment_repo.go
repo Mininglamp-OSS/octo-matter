@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
@@ -17,7 +18,7 @@ func NewCommentAttachmentRepo(sess *dbr.Session) *CommentAttachmentRepo {
 }
 
 // CreateMany inserts attachments for a single comment.
-func (r *CommentAttachmentRepo) CreateMany(atts []*model.CommentAttachment) error {
+func (r *CommentAttachmentRepo) CreateMany(ctx context.Context, atts []*model.CommentAttachment) error {
 	if len(atts) == 0 {
 		return nil
 	}
@@ -29,12 +30,12 @@ func (r *CommentAttachmentRepo) CreateMany(atts []*model.CommentAttachment) erro
 		a.CreatedAt = now
 		stmt = stmt.Record(a)
 	}
-	_, err := stmt.Exec()
+	_, err := stmt.ExecContext(ctx)
 	return err
 }
 
 // ListByCommentIDs fetches attachments for every comment id in one query.
-func (r *CommentAttachmentRepo) ListByCommentIDs(ids []string) (map[string][]model.CommentAttachment, error) {
+func (r *CommentAttachmentRepo) ListByCommentIDs(ctx context.Context, ids []string) (map[string][]model.CommentAttachment, error) {
 	out := make(map[string][]model.CommentAttachment, len(ids))
 	if len(ids) == 0 {
 		return out, nil
@@ -45,7 +46,7 @@ func (r *CommentAttachmentRepo) ListByCommentIDs(ids []string) (map[string][]mod
 		Where("comment_id IN ?", ids).
 		OrderDir("created_at", true).
 		OrderDir("id", true).
-		Load(&rows)
+		LoadContext(ctx, &rows)
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +57,9 @@ func (r *CommentAttachmentRepo) ListByCommentIDs(ids []string) (map[string][]mod
 }
 
 // DeleteByCommentID removes all attachments for a comment.
-func (r *CommentAttachmentRepo) DeleteByCommentID(commentID string) error {
+func (r *CommentAttachmentRepo) DeleteByCommentID(ctx context.Context, commentID string) error {
 	_, err := r.runner.DeleteFrom("matter_comment_attachments").
 		Where("comment_id = ?", commentID).
-		Exec()
+		ExecContext(ctx)
 	return err
 }

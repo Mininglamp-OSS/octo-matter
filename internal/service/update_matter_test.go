@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ func TestUpdateMatter_PersistsDeadlineAndRemindAt(t *testing.T) {
 
 	deadline := "2026-06-01T12:00:00Z"
 	remind := "2026-05-30T09:00:00Z"
-	updated, err := svc.UpdateMatter("t1", "space-A", []string{"u1"}, strPtr("x"), nil, &deadline, &remind)
+	updated, err := svc.UpdateMatter(context.Background(), "t1", "space-A", []string{"u1"}, strPtr("x"), nil, &deadline, &remind)
 	if err != nil {
 		t.Fatalf("UpdateMatter failed: %v", err)
 	}
@@ -30,10 +31,10 @@ func TestUpdateMatter_PersistsDeadlineAndRemindAt(t *testing.T) {
 func TestUpdateMatter_AssigneeCanUpdate(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "owner", Title: "x", Status: model.MatterStatusOpen}
 	assigneeRepo := newFakeAssigneeRepo()
-	_ = assigneeRepo.Create(&model.MatterAssignee{MatterID: "t1", UserID: "assignee-1"})
+	_ = assigneeRepo.Create(context.Background(), &model.MatterAssignee{MatterID: "t1", UserID: "assignee-1"})
 	svc := newMatterSvc(newFakeMatterRepo(matter), assigneeRepo)
 
-	updated, err := svc.UpdateMatter("t1", "space-A", []string{"assignee-1"}, strPtr("new title"), nil, nil, nil)
+	updated, err := svc.UpdateMatter(context.Background(), "t1", "space-A", []string{"assignee-1"}, strPtr("new title"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("assignee should be able to update matter: %v", err)
 	}
@@ -46,7 +47,7 @@ func TestUpdateMatter_NonCreatorNonAssigneeForbidden(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "owner", Title: "x", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
 
-	_, err := svc.UpdateMatter("t1", "space-A", []string{"stranger"}, strPtr("hack"), nil, nil, nil)
+	_, err := svc.UpdateMatter(context.Background(), "t1", "space-A", []string{"stranger"}, strPtr("hack"), nil, nil, nil)
 	if !errors.Is(err, apperr.ErrForbidden) {
 		t.Fatalf("non-creator non-assignee should get ErrForbidden, got %v", err)
 	}
@@ -58,7 +59,7 @@ func TestUpdateMatter_EmptyStringClearsTimestamp(t *testing.T) {
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
 
 	empty := ""
-	updated, err := svc.UpdateMatter("t1", "space-A", []string{"u1"}, strPtr("x"), nil, &empty, nil)
+	updated, err := svc.UpdateMatter(context.Background(), "t1", "space-A", []string{"u1"}, strPtr("x"), nil, &empty, nil)
 	if err != nil {
 		t.Fatalf("UpdateMatter failed: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestUpdateMatter_NilPointerLeavesTimestampUntouched(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.MatterStatusOpen, Deadline: &existing, Description: &desc}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
 
-	updated, err := svc.UpdateMatter("t1", "space-A", []string{"u1"}, strPtr("x"), nil, nil, nil)
+	updated, err := svc.UpdateMatter(context.Background(), "t1", "space-A", []string{"u1"}, strPtr("x"), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("UpdateMatter failed: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestUpdateMatter_InvalidDeadlineReturnsInvalidInput(t *testing.T) {
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
 
 	bad := "not-a-date"
-	_, err := svc.UpdateMatter("t1", "space-A", []string{"u1"}, strPtr("x"), nil, &bad, nil)
+	_, err := svc.UpdateMatter(context.Background(), "t1", "space-A", []string{"u1"}, strPtr("x"), nil, &bad, nil)
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("bad deadline should return ErrInvalidInput, got %v", err)
 	}

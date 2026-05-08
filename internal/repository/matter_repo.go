@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -33,7 +34,7 @@ func NewMatterRepo(sess *dbr.Session) *MatterRepo {
 	return &MatterRepo{runner: sess}
 }
 
-func (r *MatterRepo) Create(matter *model.Matter) error {
+func (r *MatterRepo) Create(ctx context.Context, matter *model.Matter) error {
 	matter.ID = uuid.New().String()
 	now := time.Now()
 	matter.CreatedAt = now
@@ -43,16 +44,16 @@ func (r *MatterRepo) Create(matter *model.Matter) error {
 			"status", "deadline", "remind_at", "source_channel_id", "source_channel_type",
 			"source_name", "created_at", "updated_at", "deleted_at").
 		Record(matter).
-		Exec()
+		ExecContext(ctx)
 	return err
 }
 
-func (r *MatterRepo) GetByID(id, spaceID string) (*model.Matter, error) {
+func (r *MatterRepo) GetByID(ctx context.Context, id, spaceID string) (*model.Matter, error) {
 	var matter model.Matter
 	err := r.runner.Select("*").
 		From("matters").
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
-		LoadOne(&matter)
+		LoadOneContext(ctx, &matter)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
 			return nil, apperr.MatterNotFound()
@@ -62,7 +63,7 @@ func (r *MatterRepo) GetByID(id, spaceID string) (*model.Matter, error) {
 	return &matter, nil
 }
 
-func (r *MatterRepo) ListBySpace(spaceID string, filter MatterFilter) ([]*model.Matter, bool, error) {
+func (r *MatterRepo) ListBySpace(ctx context.Context, spaceID string, filter MatterFilter) ([]*model.Matter, bool, error) {
 	limit := filter.Limit
 	if limit <= 0 {
 		limit = 20
@@ -127,7 +128,7 @@ func (r *MatterRepo) ListBySpace(spaceID string, filter MatterFilter) ([]*model.
 	_, err := q.OrderBy("created_at DESC").
 		OrderBy("id DESC").
 		Limit(uint64(limit + 1)).
-		Load(&matters)
+		LoadContext(ctx, &matters)
 	if err != nil {
 		return nil, false, err
 	}
@@ -142,12 +143,12 @@ func (r *MatterRepo) ListBySpace(spaceID string, filter MatterFilter) ([]*model.
 	return matters, hasMore, nil
 }
 
-func (r *MatterRepo) GetByIDForUpdate(id, spaceID string) (*model.Matter, error) {
+func (r *MatterRepo) GetByIDForUpdate(ctx context.Context, id, spaceID string) (*model.Matter, error) {
 	var matter model.Matter
 	err := r.runner.SelectBySql(
 		"SELECT * FROM matters WHERE id = ? AND space_id = ? AND deleted_at IS NULL FOR UPDATE",
 		id, spaceID,
-	).LoadOne(&matter)
+	).LoadOneContext(ctx, &matter)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
 			return nil, apperr.MatterNotFound()
@@ -157,7 +158,7 @@ func (r *MatterRepo) GetByIDForUpdate(id, spaceID string) (*model.Matter, error)
 	return &matter, nil
 }
 
-func (r *MatterRepo) Update(matter *model.Matter) error {
+func (r *MatterRepo) Update(ctx context.Context, matter *model.Matter) error {
 	matter.UpdatedAt = time.Now()
 	result, err := r.runner.Update("matters").
 		Set("title", matter.Title).
@@ -166,7 +167,7 @@ func (r *MatterRepo) Update(matter *model.Matter) error {
 		Set("remind_at", matter.RemindAt).
 		Set("updated_at", matter.UpdatedAt).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", matter.ID, matter.SpaceID).
-		Exec()
+		ExecContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -177,12 +178,12 @@ func (r *MatterRepo) Update(matter *model.Matter) error {
 	return nil
 }
 
-func (r *MatterRepo) UpdateStatus(id, spaceID, status string) error {
+func (r *MatterRepo) UpdateStatus(ctx context.Context, id, spaceID, status string) error {
 	result, err := r.runner.Update("matters").
 		Set("status", status).
 		Set("updated_at", time.Now()).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
-		Exec()
+		ExecContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -193,11 +194,11 @@ func (r *MatterRepo) UpdateStatus(id, spaceID, status string) error {
 	return nil
 }
 
-func (r *MatterRepo) SoftDelete(id, spaceID string) error {
+func (r *MatterRepo) SoftDelete(ctx context.Context, id, spaceID string) error {
 	result, err := r.runner.Update("matters").
 		Set("deleted_at", time.Now()).
 		Where("id = ? AND space_id = ? AND deleted_at IS NULL", id, spaceID).
-		Exec()
+		ExecContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -218,7 +219,7 @@ func escapeLikePattern(s string) string {
 // HasAccess checks in a single query whether any of callerUIDs has access to
 // the matter via assignee or participant role, or whether channelID is linked.
 // Creator check is done in-memory by the caller so not included here.
-func (r *MatterRepo) HasAccess(matterID string, callerUIDs []string, channelID string) (bool, error) {
+func (r *MatterRepo) HasAccess(ctx context.Context, matterID string, callerUIDs []string, channelID string) (bool, error) {
 	if len(callerUIDs) == 0 && channelID == "" {
 		return false, nil
 	}
@@ -245,7 +246,7 @@ func (r *MatterRepo) HasAccess(matterID string, callerUIDs []string, channelID s
 	}
 
 	var dummy int
-	err := q.LoadOne(&dummy)
+	err := q.LoadOneContext(ctx, &dummy)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
 			return false, nil

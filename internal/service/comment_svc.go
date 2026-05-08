@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"strings"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
@@ -16,34 +17,34 @@ const (
 
 // CommentStore is the narrow CommentRepo surface CommentService depends on.
 type CommentStore interface {
-	Create(c *model.MatterComment) error
-	GetByID(id string) (*model.MatterComment, error)
-	Delete(id string) error
-	ListByMatter(matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error)
+	Create(ctx context.Context, c *model.MatterComment) error
+	GetByID(ctx context.Context, id string) (*model.MatterComment, error)
+	Delete(ctx context.Context, id string) error
+	ListByMatter(ctx context.Context, matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error)
 }
 
 // CommentAttachmentStore is the narrow CommentAttachmentRepo surface.
 type CommentAttachmentStore interface {
-	CreateMany(atts []*model.CommentAttachment) error
-	ListByCommentIDs(ids []string) (map[string][]model.CommentAttachment, error)
-	DeleteByCommentID(commentID string) error
+	CreateMany(ctx context.Context, atts []*model.CommentAttachment) error
+	ListByCommentIDs(ctx context.Context, ids []string) (map[string][]model.CommentAttachment, error)
+	DeleteByCommentID(ctx context.Context, commentID string) error
 }
 
 // ParticipantUpserter is the single-method interface for upserting a participant
 // within a transaction.
 type ParticipantUpserter interface {
-	Upsert(matterID, userID string) error
+	Upsert(ctx context.Context, matterID, userID string) error
 }
 
 // commentTxRunner runs a closure that mutates a comment, its attachments,
 // and participant records inside a single transaction.
 type commentTxRunner interface {
-	Do(fn func(CommentStore, CommentAttachmentStore, ParticipantUpserter) error) error
+	Do(ctx context.Context, fn func(CommentStore, CommentAttachmentStore, ParticipantUpserter) error) error
 }
 
 // matterScopeChecker resolves a matter within a space to reject cross-space access.
 type matterScopeChecker interface {
-	GetByID(id, spaceID string) (*model.Matter, error)
+	GetByID(ctx context.Context, id, spaceID string) (*model.Matter, error)
 }
 
 // CommentAttachmentInput is the service-level representation of one attachment.
@@ -85,6 +86,7 @@ func NewCommentService(
 // delegation scenarios where a bot (in callerUIDs) posts on behalf of its owner
 // (actorUID). The authorship is always attributed to actorUID.
 func (s *CommentService) CreateComment(
+	ctx context.Context,
 	matterID, spaceID string,
 	callerUIDs []string,
 	actorUID, content string,
@@ -110,11 +112,11 @@ func (s *CommentService) CreateComment(
 		}
 	}
 
-	matter, err := s.matterRepo.GetByID(matterID, spaceID)
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	ok, accessErr := s.access.CanAccessMatter(matter, callerUIDs, sourceChannelID)
+	ok, accessErr := s.access.CanAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
 	if accessErr != nil {
 		return nil, accessErr
 	}
@@ -132,8 +134,8 @@ func (s *CommentService) CreateComment(
 		Content:  contentPtr,
 	}
 
-	err = s.tx.Do(func(cs CommentStore, as CommentAttachmentStore, ps ParticipantUpserter) error {
-		if err := cs.Create(c); err != nil {
+	err = s.tx.Do(ctx, func(cs CommentStore, as CommentAttachmentStore, ps ParticipantUpserter) error {
+		if err := cs.Create(ctx, c); err != nil {
 			return err
 		}
 		if len(attachments) > 0 {
@@ -147,7 +149,7 @@ func (s *CommentService) CreateComment(
 					MimeType:  in.MimeType,
 				})
 			}
-			if err := as.CreateMany(atts); err != nil {
+			if err := as.CreateMany(ctx, atts); err != nil {
 				return err
 			}
 			c.Attachments = make([]model.CommentAttachment, 0, len(atts))
@@ -156,7 +158,7 @@ func (s *CommentService) CreateComment(
 			}
 		}
 		// GAP #8: participant upsert inside tx for atomicity
-		return ps.Upsert(matterID, actorUID)
+		return ps.Upsert(ctx, matterID, actorUID)
 	})
 	if err != nil {
 		return nil, err
@@ -169,24 +171,25 @@ func (s *CommentService) CreateComment(
 }
 
 func (s *CommentService) ListComments(
+	ctx context.Context,
 	matterID, spaceID string,
 	callerUIDs []string,
 	sourceChannelID string,
 	cursor *string,
 	limit int,
 ) ([]*model.MatterComment, bool, error) {
-	matter, err := s.matterRepo.GetByID(matterID, spaceID)
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {
 		return nil, false, err
 	}
-	ok, accessErr := s.access.CanAccessMatter(matter, callerUIDs, sourceChannelID)
+	ok, accessErr := s.access.CanAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
 	if accessErr != nil {
 		return nil, false, accessErr
 	}
 	if !ok {
 		return nil, false, apperr.Forbidden("not authorized to access this matter")
 	}
-	comments, hasMore, err := s.commentRepo.ListByMatter(matterID, cursor, limit)
+	comments, hasMore, err := s.commentRepo.ListByMatter(ctx, matterID, cursor, limit)
 	if err != nil {
 		return nil, false, err
 	}
@@ -197,7 +200,7 @@ func (s *CommentService) ListComments(
 	for i, c := range comments {
 		ids[i] = c.ID
 	}
-	byComment, err := s.attachmentRepo.ListByCommentIDs(ids)
+	byComment, err := s.attachmentRepo.ListByCommentIDs(ctx, ids)
 	if err != nil {
 		return nil, false, err
 	}
@@ -211,16 +214,16 @@ func (s *CommentService) ListComments(
 	return comments, hasMore, nil
 }
 
-func (s *CommentService) DeleteComment(id, spaceID string, callerUIDs []string, actorUID, sourceChannelID string) error {
-	c, err := s.commentRepo.GetByID(id)
+func (s *CommentService) DeleteComment(ctx context.Context, id, spaceID string, callerUIDs []string, actorUID, sourceChannelID string) error {
+	c, err := s.commentRepo.GetByID(ctx, id)
 	if err != nil {
 		return err
 	}
-	matter, err := s.matterRepo.GetByID(c.MatterID, spaceID)
+	matter, err := s.matterRepo.GetByID(ctx, c.MatterID, spaceID)
 	if err != nil {
 		return err
 	}
-	ok, accessErr := s.access.CanAccessMatter(matter, callerUIDs, sourceChannelID)
+	ok, accessErr := s.access.CanAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
 	if accessErr != nil {
 		return accessErr
 	}
@@ -230,10 +233,10 @@ func (s *CommentService) DeleteComment(id, spaceID string, callerUIDs []string, 
 	if c.UserID != actorUID {
 		return apperr.ErrForbidden
 	}
-	return s.tx.Do(func(cs CommentStore, as CommentAttachmentStore, _ ParticipantUpserter) error {
-		if err := as.DeleteByCommentID(id); err != nil {
+	return s.tx.Do(ctx, func(cs CommentStore, as CommentAttachmentStore, _ ParticipantUpserter) error {
+		if err := as.DeleteByCommentID(ctx, id); err != nil {
 			return err
 		}
-		return cs.Delete(id)
+		return cs.Delete(ctx, id)
 	})
 }

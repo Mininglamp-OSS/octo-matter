@@ -1,6 +1,8 @@
 package repository
 
 import (
+	"context"
+
 	"github.com/gocraft/dbr/v2"
 )
 
@@ -24,8 +26,8 @@ func NewTxManager(sess *dbr.Session) *TxManager {
 }
 
 // Do runs fn inside a dbr transaction.
-func (m *TxManager) Do(fn func(r *TxRepos) error) error {
-	tx, err := m.sess.Begin()
+func (m *TxManager) Do(ctx context.Context, fn func(r *TxRepos) error) error {
+	tx, err := m.sess.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}

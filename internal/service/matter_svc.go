@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"log"
 	"time"
 
@@ -11,39 +12,39 @@ import (
 
 // matterStore is the narrow MatterRepo surface MatterService depends on.
 type matterStore interface {
-	Create(matter *model.Matter) error
-	GetByID(id, spaceID string) (*model.Matter, error)
-	ListBySpace(spaceID string, filter repository.MatterFilter) ([]*model.Matter, bool, error)
-	Update(matter *model.Matter) error
-	UpdateStatus(id, spaceID, status string) error
-	SoftDelete(id, spaceID string) error
-	HasAccess(matterID string, callerUIDs []string, channelID string) (bool, error)
+	Create(ctx context.Context, matter *model.Matter) error
+	GetByID(ctx context.Context, id, spaceID string) (*model.Matter, error)
+	ListBySpace(ctx context.Context, spaceID string, filter repository.MatterFilter) ([]*model.Matter, bool, error)
+	Update(ctx context.Context, matter *model.Matter) error
+	UpdateStatus(ctx context.Context, id, spaceID, status string) error
+	SoftDelete(ctx context.Context, id, spaceID string) error
+	HasAccess(ctx context.Context, matterID string, callerUIDs []string, channelID string) (bool, error)
 }
 
 type assigneeStore interface {
-	Create(a *model.MatterAssignee) error
-	Delete(matterID, userID string) error
-	ListByMatter(matterID string) ([]*model.MatterAssignee, error)
-	IsAssignee(matterID, userID string) (bool, error)
-	IsAssigneeAny(matterID string, userIDs []string) (bool, error)
+	Create(ctx context.Context, a *model.MatterAssignee) error
+	Delete(ctx context.Context, matterID, userID string) error
+	ListByMatter(ctx context.Context, matterID string) ([]*model.MatterAssignee, error)
+	IsAssignee(ctx context.Context, matterID, userID string) (bool, error)
+	IsAssigneeAny(ctx context.Context, matterID string, userIDs []string) (bool, error)
 }
 
 type participantStore interface {
-	Upsert(matterID, userID string) error
-	IsParticipantAny(matterID string, userIDs []string) (bool, error)
-	ListUserIDs(matterID string) ([]string, error)
+	Upsert(ctx context.Context, matterID, userID string) error
+	IsParticipantAny(ctx context.Context, matterID string, userIDs []string) (bool, error)
+	ListUserIDs(ctx context.Context, matterID string) ([]string, error)
 }
 
 type channelStore interface {
-	Create(mc *model.MatterChannel) error
-	Delete(matterID, channelID string) error
-	IsLinkedChannel(matterID, channelID string) (bool, error)
-	ListByMatter(matterID string) ([]*model.MatterChannel, error)
+	Create(ctx context.Context, mc *model.MatterChannel) error
+	Delete(ctx context.Context, matterID, channelID string) error
+	IsLinkedChannel(ctx context.Context, matterID, channelID string) (bool, error)
+	ListByMatter(ctx context.Context, matterID string) ([]*model.MatterChannel, error)
 }
 
 // txRunner runs a closure against a bundle of tx-bound repos.
 type txRunner interface {
-	Do(fn func(r *repository.TxRepos) error) error
+	Do(ctx context.Context, fn func(r *repository.TxRepos) error) error
 }
 
 type MatterService struct {
@@ -72,13 +73,13 @@ func NewMatterService(
 
 // CreateMatterWithAssignees creates the matter, auto-links its source channel
 // (GAP #13) and inserts all initial assignees in a single transaction.
-func (s *MatterService) CreateMatterWithAssignees(matter *model.Matter, assigneeIDs []string) (*MatterDetail, error) {
+func (s *MatterService) CreateMatterWithAssignees(ctx context.Context, matter *model.Matter, assigneeIDs []string) (*MatterDetail, error) {
 	if matter.Status == "" {
 		matter.Status = model.MatterStatusOpen
 	}
 	var created []*model.MatterAssignee
-	err := s.tx.Do(func(r *repository.TxRepos) error {
-		if err := r.Matter.Create(matter); err != nil {
+	err := s.tx.Do(ctx, func(r *repository.TxRepos) error {
+		if err := r.Matter.Create(ctx, matter); err != nil {
 			return err
 		}
 
@@ -95,7 +96,7 @@ func (s *MatterService) CreateMatterWithAssignees(matter *model.Matter, assignee
 				ChannelName: matter.SourceName,
 				LinkedBy:    matter.CreatorID,
 			}
-			if err := r.MatterChannel.Create(mc); err != nil {
+			if err := r.MatterChannel.Create(ctx, mc); err != nil {
 				return err
 			}
 		}
@@ -106,7 +107,7 @@ func (s *MatterService) CreateMatterWithAssignees(matter *model.Matter, assignee
 				MatterID: matter.ID,
 				UserID:   aid,
 			}
-			if err := r.Assignee.Create(a); err != nil {
+			if err := r.Assignee.Create(ctx, a); err != nil {
 				return err
 			}
 			created = append(created, a)
@@ -128,8 +129,8 @@ type MatterListResult struct {
 	NextCursor string          `json:"next_cursor,omitempty"`
 }
 
-func (s *MatterService) ListMatters(spaceID string, filter repository.MatterFilter) (*MatterListResult, error) {
-	matters, hasMore, err := s.matterRepo.ListBySpace(spaceID, filter)
+func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter repository.MatterFilter) (*MatterListResult, error) {
+	matters, hasMore, err := s.matterRepo.ListBySpace(ctx, spaceID, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -151,38 +152,38 @@ func (s *MatterService) ListMatters(spaceID string, filter repository.MatterFilt
 // MatterDetail is the enriched response for a single matter.
 type MatterDetail struct {
 	*model.Matter
-	Assignees    []*model.MatterAssignee  `json:"assignees"`
-	Participants []string                 `json:"participants"`
-	Channels     []*model.MatterChannel   `json:"channels"`
+	Assignees    []*model.MatterAssignee `json:"assignees"`
+	Participants []string                `json:"participants"`
+	Channels     []*model.MatterChannel  `json:"channels"`
 }
 
 // GetMatterForNotification loads a matter by ID+space without access checks.
-func (s *MatterService) GetMatterForNotification(id, spaceID string) (*model.Matter, error) {
-	return s.matterRepo.GetByID(id, spaceID)
+func (s *MatterService) GetMatterForNotification(ctx context.Context, id, spaceID string) (*model.Matter, error) {
+	return s.matterRepo.GetByID(ctx, id, spaceID)
 }
 
 // GetMatter loads a matter any of callerUIDs is allowed to read.
-func (s *MatterService) GetMatter(id, spaceID string, callerUIDs []string, sourceChannelID string) (*MatterDetail, error) {
-	matter, err := s.matterRepo.GetByID(id, spaceID)
+func (s *MatterService) GetMatter(ctx context.Context, id, spaceID string, callerUIDs []string, sourceChannelID string) (*MatterDetail, error) {
+	matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	ok, accessErr := s.canAccessMatter(matter, callerUIDs, sourceChannelID)
+	ok, accessErr := s.canAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
 	if accessErr != nil {
 		return nil, accessErr
 	}
 	if !ok {
 		return nil, apperr.Forbidden("not authorized to view this matter")
 	}
-	assignees, err := s.assigneeRepo.ListByMatter(id)
+	assignees, err := s.assigneeRepo.ListByMatter(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	participants, err := s.participantRepo.ListUserIDs(id)
+	participants, err := s.participantRepo.ListUserIDs(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	channels, err := s.channelRepo.ListByMatter(id)
+	channels, err := s.channelRepo.ListByMatter(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -195,19 +196,19 @@ func (s *MatterService) GetMatter(id, spaceID string, callerUIDs []string, sourc
 }
 
 // CanAccessMatter satisfies MatterAccessChecker.
-func (s *MatterService) CanAccessMatter(matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
-	return s.canAccessMatter(matter, callerUIDs, sourceChannelID)
+func (s *MatterService) CanAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
+	return s.canAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
 }
 
 // canAccessMatter returns (true, nil) if access is granted, (false, nil) if
 // denied, or (false, err) on infrastructure failure (DB error).
-func (s *MatterService) canAccessMatter(matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
+func (s *MatterService) canAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
 	// Fast path: creator check is in-memory, no DB needed.
 	if s.isCreator(matter, callerUIDs) {
 		return true, nil
 	}
 	// Single DB query to check assignee, participant, or channel access.
-	ok, err := s.matterRepo.HasAccess(matter.ID, callerUIDs, sourceChannelID)
+	ok, err := s.matterRepo.HasAccess(ctx, matter.ID, callerUIDs, sourceChannelID)
 	if err != nil {
 		log.Printf("[ERROR] canAccessMatter: HasAccess DB error matter=%s: %v", matter.ID, err)
 		return false, err
@@ -224,19 +225,26 @@ func (s *MatterService) isCreator(matter *model.Matter, callerUIDs []string) boo
 	return false
 }
 
-func (s *MatterService) isAssigneeAny(matterID string, callerUIDs []string) bool {
-	ok, _ := s.assigneeRepo.IsAssigneeAny(matterID, callerUIDs)
-	return ok
+func (s *MatterService) isAssigneeAny(ctx context.Context, matterID string, callerUIDs []string) (bool, error) {
+	return s.assigneeRepo.IsAssigneeAny(ctx, matterID, callerUIDs)
 }
+
+
+
+
 
 // UpdateMatter applies editable fields. Creator or any assignee (expanded via
 // callerUIDs) may edit.
-func (s *MatterService) UpdateMatter(id, spaceID string, callerUIDs []string, title *string, description *string, deadline, remindAt *string) (*model.Matter, error) {
-	matter, err := s.matterRepo.GetByID(id, spaceID)
+func (s *MatterService) UpdateMatter(ctx context.Context, id, spaceID string, callerUIDs []string, title *string, description *string, deadline, remindAt *string) (*model.Matter, error) {
+	matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.isCreator(matter, callerUIDs) && !s.isAssigneeAny(id, callerUIDs) {
+	isAssignee, aErr := s.isAssigneeAny(ctx, id, callerUIDs)
+	if aErr != nil {
+		return nil, aErr
+	}
+	if !s.isCreator(matter, callerUIDs) && !isAssignee {
 		return nil, apperr.ErrForbidden
 	}
 	if title != nil {
@@ -259,14 +267,15 @@ func (s *MatterService) UpdateMatter(id, spaceID string, callerUIDs []string, ti
 		}
 		matter.RemindAt = t
 	}
-	if err := s.matterRepo.Update(matter); err != nil {
+	if err := s.matterRepo.Update(ctx, matter); err != nil {
 		return nil, err
 	}
 	return matter, nil
 }
 
 // ParseOptionalRFC3339 returns (nil, nil) for the empty string (clear the
-// field) and otherwise parses as RFC3339.
+// field) and otherwise parses as RFC3339. Parsed timestamps are normalized to
+// UTC so storage and comparison are timezone-agnostic.
 func ParseOptionalRFC3339(s string) (*time.Time, error) {
 	if s == "" {
 		return nil, nil
@@ -275,12 +284,13 @@ func ParseOptionalRFC3339(s string) (*time.Time, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &t, nil
+	utc := t.UTC()
+	return &utc, nil
 }
 
 // SetStatus changes a matter's status. Archive transitions (either direction)
 // require Creator; open↔done is allowed for Creator or any assignee.
-func (s *MatterService) SetStatus(id, spaceID string, callerUIDs []string, target model.MatterStatus) (*MatterDetail, error) {
+func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, callerUIDs []string, target model.MatterStatus) (*MatterDetail, error) {
 	if !model.IsValidStatus(target) {
 		return nil, apperr.InvalidInput("status must be 'open', 'done', or 'archived'")
 	}
@@ -288,7 +298,7 @@ func (s *MatterService) SetStatus(id, spaceID string, callerUIDs []string, targe
 	// Pre-check: if target is archived, only creator can do it.
 	// (Full check including current-status-is-archived runs inside tx with row lock.)
 	if target == model.MatterStatusArchived {
-		matter, err := s.matterRepo.GetByID(id, spaceID)
+		matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
 		if err != nil {
 			return nil, err
 		}
@@ -297,14 +307,14 @@ func (s *MatterService) SetStatus(id, spaceID string, callerUIDs []string, targe
 		}
 	}
 
-	err := s.tx.Do(func(r *repository.TxRepos) error {
-		matter, err := r.Matter.GetByIDForUpdate(id, spaceID)
+	err := s.tx.Do(ctx, func(r *repository.TxRepos) error {
+		matter, err := r.Matter.GetByIDForUpdate(ctx, id, spaceID)
 		if err != nil {
 			return err
 		}
 
 		isCreator := s.isCreator(matter, callerUIDs)
-		isAssigneeAny, _ := r.Assignee.IsAssigneeAny(id, callerUIDs)
+		isAssigneeAny, _ := r.Assignee.IsAssigneeAny(ctx, id, callerUIDs)
 
 		involvesArchived := target == model.MatterStatusArchived ||
 			matter.Status == model.MatterStatusArchived
@@ -326,40 +336,55 @@ func (s *MatterService) SetStatus(id, spaceID string, callerUIDs []string, targe
 			return apperr.InvalidInput("cannot transition from archived to done; reopen first")
 		}
 
-		return r.Matter.UpdateStatus(id, spaceID, string(target))
+		return r.Matter.UpdateStatus(ctx, id, spaceID, string(target))
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	matter, err := s.matterRepo.GetByID(id, spaceID)
+	matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	assignees, err := s.assigneeRepo.ListByMatter(id)
+	assignees, err := s.assigneeRepo.ListByMatter(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	participants, err := s.participantRepo.ListUserIDs(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	channels, err := s.channelRepo.ListByMatter(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	return &MatterDetail{
-		Matter:    matter,
-		Assignees: assignees,
+		Matter:       matter,
+		Assignees:    assignees,
+		Participants: participants,
+		Channels:     channels,
 	}, nil
+
+
+
+
+
 }
 
-func (s *MatterService) SoftDelete(id, spaceID string, callerUIDs []string) error {
-	matter, err := s.matterRepo.GetByID(id, spaceID)
+func (s *MatterService) SoftDelete(ctx context.Context, id, spaceID string, callerUIDs []string) error {
+	matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
 	if err != nil {
 		return err
 	}
 	if !s.isCreator(matter, callerUIDs) {
 		return apperr.ErrForbidden
 	}
-	return s.matterRepo.SoftDelete(id, spaceID)
+	return s.matterRepo.SoftDelete(ctx, id, spaceID)
 }
 
 // ListAssigneeIDs returns the user IDs of all assignees for a matter.
-func (s *MatterService) ListAssigneeIDs(matterID string) ([]string, error) {
-	assignees, err := s.assigneeRepo.ListByMatter(matterID)
+func (s *MatterService) ListAssigneeIDs(ctx context.Context, matterID string) ([]string, error) {
+	assignees, err := s.assigneeRepo.ListByMatter(ctx, matterID)
 	if err != nil {
 		return nil, err
 	}
@@ -371,26 +396,30 @@ func (s *MatterService) ListAssigneeIDs(matterID string) ([]string, error) {
 }
 
 // ListParticipantIDs returns every participant uid for a matter.
-func (s *MatterService) ListParticipantIDs(matterID string) ([]string, error) {
-	return s.participantRepo.ListUserIDs(matterID)
+func (s *MatterService) ListParticipantIDs(ctx context.Context, matterID string) ([]string, error) {
+	return s.participantRepo.ListUserIDs(ctx, matterID)
 }
 
-func (s *MatterService) AddAssignee(matterID, spaceID string, callerUIDs []string, assigneeUserID string) error {
-	matter, err := s.matterRepo.GetByID(matterID, spaceID)
+func (s *MatterService) AddAssignee(ctx context.Context, matterID, spaceID string, callerUIDs []string, assigneeUserID string) error {
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {
 		return err
 	}
-	if !s.isCreator(matter, callerUIDs) && !s.isAssigneeAny(matterID, callerUIDs) {
+	isAssignee, aErr := s.isAssigneeAny(ctx, matterID, callerUIDs)
+	if aErr != nil {
+		return aErr
+	}
+	if !s.isCreator(matter, callerUIDs) && !isAssignee {
 		return apperr.ErrForbidden
 	}
-	return s.assigneeRepo.Create(&model.MatterAssignee{
+	return s.assigneeRepo.Create(ctx, &model.MatterAssignee{
 		MatterID: matterID,
 		UserID:   assigneeUserID,
 	})
 }
 
-func (s *MatterService) RemoveAssignee(matterID, spaceID string, callerUIDs []string, assigneeUserID string) error {
-	matter, err := s.matterRepo.GetByID(matterID, spaceID)
+func (s *MatterService) RemoveAssignee(ctx context.Context, matterID, spaceID string, callerUIDs []string, assigneeUserID string) error {
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {
 		return err
 	}
@@ -405,19 +434,23 @@ func (s *MatterService) RemoveAssignee(matterID, spaceID string, callerUIDs []st
 	if !isSelfUnassign && !s.isCreator(matter, callerUIDs) {
 		return apperr.ErrForbidden
 	}
-	return s.assigneeRepo.Delete(matterID, assigneeUserID)
+	return s.assigneeRepo.Delete(ctx, matterID, assigneeUserID)
 }
 
 // LinkChannel attaches a channel to a matter. Creator or any assignee may link.
-func (s *MatterService) LinkChannel(matterID, spaceID string, callerUIDs []string, channelID string, channelType uint8, channelName *string) (*model.MatterChannel, error) {
+func (s *MatterService) LinkChannel(ctx context.Context, matterID, spaceID string, callerUIDs []string, channelID string, channelType uint8, channelName *string) (*model.MatterChannel, error) {
 	if len(callerUIDs) == 0 {
 		return nil, apperr.InvalidInput("caller identity required")
 	}
-	matter, err := s.matterRepo.GetByID(matterID, spaceID)
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	if !s.isCreator(matter, callerUIDs) && !s.isAssigneeAny(matterID, callerUIDs) {
+	isAssignee, aErr := s.isAssigneeAny(ctx, matterID, callerUIDs)
+	if aErr != nil {
+		return nil, aErr
+	}
+	if !s.isCreator(matter, callerUIDs) && !isAssignee {
 		return nil, apperr.ErrForbidden
 	}
 	mc := &model.MatterChannel{
@@ -427,20 +460,20 @@ func (s *MatterService) LinkChannel(matterID, spaceID string, callerUIDs []strin
 		ChannelName: channelName,
 		LinkedBy:    callerUIDs[0],
 	}
-	if err := s.channelRepo.Create(mc); err != nil {
+	if err := s.channelRepo.Create(ctx, mc); err != nil {
 		return nil, err
 	}
 	return mc, nil
 }
 
 // UnlinkChannel removes a channel link. Only Creator may unlink.
-func (s *MatterService) UnlinkChannel(matterID, spaceID string, callerUIDs []string, channelID string) error {
-	matter, err := s.matterRepo.GetByID(matterID, spaceID)
+func (s *MatterService) UnlinkChannel(ctx context.Context, matterID, spaceID string, callerUIDs []string, channelID string) error {
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {
 		return err
 	}
 	if !s.isCreator(matter, callerUIDs) {
 		return apperr.ErrForbidden
 	}
-	return s.channelRepo.Delete(matterID, channelID)
+	return s.channelRepo.Delete(ctx, matterID, channelID)
 }

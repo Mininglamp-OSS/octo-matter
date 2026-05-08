@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 
@@ -68,7 +69,7 @@ func (h *MatterHandler) Create(c *gin.Context) {
 		}
 		matter.RemindAt = t
 	}
-	detail, err := h.svc.CreateMatterWithAssignees(matter, req.AssigneeIDs)
+	detail, err := h.svc.CreateMatterWithAssignees(c.Request.Context(), matter, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -132,7 +133,7 @@ func (h *MatterHandler) List(c *gin.Context) {
 		}
 	}
 
-	result, err := h.svc.ListMatters(spaceID(c), filter)
+	result, err := h.svc.ListMatters(c.Request.Context(), spaceID(c), filter)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -146,7 +147,7 @@ func (h *MatterHandler) Get(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
-	detail, err := h.svc.GetMatter(id, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"))
+	detail, err := h.svc.GetMatter(c.Request.Context(), id, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -172,7 +173,7 @@ func (h *MatterHandler) Update(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	matter, err := h.svc.UpdateMatter(id, spaceID(c), relatedUIDs(c), req.Title, req.Description, req.Deadline, req.RemindAt)
+	matter, err := h.svc.UpdateMatter(c.Request.Context(), id, spaceID(c), relatedUIDs(c), req.Title, req.Description, req.Deadline, req.RemindAt)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -199,7 +200,7 @@ func (h *MatterHandler) Transition(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open', 'done', or 'archived'", nil)
 		return
 	}
-	detail, err := h.svc.SetStatus(id, spaceID(c), relatedUIDs(c), model.MatterStatus(req.Status))
+	detail, err := h.svc.SetStatus(c.Request.Context(), id, spaceID(c), relatedUIDs(c), model.MatterStatus(req.Status))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -212,7 +213,7 @@ func (h *MatterHandler) Transition(c *gin.Context) {
 	}
 	matterID := id
 	h.worker.Submit(func() {
-		participantIDs, _ := h.svc.ListParticipantIDs(matterID)
+		participantIDs, _ := h.svc.ListParticipantIDs(context.Background(), matterID)
 		h.notifier.NotifyStatusChanged(detail.Matter, actorUID, actorName, aIDs, participantIDs)
 	})
 	ok(c, detail)
@@ -224,7 +225,7 @@ func (h *MatterHandler) Delete(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
-	if err := h.svc.SoftDelete(id, spaceID(c), relatedUIDs(c)); err != nil {
+	if err := h.svc.SoftDelete(c.Request.Context(), id, spaceID(c), relatedUIDs(c)); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -249,12 +250,12 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 	space := spaceID(c)
 	actorName := userName(c)
 	assigneeUID := req.UserID
-	if err := h.svc.AddAssignee(matterID, space, relatedUIDs(c), assigneeUID); err != nil {
+	if err := h.svc.AddAssignee(c.Request.Context(), matterID, space, relatedUIDs(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}
 	h.worker.Submit(func() {
-		matter, err := h.svc.GetMatterForNotification(matterID, space)
+		matter, err := h.svc.GetMatterForNotification(context.Background(), matterID, space)
 		if err == nil {
 			h.notifier.NotifyAssigneeAdded(matter, actorName, assigneeUID)
 		}
@@ -273,7 +274,7 @@ func (h *MatterHandler) RemoveAssignee(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "assignee uid is required", nil)
 		return
 	}
-	if err := h.svc.RemoveAssignee(id, spaceID(c), relatedUIDs(c), assigneeUID); err != nil {
+	if err := h.svc.RemoveAssignee(c.Request.Context(), id, spaceID(c), relatedUIDs(c), assigneeUID); err != nil {
 		respondErr(c, err)
 		return
 	}
@@ -297,7 +298,7 @@ func (h *MatterHandler) LinkChannel(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	mc, err := h.svc.LinkChannel(id, spaceID(c), relatedUIDs(c), req.ChannelID, req.ChannelType, req.ChannelName)
+	mc, err := h.svc.LinkChannel(c.Request.Context(), id, spaceID(c), relatedUIDs(c), req.ChannelID, req.ChannelType, req.ChannelName)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -316,7 +317,7 @@ func (h *MatterHandler) UnlinkChannel(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "channel_id required", nil)
 		return
 	}
-	if err := h.svc.UnlinkChannel(id, spaceID(c), relatedUIDs(c), channelID); err != nil {
+	if err := h.svc.UnlinkChannel(c.Request.Context(), id, spaceID(c), relatedUIDs(c), channelID); err != nil {
 		respondErr(c, err)
 		return
 	}

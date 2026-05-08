@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
@@ -17,13 +18,13 @@ func NewAssigneeRepo(sess *dbr.Session) *AssigneeRepo {
 	return &AssigneeRepo{runner: sess}
 }
 
-func (r *AssigneeRepo) Create(a *model.MatterAssignee) error {
+func (r *AssigneeRepo) Create(ctx context.Context, a *model.MatterAssignee) error {
 	a.ID = uuid.New().String()
 	a.CreatedAt = time.Now()
 	_, err := r.runner.InsertInto("matter_assignees").
 		Columns("id", "matter_id", "user_id", "created_at").
 		Record(a).
-		Exec()
+		ExecContext(ctx)
 	if err != nil {
 		if isDuplicateKeyErr(err) {
 			return apperr.DuplicateAssignee()
@@ -33,10 +34,10 @@ func (r *AssigneeRepo) Create(a *model.MatterAssignee) error {
 	return nil
 }
 
-func (r *AssigneeRepo) Delete(matterID, userID string) error {
+func (r *AssigneeRepo) Delete(ctx context.Context, matterID, userID string) error {
 	result, err := r.runner.DeleteFrom("matter_assignees").
 		Where("matter_id = ? AND user_id = ?", matterID, userID).
-		Exec()
+		ExecContext(ctx)
 	if err != nil {
 		return err
 	}
@@ -50,23 +51,23 @@ func (r *AssigneeRepo) Delete(matterID, userID string) error {
 	return nil
 }
 
-func (r *AssigneeRepo) ListByMatter(matterID string) ([]*model.MatterAssignee, error) {
+func (r *AssigneeRepo) ListByMatter(ctx context.Context, matterID string) ([]*model.MatterAssignee, error) {
 	assignees := make([]*model.MatterAssignee, 0)
 	_, err := r.runner.Select("*").
 		From("matter_assignees").
 		Where("matter_id = ?", matterID).
-		Load(&assignees)
+		LoadContext(ctx, &assignees)
 	if err != nil {
 		return nil, err
 	}
 	return assignees, nil
 }
 
-func (r *AssigneeRepo) IsAssignee(matterID, userID string) (bool, error) {
+func (r *AssigneeRepo) IsAssignee(ctx context.Context, matterID, userID string) (bool, error) {
 	count, err := r.runner.Select("COUNT(*)").
 		From("matter_assignees").
 		Where("matter_id = ? AND user_id = ?", matterID, userID).
-		ReturnInt64()
+		ReturnInt64Context(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -74,14 +75,14 @@ func (r *AssigneeRepo) IsAssignee(matterID, userID string) (bool, error) {
 }
 
 // IsAssigneeAny reports whether any of userIDs is an assignee of matterID.
-func (r *AssigneeRepo) IsAssigneeAny(matterID string, userIDs []string) (bool, error) {
+func (r *AssigneeRepo) IsAssigneeAny(ctx context.Context, matterID string, userIDs []string) (bool, error) {
 	if len(userIDs) == 0 {
 		return false, nil
 	}
 	count, err := r.runner.Select("COUNT(*)").
 		From("matter_assignees").
 		Where("matter_id = ? AND user_id IN ?", matterID, userIDs).
-		ReturnInt64()
+		ReturnInt64Context(ctx)
 	if err != nil {
 		return false, err
 	}
