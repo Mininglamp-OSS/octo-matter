@@ -29,6 +29,14 @@ func main() {
 		log.Fatalf("failed to connect to database: %v", err)
 	}
 
+	n, err := repository.RunMigrations(conn)
+	if err != nil {
+		log.Fatalf("auto-migration failed: %v", err)
+	}
+	if n > 0 {
+		log.Printf("applied %d migration(s)", n)
+	}
+
 	// Repos
 	matterRepo := repository.NewMatterRepo(sess)
 	assigneeRepo := repository.NewAssigneeRepo(sess)
