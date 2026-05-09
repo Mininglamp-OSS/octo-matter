@@ -24,7 +24,15 @@ RENAME TABLE matter_assignees TO todo_assignees;
 RENAME TABLE matter_comments TO todo_comments;
 RENAME TABLE matter_comment_attachments TO todo_comment_attachments;
 
--- Revert status enum
+-- Revert status enum (widen→backfill→narrow to avoid strict-mode failures)
+-- Step 1: Widen enum to superset
+ALTER TABLE todos MODIFY status ENUM('open','closed','done','archived') NOT NULL DEFAULT 'open';
+
+-- Step 2: Backfill (revert done → closed, archived → open)
+UPDATE todos SET status = 'closed' WHERE status = 'done';
+UPDATE todos SET status = 'open' WHERE status = 'archived';
+
+-- Step 3: Narrow to original shape
 ALTER TABLE todos MODIFY status ENUM('open','closed') NOT NULL DEFAULT 'open';
 
 -- Add goal_id back
