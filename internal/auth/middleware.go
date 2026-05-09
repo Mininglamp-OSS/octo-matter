@@ -108,23 +108,83 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 	cache := newVerifyCache()
 
 	return func(c *gin.Context) {
-		// Check for Bot auth first
+		// Extract token from either "token" header or "Authorization: Bearer <token>"
+		token := c.GetHeader("token")
+		var bearerToken string
 		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			botToken := strings.TrimPrefix(authHeader, "Bearer ")
-			handleBotAuth(c, client, cfg.DmworkIMURL, botToken, cache)
+			bearerToken = strings.TrimPrefix(authHeader, "Bearer ")
+		}
+
+		// Priority: "token" header → user auth
+		if token != "" {
+			handleUserAuth(c, client, cfg.DmworkIMURL, token, cache)
 			return
 		}
 
-		// User token auth
-		token := c.GetHeader("token")
-		if token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"code": "UNAUTHORIZED", "message": "missing token or Authorization header"},
-			})
+		// "Authorization: Bearer" → try user auth first, fall back to bot auth
+		if bearerToken != "" {
+			if tryUserAuth(c, client, cfg.DmworkIMURL, bearerToken, cache) {
+				return
+			}
+			// User auth failed — try bot auth
+			handleBotAuth(c, client, cfg.DmworkIMURL, bearerToken, cache)
 			return
 		}
-		handleUserAuth(c, client, cfg.DmworkIMURL, token, cache)
+
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"error": gin.H{"code": "UNAUTHORIZED", "message": "missing token or Authorization header"},
+		})
 	}
+}
+
+// tryUserAuth attempts user-token verification without aborting. Returns true if auth succeeded.
+func tryUserAuth(c *gin.Context, client *http.Client, baseURL, token string, cache *verifyCache) bool {
+	// Check cache
+	if cached, ok := cache.get("user:" + token); ok {
+		result := cached.(*verifyTokenResp)
+		c.Set("uid", result.UID)
+		c.Set("name", result.Name)
+		c.Set("role", result.Role)
+		relatedUIDs := []string{result.UID}
+		for _, bot := range result.OwnedBots {
+			relatedUIDs = append(relatedUIDs, bot.UID)
+		}
+		c.Set("related_uids", relatedUIDs)
+		c.Next()
+		return true
+	}
+
+	body, _ := json.Marshal(map[string]string{"token": token})
+	resp, err := client.Post(baseURL+"/v1/auth/verify", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		return false
+	}
+
+	var result verifyTokenResp
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false
+	}
+
+	c.Set("uid", result.UID)
+	c.Set("name", result.Name)
+	c.Set("role", result.Role)
+
+	relatedUIDs := []string{result.UID}
+	for _, bot := range result.OwnedBots {
+		relatedUIDs = append(relatedUIDs, bot.UID)
+	}
+	c.Set("related_uids", relatedUIDs)
+
+	cache.set("user:"+token, &result, 60*time.Second)
+
+	c.Next()
+	return true
 }
 
 func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, cache *verifyCache) {
