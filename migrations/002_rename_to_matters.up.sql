@@ -4,19 +4,22 @@
 -- direct assignees added before running.
 
 
--- Drop goal tables
-DROP TABLE IF EXISTS goal_assignees;
-DROP TABLE IF EXISTS goals;
-
--- Remove goal_id from todos (before rename)
+-- Remove goal_id FK/index/column from todos BEFORE dropping goals table
 ALTER TABLE todos DROP FOREIGN KEY fk_todos_goal;
 ALTER TABLE todos DROP INDEX idx_todos_goal;
 ALTER TABLE todos DROP COLUMN goal_id;
 
--- Migrate existing closed → done before changing enum
+-- Drop goal tables (now safe: no FK references them)
+DROP TABLE IF EXISTS goal_assignees;
+DROP TABLE IF EXISTS goals;
+
+-- Step 1: Widen enum to superset (both old and new values valid)
+ALTER TABLE todos MODIFY status ENUM('open','closed','done','archived') NOT NULL DEFAULT 'open';
+
+-- Step 2: Backfill data (now 'done' is a valid enum value)
 UPDATE todos SET status = 'done' WHERE status = 'closed';
 
--- Expand status enum
+-- Step 3: Narrow enum to final shape (no rows have 'closed' anymore)
 ALTER TABLE todos MODIFY status ENUM('open','done','archived') NOT NULL DEFAULT 'open';
 
 -- Rename tables
