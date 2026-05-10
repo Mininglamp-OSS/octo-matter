@@ -102,6 +102,7 @@ func (h *MatterHandler) List(c *gin.Context) {
 	query := c.Query("q")
 	sourceChannelID := c.Query("source_channel_id")
 	sourceChannelTypeStr := c.Query("source_channel_type")
+	channelID := c.Query("channel_id")
 
 	filter := repository.MatterFilter{
 		CallerUIDs: relatedUIDs(c),
@@ -134,6 +135,9 @@ func (h *MatterHandler) List(c *gin.Context) {
 	}
 	if sourceChannelID != "" {
 		filter.SourceChannelID = &sourceChannelID
+	}
+	if channelID != "" {
+		filter.ChannelID = &channelID
 	}
 	if sourceChannelTypeStr != "" {
 		if v, err := strconv.ParseUint(sourceChannelTypeStr, 10, 8); err == nil {
