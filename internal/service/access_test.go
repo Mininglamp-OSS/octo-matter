@@ -252,6 +252,105 @@ func TestListMatters_BotPath_DropsChannelFilter(t *testing.T) {
 	}
 }
 
+// --- ListMatters ChannelID (linked-channel) IM gating ---
+//
+// channel_id is a strict result filter (AND): only matters linked via
+// matter_channels to the given channel are returned. Same IM-membership
+// gating as source_channel_id — bot path drops; user path keeps only when
+// IM confirms membership; IM error returns 503.
+
+// TestListMatters_ChannelFilter_UserPath_IMHit_KeepsFilter: IM hit ⇒ filter
+// is forwarded to the repo.
+func TestListMatters_ChannelFilter_UserPath_IMHit_KeepsFilter(t *testing.T) {
+	im := &spyIMChecker{allow: true}
+	repo := &captureMatterRepo{fakeMatterRepo: *newFakeMatterRepo()}
+	svc := NewMatterService(repo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, im)
+	channel := "ch-known"
+	filter := repository.MatterFilter{
+		CallerUIDs: []string{"u1"},
+		ChannelID:  &channel,
+	}
+	_, err := svc.ListMatters(context.Background(), "sp1", filter, "user-tok")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if im.calls != 1 {
+		t.Fatalf("expected 1 IM call, got %d", im.calls)
+	}
+	if im.gotChan != "ch-known" {
+		t.Fatalf("IM channel mismatch: %q", im.gotChan)
+	}
+	if repo.gotFilter.ChannelID == nil || *repo.gotFilter.ChannelID != "ch-known" {
+		t.Fatalf("IM-verified caller must keep channel filter on repo; got %v", repo.gotFilter.ChannelID)
+	}
+}
+
+// TestListMatters_ChannelFilter_UserPath_IMMiss_DropsFilter: IM-denied user
+// has the channel filter stripped before reaching the repo. Without it,
+// ListBySpace falls back to creator/assignee/participant visibility — caller
+// cannot enumerate matters in a channel they do not belong to.
+func TestListMatters_ChannelFilter_UserPath_IMMiss_DropsFilter(t *testing.T) {
+	im := &spyIMChecker{allow: false}
+	repo := &captureMatterRepo{fakeMatterRepo: *newFakeMatterRepo()}
+	svc := NewMatterService(repo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, im)
+	channel := "ch-leaked"
+	filter := repository.MatterFilter{
+		CallerUIDs: []string{"stranger"},
+		ChannelID:  &channel,
+	}
+	_, err := svc.ListMatters(context.Background(), "sp1", filter, "user-tok")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.gotFilter.ChannelID != nil {
+		t.Fatalf("IM-denied caller must NOT receive channel filter; got %q", *repo.gotFilter.ChannelID)
+	}
+}
+
+// TestListMatters_BotPath_DropsChannelIDFilter: bot caller (empty token)
+// cannot use channel_id to enumerate — IM is skipped (no token), filter
+// stripped before repo.
+func TestListMatters_BotPath_DropsChannelIDFilter(t *testing.T) {
+	im := &spyIMChecker{allow: false}
+	repo := &captureMatterRepo{fakeMatterRepo: *newFakeMatterRepo()}
+	svc := NewMatterService(repo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, im)
+	channel := "ch1"
+	filter := repository.MatterFilter{
+		CallerUIDs: []string{"bot"},
+		ChannelID:  &channel,
+	}
+	_, err := svc.ListMatters(context.Background(), "sp1", filter, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if im.calls != 0 {
+		t.Fatalf("bot path must not call IM, got %d", im.calls)
+	}
+	if repo.gotFilter.ChannelID != nil {
+		t.Fatalf("bot path must DROP channel filter — got %q", *repo.gotFilter.ChannelID)
+	}
+}
+
+// TestListMatters_ChannelFilter_IMError_PropagatesUpstream: transient IM
+// failures fail-closed as 503 instead of silently broadening the result set.
+func TestListMatters_ChannelFilter_IMError_PropagatesUpstream(t *testing.T) {
+	im := &spyIMChecker{err: errors.New("dial tcp: timeout")}
+	svc := newListSvc(im)
+	channel := "ch1"
+	filter := repository.MatterFilter{
+		CallerUIDs: []string{"u1"},
+		ChannelID:  &channel,
+	}
+	_, err := svc.ListMatters(context.Background(), "sp1", filter, "user-tok")
+	if err == nil {
+		t.Fatalf("expected error when IM fails")
+	}
+	ae, ok := apperr.AsAppError(err)
+	if !ok || ae.HTTPStatus() != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 UPSTREAM_UNAVAILABLE, got %v", err)
+	}
+}
+
 // TestListMatters_NoSourceChannel_SkipsIM: no IM call when no channel filter
 // is requested.
 func TestListMatters_NoSourceChannel_SkipsIM(t *testing.T) {

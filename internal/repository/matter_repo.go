@@ -19,6 +19,11 @@ type MatterFilter struct {
 	CreatorID         *string
 	SourceChannelID   *string
 	SourceChannelType *uint8
+	// ChannelID strictly filters results to matters linked via matter_channels
+	// to the given channel id (AND clause). Distinct from SourceChannelID,
+	// which extends visibility (OR clause) for callers proven to be channel
+	// members. Service layer applies the same IM membership gating.
+	ChannelID *string
 	DeadlineBefore    *time.Time
 	DeadlineAfter     *time.Time
 	Query             *string
@@ -143,6 +148,12 @@ func (r *MatterRepo) ListBySpace(ctx context.Context, spaceID string, filter Mat
 	}
 	if filter.SourceChannelType != nil {
 		q = q.Where("source_channel_type = ?", *filter.SourceChannelType)
+	}
+	if filter.ChannelID != nil {
+		q = q.Where(
+			"EXISTS (SELECT 1 FROM matter_channels WHERE matter_channels.matter_id = matters.id AND matter_channels.channel_id = ?)",
+			*filter.ChannelID,
+		)
 	}
 	if filter.DeadlineBefore != nil {
 		q = q.Where("deadline < ?", *filter.DeadlineBefore)

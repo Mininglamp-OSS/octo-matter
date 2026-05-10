@@ -187,6 +187,22 @@ func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter 
 			}
 		}
 	}
+	// ChannelID is a strict result filter. Apply the same IM gating so a
+	// caller cannot enumerate matters in a channel they don't belong to.
+	if filter.ChannelID != nil {
+		if callerToken == "" {
+			filter.ChannelID = nil
+		} else {
+			member, err := s.im.IsChannelMember(ctx, callerToken, *filter.ChannelID, filter.CallerUIDs)
+			if err != nil {
+				log.Printf("[ERROR] ListMatters: IM IsChannelMember failed channel=%s: %v", *filter.ChannelID, err)
+				return nil, apperr.Upstream("channel membership service unavailable")
+			}
+			if !member {
+				filter.ChannelID = nil
+			}
+		}
+	}
 	matters, hasMore, err := s.matterRepo.ListBySpace(ctx, spaceID, filter)
 	if err != nil {
 		return nil, err
