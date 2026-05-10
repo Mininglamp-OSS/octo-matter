@@ -118,6 +118,24 @@ func (f *fakeAssigneeRepo) ListByMatter(_ context.Context, matterID string) ([]*
 	return f.byMatter[matterID], nil
 }
 
+func (f *fakeAssigneeRepo) ListByMatterIDs(_ context.Context, matterIDs []string) ([]*model.MatterAssignee, error) {
+	out := make([]*model.MatterAssignee, 0)
+	if len(matterIDs) == 0 {
+		return out, nil
+	}
+	wanted := make(map[string]struct{}, len(matterIDs))
+	for _, id := range matterIDs {
+		wanted[id] = struct{}{}
+	}
+	for id, list := range f.byMatter {
+		if _, ok := wanted[id]; !ok {
+			continue
+		}
+		out = append(out, list...)
+	}
+	return out, nil
+}
+
 func (f *fakeAssigneeRepo) IsAssignee(_ context.Context, matterID, userID string) (bool, error) {
 	for _, a := range f.byMatter[matterID] {
 		if a.UserID == userID {
