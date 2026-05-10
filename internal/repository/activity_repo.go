@@ -19,24 +19,37 @@ func NewActivityRepo(sess *dbr.Session) *ActivityRepo {
 	return &ActivityRepo{runner: sess}
 }
 
+// activityRow is an internal DTO used only for INSERT. Detail is *string so
+// the MySQL driver sends it with a text charset; binding []byte against a
+// JSON column triggers MySQL error 3144 (cannot coerce binary into JSON).
+// Same gotcha as model/timeline.go:JSONStringSlice.Value.
+type activityRow struct {
+	ID        string    `db:"id"`
+	MatterID  string    `db:"matter_id"`
+	ActorID   string    `db:"actor_id"`
+	Action    string    `db:"action"`
+	Detail    *string   `db:"detail"`
+	CreatedAt time.Time `db:"created_at"`
+}
+
 // Record inserts a matter_activities row. detail is marshalled as JSON (nil
-// detail stores NULL).
+// detail stores SQL NULL).
 func (r *ActivityRepo) Record(ctx context.Context, matterID, actorID, action string, detail interface{}) error {
-	var detailJSON *string
+	var detailStr *string
 	if detail != nil {
 		b, err := json.Marshal(detail)
 		if err != nil {
 			return err
 		}
 		s := string(b)
-		detailJSON = &s
+		detailStr = &s
 	}
-	row := &model.MatterActivity{
+	row := &activityRow{
 		ID:        uuid.New().String(),
 		MatterID:  matterID,
 		ActorID:   actorID,
 		Action:    action,
-		Detail:    detailJSON,
+		Detail:    detailStr,
 		CreatedAt: time.Now(),
 	}
 	_, err := r.runner.InsertInto("matter_activities").

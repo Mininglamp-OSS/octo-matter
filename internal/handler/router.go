@@ -33,6 +33,7 @@ type ReadinessCheck func() error
 func SetupRouter(
 	matterH *MatterHandler,
 	timelineH *TimelineHandler,
+	activityH *ActivityHandler,
 	extractH *ExtractHandler,
 	extractLimiter gin.HandlerFunc,
 	authMW gin.HandlerFunc,
@@ -88,6 +89,8 @@ func SetupRouter(
 		matters.POST("/:id/timeline", timelineH.Create)
 		matters.GET("/:id/timeline", timelineH.List)
 		matters.DELETE("/:id/timeline/:entry_id", timelineH.Delete)
+
+		matters.GET("/:id/activities", activityH.List)
 	}
 
 	return r

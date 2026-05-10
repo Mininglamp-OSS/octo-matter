@@ -86,11 +86,13 @@ func main() {
 	timelineTx := timelineTxAdapter{mgr: txMgr}
 	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter)
 	extractSvc := service.NewExtractService(llmClient, matterSvc)
+	activitySvc := service.NewActivityService(matterRepo, matterSvc, activityRepo)
 
 	// Handlers
 	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker)
 	extractH := handler.NewExtractHandler(extractSvc)
 	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker)
+	activityH := handler.NewActivityHandler(activitySvc)
 
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{DmworkIMURL: cfg.DmworkIMURL})
@@ -100,7 +102,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(matterH, timelineH, extractH, extractLimiter, authMW, spaceMW, readiness)
+	r := handler.SetupRouter(matterH, timelineH, activityH, extractH, extractLimiter, authMW, spaceMW, readiness)
 
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
