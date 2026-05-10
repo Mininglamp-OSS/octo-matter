@@ -63,6 +63,24 @@ func (r *AssigneeRepo) ListByMatter(ctx context.Context, matterID string) ([]*mo
 	return assignees, nil
 }
 
+// ListByMatterIDs returns all assignees for the given matter IDs in one query.
+// Used to batch-hydrate list responses without N+1. Empty input returns an
+// empty slice without touching the database.
+func (r *AssigneeRepo) ListByMatterIDs(ctx context.Context, matterIDs []string) ([]*model.MatterAssignee, error) {
+	assignees := make([]*model.MatterAssignee, 0)
+	if len(matterIDs) == 0 {
+		return assignees, nil
+	}
+	_, err := r.runner.Select("*").
+		From("matter_assignees").
+		Where("matter_id IN ?", matterIDs).
+		LoadContext(ctx, &assignees)
+	if err != nil {
+		return nil, err
+	}
+	return assignees, nil
+}
+
 func (r *AssigneeRepo) IsAssignee(ctx context.Context, matterID, userID string) (bool, error) {
 	count, err := r.runner.Select("COUNT(*)").
 		From("matter_assignees").

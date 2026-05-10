@@ -25,6 +25,7 @@ type assigneeStore interface {
 	Create(ctx context.Context, a *model.MatterAssignee) error
 	Delete(ctx context.Context, matterID, userID string) error
 	ListByMatter(ctx context.Context, matterID string) ([]*model.MatterAssignee, error)
+	ListByMatterIDs(ctx context.Context, matterIDs []string) ([]*model.MatterAssignee, error)
 	IsAssignee(ctx context.Context, matterID, userID string) (bool, error)
 	IsAssigneeAny(ctx context.Context, matterID string, userIDs []string) (bool, error)
 }
@@ -148,10 +149,20 @@ func (s *MatterService) CreateMatterWithAssignees(ctx context.Context, matter *m
 	}, nil
 }
 
+// MatterListItem is one entry in the list response. It embeds *model.Matter
+// (so the response shape stays identical to the previous bare-matter list) and
+// adds the matter's assignees to spare the client a per-matter detail call.
+// Assignees is always a non-nil slice — empty when the matter has no
+// assignees — so JSON consumers get [] rather than null.
+type MatterListItem struct {
+	*model.Matter
+	Assignees []*model.MatterAssignee `json:"assignees"`
+}
+
 type MatterListResult struct {
-	Items      []*model.Matter `json:"items"`
-	HasMore    bool            `json:"has_more"`
-	NextCursor string          `json:"next_cursor,omitempty"`
+	Items      []*MatterListItem `json:"items"`
+	HasMore    bool              `json:"has_more"`
+	NextCursor string            `json:"next_cursor,omitempty"`
 }
 
 // ListMatters returns matters visible to callerUIDs in the space. The
@@ -188,11 +199,46 @@ func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter 
 			ID:        last.ID,
 		})
 	}
+	items, err := s.attachAssignees(ctx, matters)
+	if err != nil {
+		return nil, err
+	}
 	return &MatterListResult{
-		Items:      matters,
+		Items:      items,
 		HasMore:    hasMore,
 		NextCursor: nextCursor,
 	}, nil
+}
+
+// attachAssignees turns the bare matter slice into list items with assignees
+// hydrated. Uses one batch query (ListByMatterIDs) regardless of slice size
+// to avoid N+1. Each item's Assignees is a non-nil slice — empty when the
+// matter has no assignees — so the JSON response uses [] rather than null.
+func (s *MatterService) attachAssignees(ctx context.Context, matters []*model.Matter) ([]*MatterListItem, error) {
+	items := make([]*MatterListItem, 0, len(matters))
+	if len(matters) == 0 {
+		return items, nil
+	}
+	ids := make([]string, 0, len(matters))
+	for _, m := range matters {
+		ids = append(ids, m.ID)
+	}
+	rows, err := s.assigneeRepo.ListByMatterIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	grouped := make(map[string][]*model.MatterAssignee, len(matters))
+	for _, a := range rows {
+		grouped[a.MatterID] = append(grouped[a.MatterID], a)
+	}
+	for _, m := range matters {
+		assignees := grouped[m.ID]
+		if assignees == nil {
+			assignees = []*model.MatterAssignee{}
+		}
+		items = append(items, &MatterListItem{Matter: m, Assignees: assignees})
+	}
+	return items, nil
 }
 
 // MatterDetail is the enriched response for a single matter.
