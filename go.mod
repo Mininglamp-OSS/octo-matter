@@ -3,6 +3,7 @@ module github.com/Mininglamp-OSS/octo-matter
 go 1.25.0
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocraft/dbr/v2 v2.7.7
