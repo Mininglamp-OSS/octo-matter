@@ -20,6 +20,7 @@ func IsValidStatus(s MatterStatus) bool {
 // Matter represents the atomic task unit.
 type Matter struct {
 	ID                string       `db:"id" json:"id"`
+	SeqNo             int          `db:"seq_no" json:"seq_no"`
 	SpaceID           string       `db:"space_id" json:"space_id"`
 	Title             string       `db:"title" json:"title"`
 	Description       *string      `db:"description" json:"description,omitempty"`

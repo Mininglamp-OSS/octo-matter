@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 type AppEnv string
@@ -18,6 +19,10 @@ type Config struct {
 	DmworkIMURL         string // dmworkim base URL for auth verify + Space check + internal notify
 	NotifyInternalToken string // shared secret for dmworkim /v1/internal/notify (X-Internal-Token)
 	ServerPort          string
+	LLMApiURL           string
+	LLMApiKey           string
+	LLMModel            string
+	LLMTimeout          int // seconds
 }
 
 func Load() *Config {
@@ -28,6 +33,10 @@ func Load() *Config {
 		DmworkIMURL:         devDefault(env, "DMWORKIM_URL", "http://127.0.0.1:8090"),
 		NotifyInternalToken: envOrDefault("NOTIFY_INTERNAL_TOKEN", ""),
 		ServerPort:          envOrDefault("SERVER_PORT", "8080"),
+		LLMApiURL:           envOrDefault("LLM_API_URL", "https://api.example.com/v1"),
+		LLMApiKey:           envOrDefault("LLM_API_KEY", ""),
+		LLMModel:            envOrDefault("LLM_MODEL", "claude-sonnet-4-6"),
+		LLMTimeout:          envIntOrDefault("LLM_TIMEOUT", 30),
 	}
 }
 
@@ -50,6 +59,15 @@ func (c *Config) Validate() error {
 func envOrDefault(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envIntOrDefault(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/gocraft/dbr/v2"
 	"github.com/google/uuid"
@@ -65,4 +67,21 @@ func (r *MatterChannelRepo) ListByMatter(ctx context.Context, matterID string) (
 		return nil, err
 	}
 	return channels, nil
+}
+
+// FindByMatterAndChannelID returns the matter_channels row identified by
+// (matter_id, channel_id). Returns apperr.ErrNotFound when no link exists.
+func (r *MatterChannelRepo) FindByMatterAndChannelID(ctx context.Context, matterID, channelID string) (*model.MatterChannel, error) {
+	var mc model.MatterChannel
+	err := r.runner.Select("*").
+		From("matter_channels").
+		Where("matter_id = ? AND channel_id = ?", matterID, channelID).
+		LoadOneContext(ctx, &mc)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, apperr.ErrNotFound
+		}
+		return nil, err
+	}
+	return &mc, nil
 }

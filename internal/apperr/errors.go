@@ -81,6 +81,25 @@ func SpaceForbidden() *AppError {
 	return &AppError{code: "SPACE_FORBIDDEN", message: "not a member of this space", status: http.StatusForbidden, wrapped: ErrForbidden}
 }
 
+// Upstream renders as 503 UPSTREAM_UNAVAILABLE. Use when a synchronous
+// dependency (e.g. dmworkim) is unreachable or returns 5xx — the request can
+// be retried, but the failure is not the caller's fault.
+func Upstream(msg string) *AppError {
+	if msg == "" {
+		msg = "upstream service unavailable"
+	}
+	return &AppError{code: "UPSTREAM_UNAVAILABLE", message: msg, status: http.StatusServiceUnavailable}
+}
+
+// RateLimited renders as 429 RATE_LIMITED. Use when a per-resource cooldown
+// (e.g. LLM-backed timeline write) rejects the request.
+func RateLimited(msg string) *AppError {
+	if msg == "" {
+		msg = "please wait before retrying"
+	}
+	return &AppError{code: "RATE_LIMITED", message: msg, status: http.StatusTooManyRequests}
+}
+
 // DuplicateAssignee is 409 when inserting an assignee whose (matter_id, user_id)
 // already exists.
 func DuplicateAssignee() *AppError {

@@ -39,13 +39,52 @@ func (r *MatterRepo) Create(ctx context.Context, matter *model.Matter) error {
 	now := time.Now()
 	matter.CreatedAt = now
 	matter.UpdatedAt = now
-	_, err := r.runner.InsertInto("matters").
-		Columns("id", "space_id", "title", "description", "creator_id",
-			"status", "deadline", "remind_at", "source_channel_id", "source_channel_type",
-			"source_name", "created_at", "updated_at", "deleted_at").
-		Record(matter).
-		ExecContext(ctx)
-	return err
+
+	var lastErr error
+	for retries := 0; retries < 3; retries++ {
+		seq, err := r.nextSeqNo(ctx, matter.SpaceID)
+		if err != nil {
+			return err
+		}
+		matter.SeqNo = seq
+		_, err = r.runner.InsertInto("matters").
+			Columns("id", "seq_no", "space_id", "title", "description", "creator_id",
+				"status", "deadline", "remind_at", "source_channel_id", "source_channel_type",
+				"source_name", "created_at", "updated_at", "deleted_at").
+			Record(matter).
+			ExecContext(ctx)
+		if err == nil {
+			return nil
+		}
+		if !isDuplicateKeyErr(err) {
+			return err
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
+// nextSeqNo computes the next space-scoped display sequence number.
+//
+// MUST be called from within a transaction. The SELECT ... FOR UPDATE gap-lock
+// only prevents interleaved duplicates when the lock is held across the
+// subsequent INSERT — that requires both statements to share a transaction.
+// Calling this outside a tx silently loses the lock; concurrent inserts then
+// race and rely solely on the duplicate-key retry in Create, multiplying
+// contention under load.
+func (r *MatterRepo) nextSeqNo(ctx context.Context, spaceID string) (int, error) {
+	var next int
+	err := r.runner.SelectBySql(
+		"SELECT COALESCE(MAX(seq_no), 0) + 1 FROM matters WHERE space_id = ? FOR UPDATE",
+		spaceID,
+	).LoadOneContext(ctx, &next)
+	if err != nil && !errors.Is(err, dbr.ErrNotFound) {
+		return 0, err
+	}
+	if next == 0 {
+		next = 1
+	}
+	return next, nil
 }
 
 func (r *MatterRepo) GetByID(ctx context.Context, id, spaceID string) (*model.Matter, error) {

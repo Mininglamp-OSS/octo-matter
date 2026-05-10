@@ -31,7 +31,7 @@ func TestTemplates(t *testing.T) {
 		{"statusDone", func() string { return statusChangedMsg("Review PR", "Bob", "done") }, "📋 任务「Review PR」— Bob 完成了"},
 		{"statusReopened", func() string { return statusChangedMsg("Review PR", "Bob", "open") }, "📋 任务「Review PR」— Bob 重新打开了"},
 		{"assigneeAdded", func() string { return assigneeAddedMsg("Review PR", "Alice") }, "📋 任务「Review PR」— Alice 将你添加为负责人"},
-		{"commentAdded", func() string { return commentAddedMsg("Review PR", "Charlie") }, "📋 任务「Review PR」— Charlie 添加了评论"},
+		{"timelineEntryAdded", func() string { return timelineEntryAddedMsg("Review PR", "Charlie") }, "📋 任务「Review PR」— Charlie 添加了进展"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -48,15 +48,15 @@ func TestNoop_ImplementsNotifier(t *testing.T) {
 	n.NotifyMatterCreated(matter, "name", []string{"u2"})
 	n.NotifyStatusChanged(matter, "u1", "name", []string{"u2"}, []string{"u4"})
 	n.NotifyAssigneeAdded(matter, "name", "u3")
-	n.NotifyCommentAdded(matter, "u1", "name", []string{"u2"}, []string{"u4"})
+	n.NotifyTimelineEntryAdded(matter, "u1", "name", []string{"u2"}, []string{"u4"})
 }
 
 func TestDedupTargets(t *testing.T) {
 	tests := []struct {
-		name    string
-		actor   string
-		uids    []string
-		want    []string
+		name  string
+		actor string
+		uids  []string
+		want  []string
 	}{
 		{"empty", "actor", []string{}, []string{}},
 		{"removes empties", "actor", []string{"", "u1", ""}, []string{"u1"}},

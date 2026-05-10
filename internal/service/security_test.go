@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -146,21 +147,26 @@ func (noopTxRunner) Do(_ context.Context, fn func(r *repository.TxRepos) error) 
 	return fmt.Errorf("transaction exercised (test stub — requires integration test)")
 }
 
-// fakeCommentTx runs the closure directly against the supplied fake repos.
-type fakeCommentTx struct {
-	comments    CommentStore
-	attachments CommentAttachmentStore
+// fakeTimelineTx runs the closure directly against the supplied fake repos.
+type fakeTimelineTx struct {
+	timelines   TimelineStore
+	attachments TimelineAttachmentStore
+	channels    TimelineMatterChannelStore
 }
 
-func (f fakeCommentTx) Do(_ context.Context, fn func(CommentStore, CommentAttachmentStore, ParticipantUpserter) error) error {
-	return fn(f.comments, f.attachments, fakeParticipantRepo{})
+func (f fakeTimelineTx) Do(_ context.Context, fn func(TimelineStore, TimelineAttachmentStore, ParticipantUpserter, TimelineMatterChannelStore) error) error {
+	cs := f.channels
+	if cs == nil {
+		cs = fakeChannelRepo{}
+	}
+	return fn(f.timelines, f.attachments, fakeParticipantRepo{}, cs)
 }
 
 // --- access fakes --------------------------------------------------------
 
 type fakeAccessChecker struct{}
 
-func (fakeAccessChecker) CanAccessMatter(_ context.Context, matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
+func (fakeAccessChecker) CanAccessMatter(_ context.Context, _ *model.Matter, _ []string, _, _ string) (bool, error) {
 	return true, nil
 }
 
@@ -180,6 +186,9 @@ func (fakeParticipantRepo) ListUserIDs(_ context.Context, matterID string) ([]st
 
 type fakeChannelRepo struct{}
 
+func (fakeChannelRepo) FindByMatterAndChannelID(_ context.Context, matterID, channelID string) (*model.MatterChannel, error) {
+	return nil, apperr.ErrNotFound
+}
 func (fakeChannelRepo) Create(_ context.Context, mc *model.MatterChannel) error    { return nil }
 func (fakeChannelRepo) Delete(_ context.Context, matterID, channelID string) error { return nil }
 func (fakeChannelRepo) IsLinkedChannel(_ context.Context, matterID, channelID string) (bool, error) {
@@ -192,39 +201,65 @@ func (fakeChannelRepo) ListByMatter(_ context.Context, matterID string) ([]*mode
 // --- helpers -------------------------------------------------------------
 
 func newMatterSvc(matterRepo matterStore, assigneeRepo assigneeStore) *MatterService {
-	return NewMatterService(matterRepo, assigneeRepo, fakeParticipantRepo{}, fakeChannelRepo{}, noopTxRunner{})
+	return NewMatterService(matterRepo, assigneeRepo, fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, nil)
 }
 
-func newCommentSvc(
-	commentRepo *fakeCommentRepo,
-	attachmentRepo *fakeCommentAttachmentRepo,
+func newTimelineSvc(
+	timelineRepo *fakeTimelineRepo,
+	attachmentRepo *fakeTimelineAttachmentRepo,
 	matterRepo *fakeMatterRepo,
 	access MatterAccessChecker,
-) *CommentService {
-	return NewCommentService(
-		commentRepo,
+) *TimelineService {
+	return NewTimelineService(
+		nil,
+		timelineRepo,
 		attachmentRepo,
 		matterRepo,
 		access,
-		fakeCommentTx{comments: commentRepo, attachments: attachmentRepo},
+		nil, // linkVerifier — these tests don't exercise auto-link
+		fakeTimelineTx{timelines: timelineRepo, attachments: attachmentRepo},
+		fakeParticipantRepo{},
+		newFakeAssigneeRepo(),
+		nil,
 	)
 }
 
-// --- comment/attachment fakes -------------------------------------------
-
-type fakeCommentRepo struct {
-	byID map[string]*model.MatterComment
+func createTimelineEntry(
+	ctx context.Context,
+	svc *TimelineService,
+	matterID, spaceID string,
+	callerUIDs []string,
+	actorUID, content string,
+	attachments []TimelineAttachmentInput,
+	sourceChannelID string,
+) (*model.TimelineEntry, error) {
+	entry, _, err := svc.CreateEntry(ctx, TimelineInput{
+		MatterID:    matterID,
+		SpaceID:     spaceID,
+		ActorUID:    actorUID,
+		CallerUIDs:  callerUIDs,
+		Content:     content,
+		Attachments: attachments,
+		ChannelID:   sourceChannelID,
+	})
+	return entry, err
 }
 
-func newFakeCommentRepo(cs ...*model.MatterComment) *fakeCommentRepo {
-	m := make(map[string]*model.MatterComment, len(cs))
+// --- timeline/attachment fakes -------------------------------------------
+
+type fakeTimelineRepo struct {
+	byID map[string]*model.TimelineEntry
+}
+
+func newFakeTimelineRepo(cs ...*model.TimelineEntry) *fakeTimelineRepo {
+	m := make(map[string]*model.TimelineEntry, len(cs))
 	for _, c := range cs {
 		m[c.ID] = c
 	}
-	return &fakeCommentRepo{byID: m}
+	return &fakeTimelineRepo{byID: m}
 }
 
-func (f *fakeCommentRepo) Create(_ context.Context, c *model.MatterComment) error {
+func (f *fakeTimelineRepo) Create(_ context.Context, c *model.TimelineEntry) error {
 	if c.ID == "" {
 		c.ID = fmt.Sprintf("c-%d", len(f.byID)+1)
 	}
@@ -232,7 +267,7 @@ func (f *fakeCommentRepo) Create(_ context.Context, c *model.MatterComment) erro
 	return nil
 }
 
-func (f *fakeCommentRepo) GetByID(_ context.Context, id string) (*model.MatterComment, error) {
+func (f *fakeTimelineRepo) GetByID(_ context.Context, id string) (*model.TimelineEntry, error) {
 	c, ok := f.byID[id]
 	if !ok {
 		return nil, apperr.ErrNotFound
@@ -240,51 +275,71 @@ func (f *fakeCommentRepo) GetByID(_ context.Context, id string) (*model.MatterCo
 	return c, nil
 }
 
-func (f *fakeCommentRepo) Delete(_ context.Context, id string) error {
+func (f *fakeTimelineRepo) Delete(_ context.Context, id string) error {
 	delete(f.byID, id)
 	return nil
 }
 
-func (f *fakeCommentRepo) ListByMatter(_ context.Context, matterID string, cursor *string, limit int) ([]*model.MatterComment, bool, error) {
-	var out []*model.MatterComment
+func (f *fakeTimelineRepo) ListByMatter(_ context.Context, matterID, sourceChannelID string, cursor *string, limit int) ([]*model.TimelineEntry, bool, error) {
+	var out []*model.TimelineEntry
+	for _, c := range f.byID {
+		if c.MatterID != matterID {
+			continue
+		}
+		if sourceChannelID != "" {
+			if c.SourceChannelID == nil || *c.SourceChannelID != sourceChannelID {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out, false, nil
+}
+
+func (f *fakeTimelineRepo) ListRecentByMatter(_ context.Context, matterID string, limit int) ([]*model.TimelineEntry, error) {
+	var out []*model.TimelineEntry
 	for _, c := range f.byID {
 		if c.MatterID == matterID {
 			out = append(out, c)
 		}
 	}
-	return out, false, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
-type fakeCommentAttachmentRepo struct {
-	byCommentID map[string][]*model.CommentAttachment
+type fakeTimelineAttachmentRepo struct {
+	byEntryID map[string][]*model.TimelineAttachment
 }
 
-func newFakeCommentAttachmentRepo() *fakeCommentAttachmentRepo {
-	return &fakeCommentAttachmentRepo{byCommentID: make(map[string][]*model.CommentAttachment)}
+func newFakeTimelineAttachmentRepo() *fakeTimelineAttachmentRepo {
+	return &fakeTimelineAttachmentRepo{byEntryID: make(map[string][]*model.TimelineAttachment)}
 }
 
-func (f *fakeCommentAttachmentRepo) CreateMany(_ context.Context, atts []*model.CommentAttachment) error {
+func (f *fakeTimelineAttachmentRepo) CreateMany(_ context.Context, atts []*model.TimelineAttachment) error {
 	for i, a := range atts {
 		if a.ID == "" {
-			a.ID = fmt.Sprintf("a-%d-%d", len(f.byCommentID), i)
+			a.ID = fmt.Sprintf("a-%d-%d", len(f.byEntryID), i)
 		}
-		f.byCommentID[a.CommentID] = append(f.byCommentID[a.CommentID], a)
+		f.byEntryID[a.EntryID] = append(f.byEntryID[a.EntryID], a)
 	}
 	return nil
 }
 
-func (f *fakeCommentAttachmentRepo) ListByCommentIDs(_ context.Context, ids []string) (map[string][]model.CommentAttachment, error) {
-	out := make(map[string][]model.CommentAttachment, len(ids))
+func (f *fakeTimelineAttachmentRepo) ListByEntryIDs(_ context.Context, ids []string) (map[string][]model.TimelineAttachment, error) {
+	out := make(map[string][]model.TimelineAttachment, len(ids))
 	for _, id := range ids {
-		for _, a := range f.byCommentID[id] {
+		for _, a := range f.byEntryID[id] {
 			out[id] = append(out[id], *a)
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeCommentAttachmentRepo) DeleteByCommentID(_ context.Context, commentID string) error {
-	delete(f.byCommentID, commentID)
+func (f *fakeTimelineAttachmentRepo) DeleteByEntryID(_ context.Context, timelineID string) error {
+	delete(f.byEntryID, timelineID)
 	return nil
 }
 
@@ -293,7 +348,7 @@ func (f *fakeCommentAttachmentRepo) DeleteByCommentID(_ context.Context, comment
 func TestMatterService_GetMatter_CrossSpaceReturnsNotFound(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x", Status: model.MatterStatusOpen}
 	svc := newMatterSvc(newFakeMatterRepo(matter), newFakeAssigneeRepo())
-	_, err := svc.GetMatter(context.Background(), "t1", "space-B", []string{"caller"}, "")
+	_, err := svc.GetMatter(context.Background(), "t1", "space-B", []string{"caller"}, "", "")
 	if !errors.Is(err, apperr.ErrNotFound) {
 		t.Fatalf("cross-space GetMatter: got %v, want ErrNotFound", err)
 	}
@@ -326,28 +381,28 @@ func TestMatterService_SoftDelete_CrossSpaceReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestCommentService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
+func TestTimelineService_Create_CrossSpaceReturnsNotFound(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
-	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	_, err := svc.CreateComment(context.Background(), "t1", "space-B", []string{"u2"}, "u2", "hi", nil, "")
+	svc := newTimelineSvc(newFakeTimelineRepo(), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	_, err := createTimelineEntry(context.Background(), svc, "t1", "space-B", []string{"u2"}, "u2", "hi", nil, "")
 	if !errors.Is(err, apperr.ErrNotFound) {
-		t.Fatalf("cross-space CreateComment: got %v, want ErrNotFound", err)
+		t.Fatalf("cross-space CreateEntry: got %v, want ErrNotFound", err)
 	}
 }
 
-func TestCommentService_Create_EmptyRejected(t *testing.T) {
+func TestTimelineService_Create_EmptyRejected(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
-	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	_, err := svc.CreateComment(context.Background(), "t1", "sp1", []string{"u1"}, "u1", "", nil, "")
+	svc := newTimelineSvc(newFakeTimelineRepo(), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	_, err := createTimelineEntry(context.Background(), svc, "t1", "sp1", []string{"u1"}, "u1", "", nil, "")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
-		t.Fatalf("empty comment should be invalid, got %v", err)
+		t.Fatalf("empty timeline should be invalid, got %v", err)
 	}
 }
 
-func TestCommentService_Create_AttachmentsOnly_OK(t *testing.T) {
+func TestTimelineService_Create_AttachmentsOnly_OK(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
-	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	c, err := svc.CreateComment(context.Background(), "t1", "sp1", []string{"u1"}, "u1", "", []CommentAttachmentInput{
+	svc := newTimelineSvc(newFakeTimelineRepo(), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	c, err := createTimelineEntry(context.Background(), svc, "t1", "sp1", []string{"u1"}, "u1", "", []TimelineAttachmentInput{
 		{FileURL: "https://obj/a.png"},
 	}, "")
 	if err != nil {
@@ -361,24 +416,24 @@ func TestCommentService_Create_AttachmentsOnly_OK(t *testing.T) {
 	}
 }
 
-func TestCommentService_Create_TooManyAttachments(t *testing.T) {
+func TestTimelineService_Create_TooManyAttachments(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
-	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	atts := make([]CommentAttachmentInput, MaxAttachmentsPerComment+1)
+	svc := newTimelineSvc(newFakeTimelineRepo(), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	atts := make([]TimelineAttachmentInput, MaxAttachmentsPerEntry+1)
 	for i := range atts {
-		atts[i] = CommentAttachmentInput{FileURL: "https://obj/a.png"}
+		atts[i] = TimelineAttachmentInput{FileURL: "https://obj/a.png"}
 	}
-	_, err := svc.CreateComment(context.Background(), "t1", "sp1", []string{"u1"}, "u1", "hi", atts, "")
+	_, err := createTimelineEntry(context.Background(), svc, "t1", "sp1", []string{"u1"}, "u1", "hi", atts, "")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
 		t.Fatalf("too-many attachments should be invalid, got %v", err)
 	}
 }
 
-func TestCommentService_Create_AttachmentTooLarge(t *testing.T) {
+func TestTimelineService_Create_AttachmentTooLarge(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
-	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	svc := newTimelineSvc(newFakeTimelineRepo(), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
 	over := int64(MaxAttachmentSizeBytes + 1)
-	_, err := svc.CreateComment(context.Background(), "t1", "sp1", []string{"u1"}, "u1", "", []CommentAttachmentInput{
+	_, err := createTimelineEntry(context.Background(), svc, "t1", "sp1", []string{"u1"}, "u1", "", []TimelineAttachmentInput{
 		{FileURL: "https://obj/a.png", FileSize: &over},
 	}, "")
 	if !errors.Is(err, apperr.ErrInvalidInput) {
@@ -386,10 +441,10 @@ func TestCommentService_Create_AttachmentTooLarge(t *testing.T) {
 	}
 }
 
-func TestCommentService_Create_WithTextAndAttachments_OK(t *testing.T) {
+func TestTimelineService_Create_WithTextAndAttachments_OK(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
-	svc := newCommentSvc(newFakeCommentRepo(), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	c, err := svc.CreateComment(context.Background(), "t1", "sp1", []string{"u1"}, "u1", "look at this", []CommentAttachmentInput{
+	svc := newTimelineSvc(newFakeTimelineRepo(), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	c, err := createTimelineEntry(context.Background(), svc, "t1", "sp1", []string{"u1"}, "u1", "look at this", []TimelineAttachmentInput{
 		{FileURL: "https://obj/a.png"},
 		{FileURL: "https://obj/b.png"},
 	}, "")
@@ -404,35 +459,57 @@ func TestCommentService_Create_WithTextAndAttachments_OK(t *testing.T) {
 	}
 }
 
-func TestCommentService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
+func TestTimelineService_Delete_NonAuthorReturnsForbidden(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "space-A", CreatorID: "u1", Title: "x"}
 	content := "hi"
-	comment := &model.MatterComment{ID: "c1", MatterID: "t1", UserID: "u1", Content: &content}
-	svc := newCommentSvc(newFakeCommentRepo(comment), newFakeCommentAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
-	err := svc.DeleteComment(context.Background(), "c1", "space-A", []string{"u2"}, "u2", "")
+	timeline := &model.TimelineEntry{ID: "c1", MatterID: "t1", UserID: "u1", Content: &content}
+	svc := newTimelineSvc(newFakeTimelineRepo(timeline), newFakeTimelineAttachmentRepo(), newFakeMatterRepo(matter), fakeAccessChecker{})
+	err := svc.DeleteEntry(context.Background(), "t1", "c1", "space-A", []string{"u2"}, "u2", "", "")
 	if !errors.Is(err, apperr.ErrForbidden) {
-		t.Fatalf("non-author DeleteComment: got %v, want ErrForbidden", err)
+		t.Fatalf("non-author DeleteEntry: got %v, want ErrForbidden", err)
 	}
 }
 
-func TestCommentService_Delete_AuthorRemovesAttachments(t *testing.T) {
+func TestTimelineService_Delete_AuthorRemovesAttachments(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "u1", Title: "x"}
 	content := "hi"
-	comment := &model.MatterComment{ID: "c1", MatterID: "t1", UserID: "u1", Content: &content}
-	cmtRepo := newFakeCommentRepo(comment)
-	attRepo := newFakeCommentAttachmentRepo()
-	attRepo.byCommentID["c1"] = []*model.CommentAttachment{
-		{ID: "a1", CommentID: "c1", FileURL: "https://obj/a.png"},
+	timeline := &model.TimelineEntry{ID: "c1", MatterID: "t1", UserID: "u1", Content: &content}
+	cmtRepo := newFakeTimelineRepo(timeline)
+	attRepo := newFakeTimelineAttachmentRepo()
+	attRepo.byEntryID["c1"] = []*model.TimelineAttachment{
+		{ID: "a1", EntryID: "c1", FileURL: "https://obj/a.png"},
 	}
-	svc := newCommentSvc(cmtRepo, attRepo, newFakeMatterRepo(matter), fakeAccessChecker{})
-	if err := svc.DeleteComment(context.Background(), "c1", "sp1", []string{"u1"}, "u1", ""); err != nil {
+	svc := newTimelineSvc(cmtRepo, attRepo, newFakeMatterRepo(matter), fakeAccessChecker{})
+	if err := svc.DeleteEntry(context.Background(), "t1", "c1", "sp1", []string{"u1"}, "u1", "", ""); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, ok := cmtRepo.byID["c1"]; ok {
-		t.Fatalf("comment not removed")
+		t.Fatalf("timeline not removed")
 	}
-	if _, ok := attRepo.byCommentID["c1"]; ok {
+	if _, ok := attRepo.byEntryID["c1"]; ok {
 		t.Fatalf("attachments not removed")
+	}
+}
+
+// TestTimelineService_Delete_MatterIDMismatch_ReturnsNotFound verifies that
+// DELETE /matters/A/timeline/<entry-from-B> does not let the caller delete an
+// entry that belongs to a different matter, even if they author the entry and
+// have access to that other matter.
+func TestTimelineService_Delete_MatterIDMismatch_ReturnsNotFound(t *testing.T) {
+	matterA := &model.Matter{ID: "ma", SpaceID: "sp1", CreatorID: "u1", Title: "A"}
+	matterB := &model.Matter{ID: "mb", SpaceID: "sp1", CreatorID: "u1", Title: "B"}
+	content := "entry on B"
+	entry := &model.TimelineEntry{ID: "e-on-b", MatterID: "mb", UserID: "u1", Content: &content}
+	svc := newTimelineSvc(
+		newFakeTimelineRepo(entry),
+		newFakeTimelineAttachmentRepo(),
+		newFakeMatterRepo(matterA, matterB),
+		fakeAccessChecker{},
+	)
+	// Caller hits /matters/ma/timeline/e-on-b — matterID in path is A, entry is on B.
+	err := svc.DeleteEntry(context.Background(), "ma", "e-on-b", "sp1", []string{"u1"}, "u1", "", "")
+	if !errors.Is(err, apperr.ErrNotFound) {
+		t.Fatalf("path matter id mismatch: got %v, want ErrNotFound", err)
 	}
 }
 
@@ -453,20 +530,24 @@ func TestMatterService_GetMatter_ParticipantCanAccess(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
 	// HasAccess returns true when userID is a participant
 	matterRepo := &hasAccessFakeMatterRepo{fakeMatterRepo: *newFakeMatterRepo(matter), accessGrants: map[string]bool{"t1:viewer:": true}}
-	svc := NewMatterService(matterRepo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, noopTxRunner{})
-	_, err := svc.GetMatter(context.Background(), "t1", "sp1", []string{"viewer"}, "")
+	svc := NewMatterService(matterRepo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, nil)
+	_, err := svc.GetMatter(context.Background(), "t1", "sp1", []string{"viewer"}, "", "")
 	if err != nil {
 		t.Fatalf("participant should have access, got %v", err)
 	}
 }
 
+// TestMatterService_GetMatter_ChannelMemberCanAccess covers the IM-verified
+// channel-member path. Caller supplies channel-id + token; the IM stub returns
+// true; canAccessMatter then keeps channelID and HasAccess grants via channel.
 func TestMatterService_GetMatter_ChannelMemberCanAccess(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
 	matterRepo := &hasAccessFakeMatterRepo{fakeMatterRepo: *newFakeMatterRepo(matter), accessGrants: map[string]bool{"t1:stranger:ch-123": true}}
-	svc := NewMatterService(matterRepo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, noopTxRunner{})
-	_, err := svc.GetMatter(context.Background(), "t1", "sp1", []string{"stranger"}, "ch-123")
+	im := &spyIMChecker{allow: true}
+	svc := NewMatterService(matterRepo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, im)
+	_, err := svc.GetMatter(context.Background(), "t1", "sp1", []string{"stranger"}, "ch-123", "user-tok")
 	if err != nil {
-		t.Fatalf("channel member should have access, got %v", err)
+		t.Fatalf("IM-verified channel member should have access, got %v", err)
 	}
 }
 
@@ -527,8 +608,8 @@ func TestMatterService_GetMatter_PopulatesParticipantsAndChannels(t *testing.T) 
 			"t1": {{ID: "mc1", MatterID: "t1", ChannelID: "ch1", ChannelType: 1}},
 		},
 	}
-	svc := NewMatterService(newFakeMatterRepo(matter), newFakeAssigneeRepo(), partRepo, chanRepo, noopTxRunner{})
-	detail, err := svc.GetMatter(context.Background(), "t1", "sp1", []string{"owner"}, "")
+	svc := NewMatterService(newFakeMatterRepo(matter), newFakeAssigneeRepo(), partRepo, chanRepo, nil, noopTxRunner{}, nil)
+	detail, err := svc.GetMatter(context.Background(), "t1", "sp1", []string{"owner"}, "", "")
 	if err != nil {
 		t.Fatalf("GetMatter failed: %v", err)
 	}
@@ -580,7 +661,7 @@ func (f *trackingParticipantRepo) ListUserIDs(_ context.Context, matterID string
 }
 
 type trackingChannelRepo struct {
-	links    map[string][]string                // matterID -> []channelID
+	links    map[string][]string               // matterID -> []channelID
 	channels map[string][]*model.MatterChannel // matterID -> []channel entries
 }
 

@@ -25,6 +25,6 @@ func assigneeAddedMsg(title, actorName string) string {
 	return fmt.Sprintf("📋 任务「%s」— %s 将你添加为负责人", title, actorName)
 }
 
-func commentAddedMsg(title, actorName string) string {
-	return fmt.Sprintf("📋 任务「%s」— %s 添加了评论", title, actorName)
+func timelineEntryAddedMsg(title, actorName string) string {
+	return fmt.Sprintf("📋 任务「%s」— %s 添加了进展", title, actorName)
 }

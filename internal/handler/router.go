@@ -32,7 +32,9 @@ type ReadinessCheck func() error
 
 func SetupRouter(
 	matterH *MatterHandler,
-	commentH *CommentHandler,
+	timelineH *TimelineHandler,
+	extractH *ExtractHandler,
+	extractLimiter gin.HandlerFunc,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
 	ready ReadinessCheck,
@@ -63,6 +65,16 @@ func SetupRouter(
 	{
 		matters.POST("", matterH.Create)
 		matters.GET("", matterH.List)
+
+		// AI-powered: registered BEFORE /:id routes so "extract" does not match :id.
+		if extractH != nil {
+			if extractLimiter != nil {
+				matters.POST("/extract", extractLimiter, extractH.Create)
+			} else {
+				matters.POST("/extract", extractH.Create)
+			}
+		}
+
 		matters.GET("/:id", matterH.Get)
 		matters.PUT("/:id", matterH.Update)
 		matters.PUT("/:id/status", matterH.Transition)
@@ -73,9 +85,9 @@ func SetupRouter(
 		matters.POST("/:id/channels", matterH.LinkChannel)
 		matters.DELETE("/:id/channels/:channel_id", matterH.UnlinkChannel)
 
-		matters.POST("/:id/comments", commentH.Create)
-		matters.GET("/:id/comments", commentH.List)
-		matters.DELETE("/:id/comments/:comment_id", commentH.Delete)
+		matters.POST("/:id/timeline", timelineH.Create)
+		matters.GET("/:id/timeline", timelineH.List)
+		matters.DELETE("/:id/timeline/:entry_id", timelineH.Delete)
 	}
 
 	return r
