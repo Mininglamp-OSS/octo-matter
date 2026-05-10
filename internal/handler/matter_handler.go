@@ -69,6 +69,15 @@ func (h *MatterHandler) Create(c *gin.Context) {
 		}
 		matter.RemindAt = t
 	}
+	// Source-channel link gate (PR #34 review r4259131241): user path must be
+	// IM-verified channel member; bot path is allowed (one-shot trust at
+	// matter creation — bot cannot expand channel links on existing matters).
+	if matter.SourceChannelID != nil && *matter.SourceChannelID != "" {
+		if err := h.svc.RequireChannelMember(c.Request.Context(), callerToken(c), *matter.SourceChannelID, relatedUIDs(c)); err != nil {
+			respondErr(c, err)
+			return
+		}
+	}
 	detail, err := h.svc.CreateMatterWithAssignees(c.Request.Context(), matter, req.AssigneeIDs)
 	if err != nil {
 		respondErr(c, err)
@@ -133,7 +142,7 @@ func (h *MatterHandler) List(c *gin.Context) {
 		}
 	}
 
-	result, err := h.svc.ListMatters(c.Request.Context(), spaceID(c), filter)
+	result, err := h.svc.ListMatters(c.Request.Context(), spaceID(c), filter, callerToken(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -147,7 +156,7 @@ func (h *MatterHandler) Get(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
-	detail, err := h.svc.GetMatter(c.Request.Context(), id, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"))
+	detail, err := h.svc.GetMatter(c.Request.Context(), id, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"), callerToken(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -296,6 +305,19 @@ func (h *MatterHandler) LinkChannel(c *gin.Context) {
 	var req linkChannelReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		bindJSONErr(c, err)
+		return
+	}
+	// Manual channel-link gate (PR #34 review r4259131241):
+	//   - Bot path: forbidden. Bots may not manually link new channels to
+	//     existing matters; only initial source-link at matter creation.
+	//   - User path: must be IM-verified member of the target channel.
+	tok := callerToken(c)
+	if tok == "" {
+		failCode(c, http.StatusForbidden, "FORBIDDEN", "bot may not manually link channels", nil)
+		return
+	}
+	if err := h.svc.RequireChannelMember(c.Request.Context(), tok, req.ChannelID, relatedUIDs(c)); err != nil {
+		respondErr(c, err)
 		return
 	}
 	mc, err := h.svc.LinkChannel(c.Request.Context(), id, spaceID(c), relatedUIDs(c), req.ChannelID, req.ChannelType, req.ChannelName)

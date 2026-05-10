@@ -23,10 +23,10 @@ type DmworkNotifier struct {
 const (
 	notifyService = "matter-service"
 
-	eventMatterCreated  = "matter.created"
-	eventStatusChanged  = "matter.status_changed"
-	eventAssigneeAdded  = "matter.assignee_added"
-	eventCommentAdded   = "matter.comment_added"
+	eventMatterCreated      = "matter.created"
+	eventStatusChanged      = "matter.status_changed"
+	eventAssigneeAdded      = "matter.assignee_added"
+	eventTimelineEntryAdded = "matter.timeline_entry_added"
 )
 
 type notifyRequest struct {
@@ -104,7 +104,7 @@ func payloadFor(matter *model.Matter, message string) map[string]interface{} {
 	return map[string]interface{}{
 		"matter_id":    matter.ID,
 		"matter_title": matter.Title,
-		"message":    message,
+		"message":      message,
 	}
 }
 
@@ -128,12 +128,12 @@ func (n *DmworkNotifier) NotifyAssigneeAdded(matter *model.Matter, actorName, ne
 		payloadFor(matter, assigneeAddedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyCommentAdded(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
+func (n *DmworkNotifier) NotifyTimelineEntryAdded(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
 	all := append([]string{matter.CreatorID}, assigneeIDs...)
 	all = append(all, participantIDs...)
 	targets := dedupTargets(actorID, all)
-	n.send(matter.SpaceID, eventCommentAdded, actorID, targets,
-		payloadFor(matter, commentAddedMsg(matter.Title, actorName)))
+	n.send(matter.SpaceID, eventTimelineEntryAdded, actorID, targets,
+		payloadFor(matter, timelineEntryAddedMsg(matter.Title, actorName)))
 }
 
 // static check that DmworkNotifier satisfies Notifier

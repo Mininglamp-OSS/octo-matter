@@ -8,12 +8,13 @@ import (
 
 // TxRepos bundles every repo bound to the same transaction.
 type TxRepos struct {
-	Matter            *MatterRepo
-	Assignee          *AssigneeRepo
-	Participant       *ParticipantRepo
-	MatterChannel     *MatterChannelRepo
-	Comment           *CommentRepo
-	CommentAttachment *CommentAttachmentRepo
+	Matter             *MatterRepo
+	Assignee           *AssigneeRepo
+	Participant        *ParticipantRepo
+	MatterChannel      *MatterChannelRepo
+	Timeline           *TimelineRepo
+	TimelineAttachment *TimelineAttachmentRepo
+	Activity           *ActivityRepo
 }
 
 // TxManager coordinates writes that must succeed or fail atomically.
@@ -34,12 +35,13 @@ func (m *TxManager) Do(ctx context.Context, fn func(r *TxRepos) error) error {
 	defer tx.RollbackUnlessCommitted()
 
 	repos := &TxRepos{
-		Matter:            &MatterRepo{runner: tx},
-		Assignee:          &AssigneeRepo{runner: tx},
-		Participant:       &ParticipantRepo{runner: tx},
-		MatterChannel:     &MatterChannelRepo{runner: tx},
-		Comment:           &CommentRepo{runner: tx},
-		CommentAttachment: &CommentAttachmentRepo{runner: tx},
+		Matter:             &MatterRepo{runner: tx},
+		Assignee:           &AssigneeRepo{runner: tx},
+		Participant:        &ParticipantRepo{runner: tx},
+		MatterChannel:      &MatterChannelRepo{runner: tx},
+		Timeline:           &TimelineRepo{runner: tx},
+		TimelineAttachment: &TimelineAttachmentRepo{runner: tx},
+		Activity:           &ActivityRepo{runner: tx},
 	}
 	if err := fn(repos); err != nil {
 		return err

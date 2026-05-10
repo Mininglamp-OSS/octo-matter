@@ -52,22 +52,46 @@ type MatterService struct {
 	assigneeRepo    assigneeStore
 	participantRepo participantStore
 	channelRepo     channelStore
+	activity        activityStore
 	tx              txRunner
+	im              imChecker
 }
 
+// NewMatterService wires the matter service. im may be nil — in that case all
+// channel-membership checks are skipped (callers behave as if every user is
+// NOT a channel member, which means channel-link access is never granted via
+// caller-supplied channelID; assignee/participant/creator paths still work).
 func NewMatterService(
 	matterRepo matterStore,
 	assigneeRepo assigneeStore,
 	participantRepo participantStore,
 	channelRepo channelStore,
+	activity activityStore,
 	tx txRunner,
+	im imChecker,
 ) *MatterService {
+	if im == nil {
+		im = noopIMChecker{}
+	}
 	return &MatterService{
 		matterRepo:      matterRepo,
 		assigneeRepo:    assigneeRepo,
 		participantRepo: participantRepo,
 		channelRepo:     channelRepo,
+		activity:        activity,
 		tx:              tx,
+		im:              im,
+	}
+}
+
+// recordActivity runs ActivityRepo.Record best-effort — a failure is logged
+// but never returned to the caller. Safe to pass a nil store.
+func recordActivity(ctx context.Context, store activityStore, matterID, actorID, action string, detail interface{}) {
+	if store == nil {
+		return
+	}
+	if err := store.Record(ctx, matterID, actorID, action, detail); err != nil {
+		log.Printf("[WARN] activity record failed matter=%s action=%s: %v", matterID, action, err)
 	}
 }
 
@@ -117,6 +141,7 @@ func (s *MatterService) CreateMatterWithAssignees(ctx context.Context, matter *m
 	if err != nil {
 		return nil, err
 	}
+	recordActivity(ctx, s.activity, matter.ID, matter.CreatorID, "created", map[string]interface{}{})
 	return &MatterDetail{
 		Matter:    matter,
 		Assignees: created,
@@ -129,7 +154,28 @@ type MatterListResult struct {
 	NextCursor string          `json:"next_cursor,omitempty"`
 }
 
-func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter repository.MatterFilter) (*MatterListResult, error) {
+// ListMatters returns matters visible to callerUIDs in the space. The
+// SourceChannelID filter is honoured ONLY for callers that have proven channel
+// membership via dmworkim (user path with non-empty callerToken). For the bot
+// path (callerToken==""), the channel filter is stripped so a leaked bot
+// token cannot enumerate matters via channel-link (PR #34 review r4259071422).
+// Caller still sees matters via creator / assignee / participant filters.
+func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter repository.MatterFilter, callerToken string) (*MatterListResult, error) {
+	if filter.SourceChannelID != nil {
+		if callerToken == "" {
+			// Bot path: strip channel filter unconditionally.
+			filter.SourceChannelID = nil
+		} else {
+			member, err := s.im.IsChannelMember(ctx, callerToken, *filter.SourceChannelID, filter.CallerUIDs)
+			if err != nil {
+				log.Printf("[ERROR] ListMatters: IM IsChannelMember failed channel=%s: %v", *filter.SourceChannelID, err)
+				return nil, apperr.Upstream("channel membership service unavailable")
+			}
+			if !member {
+				filter.SourceChannelID = nil
+			}
+		}
+	}
 	matters, hasMore, err := s.matterRepo.ListBySpace(ctx, spaceID, filter)
 	if err != nil {
 		return nil, err
@@ -162,13 +208,16 @@ func (s *MatterService) GetMatterForNotification(ctx context.Context, id, spaceI
 	return s.matterRepo.GetByID(ctx, id, spaceID)
 }
 
-// GetMatter loads a matter any of callerUIDs is allowed to read.
-func (s *MatterService) GetMatter(ctx context.Context, id, spaceID string, callerUIDs []string, sourceChannelID string) (*MatterDetail, error) {
+// GetMatter loads a matter any of callerUIDs is allowed to read. callerToken
+// is the user's IM auth token (empty for bot or non-channel-scoped requests);
+// when sourceChannelID is supplied it gates channel-link access via the IM
+// membership check (see canAccessMatter).
+func (s *MatterService) GetMatter(ctx context.Context, id, spaceID string, callerUIDs []string, sourceChannelID, callerToken string) (*MatterDetail, error) {
 	matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
 	if err != nil {
 		return nil, err
 	}
-	ok, accessErr := s.canAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
+	ok, accessErr := s.canAccessMatter(ctx, matter, callerUIDs, sourceChannelID, callerToken)
 	if accessErr != nil {
 		return nil, accessErr
 	}
@@ -196,19 +245,69 @@ func (s *MatterService) GetMatter(ctx context.Context, id, spaceID string, calle
 }
 
 // CanAccessMatter satisfies MatterAccessChecker.
-func (s *MatterService) CanAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
-	return s.canAccessMatter(ctx, matter, callerUIDs, sourceChannelID)
+func (s *MatterService) CanAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, channelID, callerToken string) (bool, error) {
+	return s.canAccessMatter(ctx, matter, callerUIDs, channelID, callerToken)
+}
+
+// RequireChannelMember verifies via dmworkim that one of callerUIDs is a
+// current member of channelID. Used as a gate before writing matter_channels
+// (PR #34 review r4259131241): without this, an assignee on matter M could
+// link M to an arbitrary channel they don't belong to, exposing M to that
+// channel's real members.
+//
+// Returns nil for empty channelID OR empty callerToken — caller MUST handle
+// the bot-path policy separately. Bot policy at each link write site:
+//   - matter creation (manual / extract): allow (bounded one-shot at create)
+//   - timeline auto-link / manual LinkChannel: deny (no expansion of existing
+//     matters via bot path; let a user link first)
+//
+// Returns apperr.Forbidden if not member, apperr.Upstream on IM failure (so
+// the request fails closed rather than silently accepting an unverifiable
+// link).
+func (s *MatterService) RequireChannelMember(ctx context.Context, callerToken, channelID string, callerUIDs []string) error {
+	if channelID == "" || callerToken == "" {
+		return nil
+	}
+	member, err := s.im.IsChannelMember(ctx, callerToken, channelID, callerUIDs)
+	if err != nil {
+		log.Printf("[ERROR] RequireChannelMember: IM lookup failed channel=%s: %v", channelID, err)
+		return apperr.Upstream("channel membership service unavailable")
+	}
+	if !member {
+		return apperr.Forbidden("caller is not a member of channel")
+	}
+	return nil
 }
 
 // canAccessMatter returns (true, nil) if access is granted, (false, nil) if
-// denied, or (false, err) on infrastructure failure (DB error).
-func (s *MatterService) canAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, sourceChannelID string) (bool, error) {
-	// Fast path: creator check is in-memory, no DB needed.
+// denied, or (false, err) on infrastructure failure (DB or IM upstream).
+//
+// channel_id is honoured ONLY for callers that have proven channel
+// membership via dmworkim (user path with non-empty callerToken). Otherwise
+// — including the bot path (callerToken=="") — the channel-link claim is
+// stripped before reaching HasAccess, so authz must succeed via creator /
+// assignee / participant. Defense-in-depth: even a leaked bot token cannot
+// pivot through a known/guessed channel id (PR #34 review r4259071422).
+func (s *MatterService) canAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, channelID, callerToken string) (bool, error) {
+	// Fast path: creator check is in-memory, no DB or IM call needed.
 	if s.isCreator(matter, callerUIDs) {
 		return true, nil
 	}
-	// Single DB query to check assignee, participant, or channel access.
-	ok, err := s.matterRepo.HasAccess(ctx, matter.ID, callerUIDs, sourceChannelID)
+
+	effectiveChannel := ""
+	if channelID != "" && callerToken != "" {
+		member, err := s.im.IsChannelMember(ctx, callerToken, channelID, callerUIDs)
+		if err != nil {
+			log.Printf("[ERROR] canAccessMatter: IM IsChannelMember failed matter=%s channel=%s: %v", matter.ID, channelID, err)
+			return false, apperr.Upstream("channel membership service unavailable")
+		}
+		if member {
+			effectiveChannel = channelID
+		}
+		// IM-denied: channel claim already empty — falls through to assignee/participant.
+	}
+
+	ok, err := s.matterRepo.HasAccess(ctx, matter.ID, callerUIDs, effectiveChannel)
 	if err != nil {
 		log.Printf("[ERROR] canAccessMatter: HasAccess DB error matter=%s: %v", matter.ID, err)
 		return false, err
@@ -247,16 +346,43 @@ func (s *MatterService) UpdateMatter(ctx context.Context, id, spaceID string, ca
 	if !s.isCreator(matter, callerUIDs) && !isAssignee {
 		return nil, apperr.ErrForbidden
 	}
-	if title != nil {
+	actorID := actorFromCaller(callerUIDs)
+	var activities []func()
+	if title != nil && *title != matter.Title {
+		oldTitle, newTitle := matter.Title, *title
+		activities = append(activities, func() {
+			recordActivity(ctx, s.activity, id, actorID, "title_changed",
+				map[string]interface{}{"from": oldTitle, "to": newTitle})
+		})
 		matter.Title = *title
 	}
 	if description != nil {
+		oldDesc := stringPtrOrEmpty(matter.Description)
+		newDesc := *description
+		if oldDesc != newDesc {
+			summary := newDesc
+			if len(summary) > 120 {
+				summary = summary[:120]
+			}
+			activities = append(activities, func() {
+				recordActivity(ctx, s.activity, id, actorID, "description_changed",
+					map[string]interface{}{"summary": summary})
+			})
+		}
 		matter.Description = description
 	}
 	if deadline != nil {
 		t, err := ParseOptionalRFC3339(*deadline)
 		if err != nil {
 			return nil, apperr.InvalidInput("deadline must be RFC3339 or empty")
+		}
+		oldUnix := timePtrUnix(matter.Deadline)
+		newUnix := timePtrUnix(t)
+		if oldUnix != newUnix {
+			activities = append(activities, func() {
+				recordActivity(ctx, s.activity, id, actorID, "deadline_changed",
+					map[string]interface{}{"from": oldUnix, "to": newUnix})
+			})
 		}
 		matter.Deadline = t
 	}
@@ -270,7 +396,24 @@ func (s *MatterService) UpdateMatter(ctx context.Context, id, spaceID string, ca
 	if err := s.matterRepo.Update(ctx, matter); err != nil {
 		return nil, err
 	}
+	for _, rec := range activities {
+		rec()
+	}
 	return matter, nil
+}
+
+func timePtrUnix(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.Unix()
+}
+
+func actorFromCaller(callerUIDs []string) string {
+	if len(callerUIDs) > 0 {
+		return callerUIDs[0]
+	}
+	return ""
 }
 
 // ParseOptionalRFC3339 returns (nil, nil) for the empty string (clear the
@@ -307,6 +450,8 @@ func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, calle
 		}
 	}
 
+	var prevStatus model.MatterStatus
+	var statusChanged bool
 	err := s.tx.Do(ctx, func(r *repository.TxRepos) error {
 		matter, err := r.Matter.GetByIDForUpdate(ctx, id, spaceID)
 		if err != nil {
@@ -336,10 +481,24 @@ func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, calle
 			return apperr.InvalidInput("cannot transition from archived to done; reopen first")
 		}
 
-		return r.Matter.UpdateStatus(ctx, id, spaceID, string(target))
+		if err := r.Matter.UpdateStatus(ctx, id, spaceID, string(target)); err != nil {
+			return err
+		}
+		prevStatus = matter.Status
+		statusChanged = true
+		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Best-effort activity recorded post-tx, matching the pattern used by
+	// UpdateMatter / AddAssignee etc. If the INSERT fails the mutation still
+	// stands — matches existing behavior and keeps this mutation consistent
+	// with the rest of matter_svc.go.
+	if statusChanged {
+		recordActivity(ctx, s.activity, id, actorFromCaller(callerUIDs), "status_changed",
+			map[string]interface{}{"from": string(prevStatus), "to": string(target)})
 	}
 
 	matter, err := s.matterRepo.GetByID(ctx, id, spaceID)
@@ -412,10 +571,15 @@ func (s *MatterService) AddAssignee(ctx context.Context, matterID, spaceID strin
 	if !s.isCreator(matter, callerUIDs) && !isAssignee {
 		return apperr.ErrForbidden
 	}
-	return s.assigneeRepo.Create(ctx, &model.MatterAssignee{
+	if err := s.assigneeRepo.Create(ctx, &model.MatterAssignee{
 		MatterID: matterID,
 		UserID:   assigneeUserID,
-	})
+	}); err != nil {
+		return err
+	}
+	recordActivity(ctx, s.activity, matterID, actorFromCaller(callerUIDs), "assignee_added",
+		map[string]interface{}{"user_id": assigneeUserID})
+	return nil
 }
 
 func (s *MatterService) RemoveAssignee(ctx context.Context, matterID, spaceID string, callerUIDs []string, assigneeUserID string) error {
@@ -434,7 +598,12 @@ func (s *MatterService) RemoveAssignee(ctx context.Context, matterID, spaceID st
 	if !isSelfUnassign && !s.isCreator(matter, callerUIDs) {
 		return apperr.ErrForbidden
 	}
-	return s.assigneeRepo.Delete(ctx, matterID, assigneeUserID)
+	if err := s.assigneeRepo.Delete(ctx, matterID, assigneeUserID); err != nil {
+		return err
+	}
+	recordActivity(ctx, s.activity, matterID, actorFromCaller(callerUIDs), "assignee_removed",
+		map[string]interface{}{"user_id": assigneeUserID})
+	return nil
 }
 
 // LinkChannel attaches a channel to a matter. Creator or any assignee may link.
@@ -463,6 +632,11 @@ func (s *MatterService) LinkChannel(ctx context.Context, matterID, spaceID strin
 	if err := s.channelRepo.Create(ctx, mc); err != nil {
 		return nil, err
 	}
+	detail := map[string]interface{}{"channel_id": channelID}
+	if channelName != nil {
+		detail["channel_name"] = *channelName
+	}
+	recordActivity(ctx, s.activity, matterID, actorFromCaller(callerUIDs), "channel_linked", detail)
 	return mc, nil
 }
 
@@ -475,5 +649,10 @@ func (s *MatterService) UnlinkChannel(ctx context.Context, matterID, spaceID str
 	if !s.isCreator(matter, callerUIDs) {
 		return apperr.ErrForbidden
 	}
-	return s.channelRepo.Delete(ctx, matterID, channelID)
+	if err := s.channelRepo.Delete(ctx, matterID, channelID); err != nil {
+		return err
+	}
+	recordActivity(ctx, s.activity, matterID, actorFromCaller(callerUIDs), "channel_unlinked",
+		map[string]interface{}{"channel_id": channelID})
+	return nil
 }

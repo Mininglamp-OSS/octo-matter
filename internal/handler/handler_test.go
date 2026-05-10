@@ -84,6 +84,111 @@ func TestHealthReady_503(t *testing.T) {
 
 // ─── respondErr mapping ─────────────────────────────────
 
+// TestActorNameFor covers the post-r4259090630 contract for notification
+// actor names. When a bot acts on behalf of its owner (LLM timeline path:
+// participant_uid == owner_uid), the notification must show the owner's
+// name, not the bot's name — otherwise DB records "owner authored entry"
+// while the push notification reads "Bot added progress".
+func TestActorNameFor(t *testing.T) {
+	cases := []struct {
+		name      string
+		role      string
+		callerUID string
+		callerNm  string
+		ownerUID  string
+		ownerNm   string
+		actorUID  string
+		want      string
+	}{
+		{
+			name:      "user path returns user name",
+			role:      "",
+			callerUID: "u1",
+			callerNm:  "Alice",
+			actorUID:  "u1",
+			want:      "Alice",
+		},
+		{
+			name:      "bot acting for owner returns owner_name",
+			role:      "bot",
+			callerUID: "bot1",
+			callerNm:  "MatterBot",
+			ownerUID:  "owner1",
+			ownerNm:   "OwnerAlice",
+			actorUID:  "owner1",
+			want:      "OwnerAlice",
+		},
+		{
+			name:      "bot acting for owner, owner_name missing falls back to uid",
+			role:      "bot",
+			callerUID: "bot1",
+			callerNm:  "MatterBot",
+			ownerUID:  "owner1",
+			ownerNm:   "",
+			actorUID:  "owner1",
+			want:      "owner1",
+		},
+		{
+			name:      "bot acting for itself (non-owner actor) keeps bot name",
+			role:      "bot",
+			callerUID: "bot1",
+			callerNm:  "MatterBot",
+			ownerUID:  "owner1",
+			ownerNm:   "OwnerAlice",
+			actorUID:  "bot1",
+			want:      "MatterBot",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+			if tc.role != "" {
+				c.Set("role", tc.role)
+			}
+			c.Set("uid", tc.callerUID)
+			c.Set("name", tc.callerNm)
+			if tc.ownerUID != "" {
+				c.Set("owner_uid", tc.ownerUID)
+			}
+			if tc.ownerNm != "" {
+				c.Set("owner_name", tc.ownerNm)
+			}
+			got := actorNameFor(c, tc.actorUID)
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRespondErr_Upstream(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	respondErr(c, apperr.Upstream("dmworkim unreachable"))
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+	assertErrCode(t, w.Body.Bytes(), "UPSTREAM_UNAVAILABLE")
+}
+
+func TestRespondErr_RateLimited(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	respondErr(c, apperr.RateLimited("please wait"))
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+	assertErrCode(t, w.Body.Bytes(), "RATE_LIMITED")
+}
+
 func TestRespondErr_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)

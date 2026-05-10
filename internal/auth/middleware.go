@@ -192,6 +192,12 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 		c.Set("uid", result.BotUID)
 		c.Set("name", result.BotName)
 		c.Set("role", "bot")
+		if result.OwnerUID != "" {
+			c.Set("owner_uid", result.OwnerUID)
+		}
+		if result.OwnerName != "" {
+			c.Set("owner_name", result.OwnerName)
+		}
 		if result.SpaceID != "" {
 			c.Set("space_id", result.SpaceID)
 		}
@@ -230,6 +236,14 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	c.Set("uid", result.BotUID)
 	c.Set("name", result.BotName)
 	c.Set("role", "bot")
+	if result.OwnerUID != "" {
+		c.Set("owner_uid", result.OwnerUID)
+	}
+	if result.OwnerName != "" {
+		// Stored so notification handlers can render the owner's name when
+		// the bot acts on behalf of its owner (LLM-mediated timeline path).
+		c.Set("owner_name", result.OwnerName)
+	}
 	if result.SpaceID != "" {
 		c.Set("space_id", result.SpaceID)
 	}

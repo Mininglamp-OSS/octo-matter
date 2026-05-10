@@ -1,0 +1,29 @@
+# Internal design docs / READMEs — not needed inside the build context, and
+# design-v3.md in particular contains internal team names and architecture
+# decisions that should not ship in any image artifact.
+*.md
+design-v3.md
+docs/
+
+# VCS metadata
+.git
+.gitignore
+.github
+
+# Local dev
+docker-compose*.yaml
+.env
+.env.*
+!.env.example
+
+# Conductor workspace state
+.context
+
+# Editor / IDE
+.idea
+.vscode
+*.swp
+
+# Test artifacts
+coverage.out
+*.test

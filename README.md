@@ -175,16 +175,6 @@ PUT /api/v1/todos/:id/status
 
 Creator or assignee can set status to `open` or `closed`. Idempotent — setting the current status is a no-op. 
 
-### Comments
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/todos/:id/comments` | Add comment (optionally with attachments) |
-| GET | `/api/v1/todos/:id/comments` | List comments (with attachments) |
-| DELETE | `/api/v1/todos/:id/comments/:cid` | Delete comment (author only, cascades attachments) |
-
-A comment may carry `content` (text), `attachments` (array of `{file_url, file_name?, file_size?, mime_type?}`), or both — at least one must be non-empty. Limits: max 10 attachments per comment, max 100 MB per attachment, max 10,000 chars of content.
-
 ### Error Response Format
 
 ```json
