@@ -117,16 +117,29 @@ func (r *MatterRepo) ListBySpace(ctx context.Context, spaceID string, filter Mat
 		From("matters").
 		Where("space_id = ? AND deleted_at IS NULL", spaceID)
 
-	// Visibility: user must be creator, assignee, or participant. When a
-	// source_channel_id is provided, matters whose linked channels include
-	// that channel id are also visible.
+	// Visibility: caller must be creator, assignee, or participant. When the
+	// service layer has confirmed channel membership and forwarded any channel
+	// ids (SourceChannelID — visibility expansion — and/or ChannelID — strict
+	// filter), matters linked to ANY of those channels are also visible. Both
+	// IDs are gated upstream by IsChannelMember so the channel branch cannot
+	// leak matters to non-members. Using IN over a deduped slice ensures the
+	// dual-membership case (different ids passed for both params) unlocks
+	// either channel, not just one (PR #41 review).
+	var visibleChannelIDs []string
 	if filter.SourceChannelID != nil {
+		visibleChannelIDs = append(visibleChannelIDs, *filter.SourceChannelID)
+	}
+	if filter.ChannelID != nil &&
+		(filter.SourceChannelID == nil || *filter.ChannelID != *filter.SourceChannelID) {
+		visibleChannelIDs = append(visibleChannelIDs, *filter.ChannelID)
+	}
+	if len(visibleChannelIDs) > 0 {
 		q = q.Where(
 			"(creator_id IN ?"+
 				" OR EXISTS (SELECT 1 FROM matter_assignees WHERE matter_assignees.matter_id = matters.id AND matter_assignees.user_id IN ?)"+
 				" OR EXISTS (SELECT 1 FROM matter_participants WHERE matter_participants.matter_id = matters.id AND matter_participants.user_id IN ?)"+
-				" OR EXISTS (SELECT 1 FROM matter_channels WHERE matter_channels.matter_id = matters.id AND matter_channels.channel_id = ?))",
-			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs, *filter.SourceChannelID,
+				" OR EXISTS (SELECT 1 FROM matter_channels WHERE matter_channels.matter_id = matters.id AND matter_channels.channel_id IN ?))",
+			filter.CallerUIDs, filter.CallerUIDs, filter.CallerUIDs, visibleChannelIDs,
 		)
 	} else {
 		q = q.Where(

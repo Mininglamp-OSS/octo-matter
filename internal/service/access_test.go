@@ -351,6 +351,38 @@ func TestListMatters_ChannelFilter_IMError_PropagatesUpstream(t *testing.T) {
 	}
 }
 
+// TestListMatters_BothChannelIDs_BothVerifiedSurvive: review feedback on PR
+// #41 — when source_channel_id and channel_id are both supplied and the
+// caller is a verified member of both, both must reach the repo so the
+// visibility OR can unlock either channel. Guards the dual-membership case
+// where a matter linked only to channel_id (chB) was previously invisible
+// because SourceChannelID (chA) took priority in the visibility branch.
+func TestListMatters_BothChannelIDs_BothVerifiedSurvive(t *testing.T) {
+	im := &spyIMChecker{allow: true}
+	repo := &captureMatterRepo{fakeMatterRepo: *newFakeMatterRepo()}
+	svc := NewMatterService(repo, newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, im)
+	chA := "ch-A"
+	chB := "ch-B"
+	filter := repository.MatterFilter{
+		CallerUIDs:      []string{"u1"},
+		SourceChannelID: &chA,
+		ChannelID:       &chB,
+	}
+	_, err := svc.ListMatters(context.Background(), "sp1", filter, "user-tok")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if im.calls != 2 {
+		t.Fatalf("expected 2 IM calls (one per channel), got %d", im.calls)
+	}
+	if repo.gotFilter.SourceChannelID == nil || *repo.gotFilter.SourceChannelID != chA {
+		t.Fatalf("verified SourceChannelID must reach repo; got %v", repo.gotFilter.SourceChannelID)
+	}
+	if repo.gotFilter.ChannelID == nil || *repo.gotFilter.ChannelID != chB {
+		t.Fatalf("verified ChannelID must reach repo; got %v", repo.gotFilter.ChannelID)
+	}
+}
+
 // TestListMatters_NoSourceChannel_SkipsIM: no IM call when no channel filter
 // is requested.
 func TestListMatters_NoSourceChannel_SkipsIM(t *testing.T) {
