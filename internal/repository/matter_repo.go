@@ -55,7 +55,7 @@ func (r *MatterRepo) Create(ctx context.Context, matter *model.Matter) error {
 		_, err = r.runner.InsertInto("matters").
 			Columns("id", "seq_no", "space_id", "title", "description", "creator_id",
 				"status", "deadline", "remind_at", "source_channel_id", "source_channel_type",
-				"source_name", "created_at", "updated_at", "deleted_at").
+				"source_name", "source_msg_ids", "created_at", "updated_at", "deleted_at").
 			Record(matter).
 			ExecContext(ctx)
 		if err == nil {

@@ -25,7 +25,7 @@ type extractMessageAttachmentReq struct {
 }
 
 type extractMessageReq struct {
-	MessageID   string                        `json:"message_id" binding:"required"`
+	MessageID   string                        `json:"message_id" binding:"required,max=255"`
 	FromUID     string                        `json:"from_uid" binding:"required"`
 	FromUname   string                        `json:"from_uname"`
 	Timestamp   int64                         `json:"timestamp"`

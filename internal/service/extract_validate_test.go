@@ -6,6 +6,34 @@ import (
 	"time"
 )
 
+// TestValidateMessages_RejectsOversizedMessageID is the service-layer guard
+// against unbounded message ids reaching matters.source_msg_ids (PR #43
+// follow-up). The handler tag bounds the API surface; this guard ensures any
+// internal caller that bypasses Gin binding is still rejected before the id
+// hits the JSON column.
+func TestValidateMessages_RejectsOversizedMessageID(t *testing.T) {
+	long := strings.Repeat("x", ExtractMaxMessageIDLen+1)
+	msgs := []ExtractMessage{
+		{MessageID: "ok", FromUID: "u1"},
+		{MessageID: long, FromUID: "u1"},
+	}
+	err := validateMessages(msgs)
+	if err == nil {
+		t.Fatalf("expected validation error for oversized message_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "message_id") {
+		t.Fatalf("expected error to mention message_id, got %v", err)
+	}
+}
+
+func TestValidateMessages_AcceptsMaxLengthMessageID(t *testing.T) {
+	maxLen := strings.Repeat("x", ExtractMaxMessageIDLen)
+	msgs := []ExtractMessage{{MessageID: maxLen, FromUID: "u1"}}
+	if err := validateMessages(msgs); err != nil {
+		t.Fatalf("expected max-length id accepted, got %v", err)
+	}
+}
+
 // TestValidateExtractArgs covers the v3 LLM-output validation pipeline:
 // LLM may freely emit deadline / source_msg_ids / assignee_uids, and the
 // server must (a) clip the message-id and uid lists to the input set so the
@@ -254,7 +282,6 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 		}
 	})
 }
-
 
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
