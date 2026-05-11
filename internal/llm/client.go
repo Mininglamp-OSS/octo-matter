@@ -1,6 +1,3 @@
-// Copyright 2026 MININGLAMP Technology and the OCTO contributors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package llm is a thin, OpenAI-compatible chat completions client supporting
 // function calling. It targets any gateway that implements the OpenAI
 // /v1/chat/completions schema (api.example.com, OpenAI, etc.).
