@@ -31,7 +31,10 @@ type Matter struct {
 	SourceChannelID   *string         `db:"source_channel_id" json:"source_channel_id,omitempty"`
 	SourceChannelType *uint8          `db:"source_channel_type" json:"source_channel_type,omitempty"`
 	SourceName        *string         `db:"source_name" json:"source_name,omitempty"`
-	SourceMsgIDs      JSONStringSlice `db:"source_msg_ids" json:"source_msg_ids,omitempty"`
+	// Always emitted (even as []) so clients can rely on the field being
+	// present. Legacy matters whose row has NULL render the same as new
+	// matters with no recorded sources; both expose an empty array.
+	SourceMsgIDs JSONStringSlice `db:"source_msg_ids" json:"source_msg_ids"`
 	CreatedAt         time.Time       `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time       `db:"updated_at" json:"updated_at"`
 	DeletedAt         *time.Time      `db:"deleted_at" json:"deleted_at,omitempty"`
