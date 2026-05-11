@@ -23,7 +23,7 @@ type TimelineHandler struct {
 
 // NewTimelineHandler wires the timeline handler. Note: the LLM rate limiter
 // is NOT a handler concern — it is injected into TimelineService directly so
-// throttling fires AFTER the access check (PR #34 review r4259115029).
+// throttling fires AFTER the access check.
 func NewTimelineHandler(
 	svc *service.TimelineService,
 	matterSvc *service.MatterService,
@@ -78,7 +78,7 @@ func (h *TimelineHandler) Create(c *gin.Context) {
 		}
 		// Rate limiting moved into TimelineService.createFromMessages so it
 		// fires AFTER the access check — a forbidden caller must not consume
-		// the legitimate user's cooldown (PR #34 review r4259115029).
+		// the legitimate user's cooldown.
 	}
 
 	atts := make([]service.TimelineAttachmentInput, 0, len(req.Attachments))

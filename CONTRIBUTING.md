@@ -39,9 +39,6 @@ chore: bump dependency versions
 ## Code Style
 
 - **Go**: `gofmt` + `golangci-lint`
-- **TypeScript/JavaScript**: Prettier + ESLint (config in repo)
-- **Swift**: SwiftFormat
-- **Kotlin**: ktlint / Android Studio default
 
 ## Reporting Bugs
 

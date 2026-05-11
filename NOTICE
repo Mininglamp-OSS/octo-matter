@@ -6,9 +6,13 @@ This product includes software developed by the following projects:
 See LICENSE for full license text.
 
 --------------------------------------------------------------------
-Third-party components requiring attribution
+Third-party components bundled or required by this project
 --------------------------------------------------------------------
 
-A full dependency license inventory is maintained in the project's
-license audit report. For commercial use, please refer to each
-upstream project's license terms.
+github.com/gin-gonic/gin               MIT License
+github.com/gocraft/dbr/v2              MIT License
+github.com/google/uuid                 BSD 3-Clause License
+github.com/go-sql-driver/mysql         Mozilla Public License 2.0
+github.com/rubenv/sql-migrate          MIT License
+github.com/DATA-DOG/go-sqlmock         BSD-style License
+github.com/go-playground/validator/v10 MIT License

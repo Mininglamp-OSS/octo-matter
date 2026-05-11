@@ -11,10 +11,10 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
-// DmworkNotifier sends notifications via the dmworkim internal notify API
-// (POST {DmworkIMURL}/v1/internal/notify). Authentication is via the
+// OctoNotifier sends notifications via the octoim internal notify API
+// (POST {OctoIMURL}/v1/internal/notify). Authentication is via the
 // X-Internal-Token header; requests are fire-and-forget.
-type DmworkNotifier struct {
+type OctoNotifier struct {
 	baseURL string
 	token   string
 	client  *http.Client
@@ -38,9 +38,9 @@ type notifyRequest struct {
 	Payload  map[string]interface{} `json:"payload,omitempty"`
 }
 
-func NewDmworkNotifier(dmworkIMURL, internalToken string) *DmworkNotifier {
-	return &DmworkNotifier{
-		baseURL: dmworkIMURL,
+func NewOctoNotifier(octoIMURL, internalToken string) *OctoNotifier {
+	return &OctoNotifier{
+		baseURL: octoIMURL,
 		token:   internalToken,
 		client:  &http.Client{Timeout: 10 * time.Second},
 	}
@@ -60,7 +60,7 @@ func dedupTargets(actorID string, uids []string) []string {
 	return out
 }
 
-func (n *DmworkNotifier) send(spaceID, event, actorID string, targets []string, payload map[string]interface{}) {
+func (n *OctoNotifier) send(spaceID, event, actorID string, targets []string, payload map[string]interface{}) {
 	if spaceID == "" || len(targets) == 0 {
 		return
 	}
@@ -108,13 +108,13 @@ func payloadFor(matter *model.Matter, message string) map[string]interface{} {
 	}
 }
 
-func (n *DmworkNotifier) NotifyMatterCreated(matter *model.Matter, actorName string, assigneeIDs []string) {
+func (n *OctoNotifier) NotifyMatterCreated(matter *model.Matter, actorName string, assigneeIDs []string) {
 	targets := dedupTargets(matter.CreatorID, assigneeIDs)
 	n.send(matter.SpaceID, eventMatterCreated, matter.CreatorID, targets,
 		payloadFor(matter, matterCreatedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyStatusChanged(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
+func (n *OctoNotifier) NotifyStatusChanged(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
 	all := append([]string{matter.CreatorID}, assigneeIDs...)
 	all = append(all, participantIDs...)
 	targets := dedupTargets(actorID, all)
@@ -122,13 +122,13 @@ func (n *DmworkNotifier) NotifyStatusChanged(matter *model.Matter, actorID, acto
 		payloadFor(matter, statusChangedMsg(matter.Title, actorName, string(matter.Status))))
 }
 
-func (n *DmworkNotifier) NotifyAssigneeAdded(matter *model.Matter, actorName, newAssigneeID string) {
+func (n *OctoNotifier) NotifyAssigneeAdded(matter *model.Matter, actorName, newAssigneeID string) {
 	targets := dedupTargets("", []string{newAssigneeID})
 	n.send(matter.SpaceID, eventAssigneeAdded, "", targets,
 		payloadFor(matter, assigneeAddedMsg(matter.Title, actorName)))
 }
 
-func (n *DmworkNotifier) NotifyTimelineEntryAdded(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
+func (n *OctoNotifier) NotifyTimelineEntryAdded(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
 	all := append([]string{matter.CreatorID}, assigneeIDs...)
 	all = append(all, participantIDs...)
 	targets := dedupTargets(actorID, all)
@@ -136,5 +136,5 @@ func (n *DmworkNotifier) NotifyTimelineEntryAdded(matter *model.Matter, actorID,
 		payloadFor(matter, timelineEntryAddedMsg(matter.Title, actorName)))
 }
 
-// static check that DmworkNotifier satisfies Notifier
-var _ Notifier = (*DmworkNotifier)(nil)
+// static check that OctoNotifier satisfies Notifier
+var _ Notifier = (*OctoNotifier)(nil)

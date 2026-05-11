@@ -84,7 +84,7 @@ func TestHealthReady_503(t *testing.T) {
 
 // ─── respondErr mapping ─────────────────────────────────
 
-// TestActorNameFor covers the post-r4259090630 contract for notification
+// TestActorNameFor covers the contract for notification
 // actor names. When a bot acts on behalf of its owner (LLM timeline path:
 // participant_uid == owner_uid), the notification must show the owner's
 // name, not the bot's name — otherwise DB records "owner authored entry"
@@ -168,7 +168,7 @@ func TestRespondErr_Upstream(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	respondErr(c, apperr.Upstream("dmworkim unreachable"))
+	respondErr(c, apperr.Upstream("octoim unreachable"))
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", w.Code)

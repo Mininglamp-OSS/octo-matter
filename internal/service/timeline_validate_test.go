@@ -168,7 +168,7 @@ func equalStrPtr(a, b *string) bool {
 	return *a == *b
 }
 
-// TestValidateTimelineArgs_ContentCap covers PR #34 review r4259102520:
+// TestValidateTimelineArgs_ContentCap covers PR #34:
 // LLM-emitted content must obey the same MaxContentLength cap as the direct
 // timeline write path; otherwise INSERT into matter_timelines.content (TEXT
 // but bound by handler max=10000 in the direct path) fails opaque 5xx.

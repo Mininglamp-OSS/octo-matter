@@ -26,8 +26,8 @@ func newMockSession(t *testing.T) (*dbr.Session, sqlmock.Sqlmock, func()) {
 	return conn.NewSession(nil), mock, func() { _ = db.Close() }
 }
 
-// TestActivityRepo_Record_DetailRenderedAsQuotedString is a regression guard
-// for PR #39 review: matter_activities.detail is a MySQL JSON column. Binding
+// TestActivityRepo_Record_DetailRenderedAsQuotedString is a regression guard:
+// matter_activities.detail is a MySQL JSON column. Binding
 // []byte triggers MySQL error 3144 (cannot coerce binary into JSON), and
 // because recordActivity is best-effort the failure would be silently logged.
 // The detail must reach MySQL as a quoted string literal (text charset).

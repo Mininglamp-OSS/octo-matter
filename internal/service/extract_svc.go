@@ -42,8 +42,8 @@ type ExtractMessage struct {
 // ExtractInput is the service-level input for matter extraction.
 //
 // CallerToken is the user's IM auth token (empty for bot callers). It is
-// forwarded to dmworkim to verify the caller is a member of ChannelID before
-// the source-channel link is written (PR #34 review r4259131241). Bot path
+// forwarded to octoim to verify the caller is a member of ChannelID before
+// the source-channel link is written. Bot path
 // (empty token) skips this check — see ExtractService.CreateFromMessages
 // for the bot trust model rationale.
 type ExtractInput struct {
@@ -149,7 +149,7 @@ var extractMatterTool = llm.Tool{
 // to keep the request fail-soft; the LLM prompt already says "<=100字" for
 // title so any overshoot is treated as a model glitch rather than user
 // intent. Limits match the manual-create handler binding so LLM-backed and
-// manual writes share the same DB-safe envelope (PR #34 review r4259102520).
+// manual writes share the same DB-safe envelope.
 const (
 	MaxLLMTitleLen       = 500
 	MaxLLMDescriptionLen = 10000

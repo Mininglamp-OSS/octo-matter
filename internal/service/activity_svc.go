@@ -42,7 +42,7 @@ func NewActivityService(
 // here would leak cross-channel activity, so visibility is restricted to
 // creator / assignees / participants — CanAccessMatter is called with empty
 // channelID + callerToken to short-circuit the channel-membership branch.
-// See PR #39 review r4259484583.
+// See PR #39.
 func (s *ActivityService) ListActivities(
 	ctx context.Context,
 	matterID, spaceID string,

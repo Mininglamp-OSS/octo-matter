@@ -1,12 +1,12 @@
 services:
-  todo-service:
+  matter-service:
     build: .
     ports:
       - "8080:8080"
     environment:
       APP_ENV: "dev"
-      MYSQL_DSN: "todo:todo@tcp(mysql:3306)/octo_todo?charset=utf8mb4&parseTime=true"
-      DMWORKIM_URL: "http://host.docker.internal:8090"
+      MYSQL_DSN: "matter:matter@tcp(mysql:3306)/octo_matter?charset=utf8mb4&parseTime=true"
+      OCTO_IM_URL: "http://host.docker.internal:8090"
       SERVER_PORT: "8080"
     depends_on:
       mysql:
@@ -15,13 +15,13 @@ services:
   mysql:
     image: mysql:8.0
     environment:
-      MYSQL_DATABASE: octo_todo
-      MYSQL_USER: todo
-      MYSQL_PASSWORD: todo
+      MYSQL_DATABASE: octo_matter
+      MYSQL_USER: matter
+      MYSQL_PASSWORD: matter
       MYSQL_ROOT_PASSWORD: root
     volumes:
       - mysqldata:/var/lib/mysql
-      - ./migrations/001_init.up.sql:/docker-entrypoint-initdb.d/001_init.sql
+      - ./migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql
     ports:
       - "3306:3306"
     healthcheck:

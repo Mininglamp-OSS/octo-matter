@@ -109,9 +109,9 @@ func baseLLMInput() TimelineInput {
 		ActorUID:       "u1",
 		ParticipantUID: "u1",
 		CallerUIDs:     []string{"u1"},
-		// Default to user path so the channel-link write gate (PR #34
-		// r4259131241) doesn't reject these tests as bot calls. Bot-path
-		// tests can override CallerToken to "".
+		// Default to user path so the channel-link write gate doesn't
+		// reject these tests as bot calls. Bot-path tests can override
+		// CallerToken to "".
 		CallerToken: "user-tok",
 		ChannelType: 2,
 		ChannelID:   "ch_x",
@@ -141,11 +141,10 @@ func (s *stubLinkVerifier) RequireChannelMember(_ context.Context, _, _ string, 
 }
 
 // TestCreateFromMessages_UserNotChannelMember_AlreadyLinked covers the
-// post-r4259157846 fix: even when matter_channels(M, ch-X) ALREADY exists,
-// a user who is NOT in ch-X must NOT be able to write a timeline entry
-// tagged "from ch-X" — would let an assignee spoof the source. The fix
-// runs RequireChannelMember on every user write, not just the auto-link
-// branch.
+// invariant that even when matter_channels(M, ch-X) ALREADY exists, a user
+// who is NOT in ch-X must NOT be able to write a timeline entry tagged
+// "from ch-X" — would let an assignee spoof the source. RequireChannelMember
+// runs on every user write, not just the auto-link branch.
 func TestCreateFromMessages_UserNotChannelMember_AlreadyLinked(t *testing.T) {
 	matterRepo := &fakeMatterRepo{matters: map[string]*model.Matter{"m1": newMatterForLLMTest()}}
 	repo := newFakeTimelineRepo()
@@ -207,7 +206,7 @@ func TestCreateFromMessages_UserNotChannelMember_NewLink(t *testing.T) {
 	}
 }
 
-// TestCreateFromMessages_BotPathCannotAutoLink covers the post-r4259131241
+// TestCreateFromMessages_BotPathCannotAutoLink covers the 
 // channel-link gate: bots may not introduce a new matter_channels row to an
 // existing matter. They must reuse a link a user has already created. A
 // successful happy-path (link already exists) is covered by
@@ -267,9 +266,7 @@ func TestCreateFromMessages_HappyPath(t *testing.T) {
 
 // TestCreateFromMessages_LLMEmptyToolCall asserts that the sentinel
 // llm.ErrEmptyToolCall is preserved through the wrap chain so the handler can
-// emit 422 LLM_EMPTY_EXTRACTION via errors.Is. (Earlier behaviour translated
-// the sentinel into a generic VALIDATION_ERROR — the latest review on PR #34
-// flagged that as Blocking, see fix in commit 2785f3e.)
+// emit 422 LLM_EMPTY_EXTRACTION via errors.Is.
 func TestCreateFromMessages_LLMEmptyToolCall(t *testing.T) {
 	llmStub := &stubLLM{err: llm.ErrEmptyToolCall}
 	repo := newFakeTimelineRepo()
@@ -327,7 +324,7 @@ func TestCreateFromMessages_LLMUpstreamErrorPropagates(t *testing.T) {
 }
 
 // TestCreateFromMessages_PromptIncludesNewestEntries is the regression guard
-// for PR #34 review #4258800148 item 1: ListByMatter ASC was returning the
+// for PR #34 item 1: ListByMatter ASC was returning the
 // OLDEST 3 entries to the LLM as "recent context". The fix uses
 // ListRecentByMatter (DESC) so the model sees genuinely recent progress.
 func TestCreateFromMessages_PromptIncludesNewestEntries(t *testing.T) {
@@ -366,8 +363,8 @@ func TestCreateFromMessages_PromptIncludesNewestEntries(t *testing.T) {
 	}
 }
 
-// TestCreateFromMessages_TxFailureDoesNotLeakChannel guards PR #34 review
-// item 4: the channel auto-link must run inside the same tx as the entry
+// TestCreateFromMessages_TxFailureDoesNotLeakChannel guards that the
+// channel auto-link must run inside the same tx as the entry
 // write so a tx-level failure doesn't leave an orphan link.
 func TestCreateFromMessages_TxFailureDoesNotLeakChannel(t *testing.T) {
 	llmStub := &stubLLM{out: `{"content":"ok"}`}

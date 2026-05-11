@@ -110,7 +110,7 @@ func (h *MatterHandler) Create(c *gin.Context) {
 		}
 		matter.RemindAt = t
 	}
-	// Source-channel link gate (PR #34 review r4259131241): user path must be
+	// Source-channel link gate: user path must be
 	// IM-verified channel member; bot path is allowed (one-shot trust at
 	// matter creation — bot cannot expand channel links on existing matters).
 	if matter.SourceChannelID != nil && *matter.SourceChannelID != "" {
@@ -352,7 +352,7 @@ func (h *MatterHandler) LinkChannel(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	// Manual channel-link gate (PR #34 review r4259131241):
+	// Manual channel-link gate:
 	//   - Bot path: forbidden. Bots may not manually link new channels to
 	//     existing matters; only initial source-link at matter creation.
 	//   - User path: must be IM-verified member of the target channel.

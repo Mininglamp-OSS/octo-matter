@@ -63,7 +63,7 @@ func TestCanAccessMatter_NoChannelID_SkipsIM(t *testing.T) {
 	}
 }
 
-// TestCanAccessMatter_BotPath_DropsChannelClaim verifies the post-r4259071422
+// TestCanAccessMatter_BotPath_DropsChannelClaim verifies the 
 // tightening: a bot caller (callerToken=="") cannot use channel_id to gain
 // access. IM is still skipped (no token to forward), but the channelID is
 // dropped before reaching HasAccess so authz must succeed via creator /
@@ -175,7 +175,7 @@ func TestCanAccessMatter_UserPath_IMError_PropagatesAsUpstream(t *testing.T) {
 	}
 }
 
-// --- ListMatters source_channel_id IM gating (PR #34 review r4259038759) ---
+// --- ListMatters source_channel_id IM gating ---
 
 func newListSvc(im *spyIMChecker) *MatterService {
 	return NewMatterService(newFakeMatterRepo(), newFakeAssigneeRepo(), fakeParticipantRepo{}, fakeChannelRepo{}, nil, noopTxRunner{}, im)
@@ -227,7 +227,7 @@ func TestListMatters_SourceChannelFilter_UserPath_IMMiss_DropsFilter(t *testing.
 }
 
 // TestListMatters_BotPath_DropsChannelFilter mirrors the canAccessMatter
-// tightening from r4259071422: bots cannot use the channel filter to enumerate
+// tightening: bots cannot use the channel filter to enumerate
 // matters they don't otherwise have access to. The IM check is skipped (no
 // token to forward), and the channel filter is stripped before reaching the
 // repo. Bot still sees matters via creator/assignee/participant.
@@ -351,8 +351,8 @@ func TestListMatters_ChannelFilter_IMError_PropagatesUpstream(t *testing.T) {
 	}
 }
 
-// TestListMatters_BothChannelIDs_BothVerifiedSurvive: review feedback on PR
-// #41 — when source_channel_id and channel_id are both supplied and the
+// TestListMatters_BothChannelIDs_BothVerifiedSurvive: when
+// source_channel_id and channel_id are both supplied and the
 // caller is a verified member of both, both must reach the repo so the
 // visibility OR can unlock either channel. Guards the dual-membership case
 // where a matter linked only to channel_id (chB) was previously invisible
@@ -419,7 +419,7 @@ func TestListMatters_SourceChannelFilter_IMError_PropagatesUpstream(t *testing.T
 	}
 }
 
-// --- RequireChannelMember unit tests (PR #34 review r4259131241) ---
+// --- RequireChannelMember unit tests ---
 
 // TestRequireChannelMember covers the helper that gates matter_channels
 // writes. Returns nil for empty channelID OR empty callerToken (bot path —

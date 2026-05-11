@@ -1,8 +1,8 @@
-// Package dmworkim wraps the dmworkim public REST API used by this service
+// Package octoim wraps the octoim public REST API used by this service
 // for cross-cutting authorization checks (channel membership today; potentially
 // more in the future). It transparently caches lookups and forwards the
 // caller's user token, mirroring the pattern in internal/auth.SpaceMiddleware.
-package dmworkim
+package octoim
 
 import (
 	"context"
@@ -25,7 +25,7 @@ const (
 	cacheEvictInterval = 5 * time.Minute
 )
 
-// Client is the dmworkim API client. Construct via NewClient.
+// Client is the octoim API client. Construct via NewClient.
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -84,7 +84,7 @@ func (c *Client) evictLoop() {
 }
 
 // IsChannelMember reports whether ANY uid in userIDs is a current member of
-// channelID, as resolved by dmworkim. The caller's user token authorizes the
+// channelID, as resolved by octoim. The caller's user token authorizes the
 // lookup itself (IM requires the caller to be a member of channelID).
 //
 //   - (true, nil) — at least one uid is confirmed member
@@ -129,29 +129,29 @@ func (c *Client) queryOne(ctx context.Context, token, channelID, uid string) (bo
 		c.baseURL, url.PathEscape(channelID), url.PathEscape(uid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return false, fmt.Errorf("dmworkim: build request: %w", err)
+		return false, fmt.Errorf("octoim: build request: %w", err)
 	}
 	req.Header.Set("token", token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("dmworkim: GET %s: %w", endpoint, err)
+		return false, fmt.Errorf("octoim: GET %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 500 {
-		return false, fmt.Errorf("dmworkim: upstream status %d", resp.StatusCode)
+		return false, fmt.Errorf("octoim: upstream status %d", resp.StatusCode)
 	}
 	if resp.StatusCode >= 400 {
 		// 4xx covers IM's "no permission" (caller not in group) and "DB error"
 		// (IM-side internal failure) — both 400 with only a Chinese msg field
-		// to distinguish. Per PR#34 review thread we conservatively treat both
+		// to distinguish. We conservatively treat both
 		// as "not a member" rather than parsing localized strings.
 		return false, nil
 	}
 	var body memberQueryResp
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false, fmt.Errorf("dmworkim: decode response: %w", err)
+		return false, fmt.Errorf("octoim: decode response: %w", err)
 	}
 	return body.Exists, nil
 }
@@ -160,7 +160,7 @@ func (c *Client) queryOne(ctx context.Context, token, channelID, uid string) (bo
 // The token is hashed (SHA-256) so:
 //   - the raw token never lives in the cache map / heap dump
 //   - two distinct tokens that share a prefix don't collide on the same
-//     cached authorization decision (PR #34 review r4259102520)
+//     cached authorization decision
 func buildCacheKey(token, channelID string, userIDs []string) string {
 	sorted := make([]string, 0, len(userIDs))
 	for _, u := range userIDs {

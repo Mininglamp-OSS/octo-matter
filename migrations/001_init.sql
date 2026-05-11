@@ -1,4 +1,4 @@
--- 001_init.sql: Create all tables for Octo Todo (v1 MVP)
+-- 001_init.sql: Create all tables for Octo Matter (v1 MVP)
 
 -- +migrate Up
 CREATE TABLE IF NOT EXISTS goals (

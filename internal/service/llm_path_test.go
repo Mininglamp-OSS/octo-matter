@@ -59,11 +59,11 @@ func (s *spyLimiter) Allow(key string) bool {
 	return s.allow
 }
 
-// TestTimelineService_LimiterAfterAccess verifies the post-r4259115029
-// ordering: when the caller has no access to the matter, the rate limiter is
-// NOT called (so a forbidden caller cannot consume the legitimate user's
-// cooldown). When the caller passes access, the limiter is called BEFORE the
-// LLM. When the limiter denies, the LLM is NOT called.
+// TestTimelineService_LimiterAfterAccess verifies the ordering: when the
+// caller has no access to the matter, the rate limiter is NOT called (so a
+// forbidden caller cannot consume the legitimate user's cooldown). When the
+// caller passes access, the limiter is called BEFORE the LLM. When the
+// limiter denies, the LLM is NOT called.
 func TestTimelineService_LimiterAfterAccess(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner"}
 

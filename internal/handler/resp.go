@@ -94,7 +94,7 @@ func userName(c *gin.Context) string {
 // caller context into account. When a bot acts on behalf of its owner
 // (LLM-mediated path: actorUID == owner_uid), the notification name is the
 // owner's name rather than the bot's — DB stores the owner as author, so
-// the push notification must agree (PR #34 review r4259090630).
+// the push notification must agree.
 //
 // For all other cases (user path; bot acting as itself) it returns the
 // caller's own name via userName.
@@ -121,7 +121,7 @@ func relatedUIDs(c *gin.Context) []string {
 	return []string{uid(c)}
 }
 
-// callerToken returns the user's IM auth token for forwarding to dmworkim
+// callerToken returns the user's IM auth token for forwarding to octoim
 // channel-membership lookups. Returns "" for bot callers (bots are
 // authenticated via Bearer + verify-bot, not the public token used by the
 // channel members API; see PR#34 thread for the trust model). Service-layer
