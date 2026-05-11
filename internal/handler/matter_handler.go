@@ -25,6 +25,14 @@ func NewMatterHandler(svc *service.MatterService, notifier notification.Notifier
 	return &MatterHandler{svc: svc, notifier: notifier, worker: worker}
 }
 
+// createMatterSourceMsgRef accepts the client's existing payload shape — the
+// full message object mirroring /v1/matters/extract's `msgs` field. Only
+// message_id is read here; any companion fields (content, from_uid, ...) are
+// ignored server-side per issue #40's "store ids, not bodies" design.
+type createMatterSourceMsgRef struct {
+	MessageID string `json:"message_id" binding:"required,max=255"`
+}
+
 type createMatterReq struct {
 	Title             string   `json:"title" binding:"required,max=500"`
 	Description       *string  `json:"description" binding:"omitempty,max=10000"`
@@ -34,7 +42,38 @@ type createMatterReq struct {
 	SourceChannelID   *string  `json:"source_channel_id"`
 	SourceChannelType *uint8   `json:"source_channel_type" binding:"omitempty,oneof=1 2 5"`
 	SourceName        *string  `json:"source_name"`
-	SourceMsgIDs      []string `json:"source_msg_ids" binding:"omitempty,max=200,dive,max=255"`
+	// Pointer so the handler can tell "field absent" (nil) from "field
+	// explicitly empty" (non-nil, len 0). The former falls back to
+	// source_msgs; the latter is a deliberate "clear the list" signal and
+	// must be preserved as JSON [] in storage.
+	SourceMsgIDs *[]string                  `json:"source_msg_ids" binding:"omitempty,max=200,dive,max=255"`
+	SourceMsgs   []createMatterSourceMsgRef `json:"source_msgs" binding:"omitempty,max=200,dive"`
+}
+
+// derivedSourceMsgIDs collapses the two accepted payload shapes into the flat
+// id list the storage layer wants. Explicit `source_msg_ids` always wins when
+// present (including the empty-array case) so a client that has migrated to
+// the cleaner contract cannot be re-broadened by stale `source_msgs` data in
+// the same request. A returned non-nil empty slice signals "store JSON []";
+// nil signals "store SQL NULL".
+func (r *createMatterReq) derivedSourceMsgIDs() []string {
+	if r.SourceMsgIDs != nil {
+		// Return a non-nil slice even for the empty case so the storage
+		// layer writes JSON [] (not SQL NULL) — explicit empty is data.
+		ids := *r.SourceMsgIDs
+		if ids == nil {
+			ids = []string{}
+		}
+		return ids
+	}
+	if len(r.SourceMsgs) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(r.SourceMsgs))
+	for _, m := range r.SourceMsgs {
+		ids = append(ids, m.MessageID)
+	}
+	return ids
 }
 
 func (h *MatterHandler) Create(c *gin.Context) {
@@ -53,7 +92,7 @@ func (h *MatterHandler) Create(c *gin.Context) {
 		SourceChannelID:   req.SourceChannelID,
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
-		SourceMsgIDs:      model.JSONStringSlice(req.SourceMsgIDs),
+		SourceMsgIDs:      model.JSONStringSlice(req.derivedSourceMsgIDs()),
 	}
 	if req.Deadline != nil {
 		t, err := service.ParseOptionalRFC3339(*req.Deadline)
