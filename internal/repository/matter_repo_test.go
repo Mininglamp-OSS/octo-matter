@@ -111,8 +111,8 @@ func TestMatterRepo_GetByID_HydratesSourceMsgIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !bytes.Contains(b, []byte(`"source_msg_ids":["msg-a","msg-b"]`)) {
-		t.Fatalf("populated source_msg_ids must surface in JSON; got %s", b)
+	if !bytes.Contains(b, []byte(`"source_msgs":["msg-a","msg-b"]`)) {
+		t.Fatalf("populated source_msgs must surface in JSON (aligned with timeline wire name); got %s", b)
 	}
 }
 
@@ -149,7 +149,7 @@ func TestMatterRepo_GetByID_NULLSourceMsgIDsScansAsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if !bytes.Contains(b, []byte(`"source_msg_ids":[]`)) {
-		t.Fatalf("legacy NULL row must render source_msg_ids as []; got %s", b)
+	if !bytes.Contains(b, []byte(`"source_msgs":[]`)) {
+		t.Fatalf("legacy NULL row must render source_msgs as [] (aligned with timeline wire name); got %s", b)
 	}
 }
