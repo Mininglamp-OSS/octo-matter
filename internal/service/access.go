@@ -12,20 +12,20 @@ import (
 // MatterAccessChecker verifies whether any of callerUIDs can view a matter.
 //
 // channelID, when non-empty, may grant access via matter_channels link ONLY
-// after the caller proves channel membership via dmworkim (callerToken
+// after the caller proves channel membership via octoim (callerToken
 // non-empty). For the bot path (callerToken=="") the channel claim is
 // stripped before reaching the repo, so authz must succeed via creator /
 // assignee / participant. Defense-in-depth: even a leaked bot token cannot
 // pivot through a known/guessed linked channel id.
 //
-// callerToken is the user's IM auth token (forwarded to dmworkim's channel
+// callerToken is the user's IM auth token (forwarded to octoim's channel
 // members API). Empty for bot callers — bots authenticate via verify-bot,
 // not via the public channel-members endpoint.
 type MatterAccessChecker interface {
 	CanAccessMatter(ctx context.Context, matter *model.Matter, callerUIDs []string, channelID, callerToken string) (bool, error)
 }
 
-// imChecker is the minimal surface MatterService needs from dmworkim.Client.
+// imChecker is the minimal surface MatterService needs from octoim.Client.
 // Defined here so unit tests can inject a stub without depending on the HTTP
 // client.
 type imChecker interface {
@@ -33,7 +33,7 @@ type imChecker interface {
 }
 
 // noopIMChecker treats every caller as a non-member, used when no IM client is
-// configured (purely for tests / dev environments without dmworkim).
+// configured (purely for tests / dev environments without octoim).
 type noopIMChecker struct{}
 
 func (noopIMChecker) IsChannelMember(_ context.Context, _, _ string, _ []string) (bool, error) {

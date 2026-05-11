@@ -1,4 +1,4 @@
-# Octo Todo - todo-service
+# Octo Matter - matter-service
 
 Simple task microservice with open/closed status model + goal organization. Full context: README.md, docs/DESIGN.md.
 
@@ -22,8 +22,8 @@ Layers (strict direction, no skipping):
 - `internal/service/`       business logic, permissions
 - `internal/repository/`    dbr queries (parameterized; no raw SQL concat)
 - `internal/model/`         domain structs (todo.go, goal.go, assignee.go, etc.)
-- `internal/auth/`          middleware — calls dmworkim verify API for auth + Space check
-- `internal/notification/`  system notifications via dmworkim internal notify API (X-Internal-Token auth)
+- `internal/auth/`          middleware — calls Octo IM server verify API for auth + Space check
+- `internal/notification/`  system notifications via Octo IM server internal notify API (X-Internal-Token auth)
 - `internal/config/`        env-based config
 
 ## Key Invariants (gotchas)
@@ -31,9 +31,9 @@ Layers (strict direction, no skipping):
 - **Todo status**: `open` or `closed`. No state machine. Creator or assignee can close/reopen.
 - **Goal status**: `active`, `completed`, or `archived`. Creator controls status.
 - **Permissions**: creator can do all edits + delete; assignees can close/reopen.
-- **Auth** — Calls dmworkim public API: `token` header → POST /v1/auth/verify, `Authorization: Bearer` → POST /v1/auth/verify-bot. Config: `DMWORKIM_URL`.
+- **Auth** — Calls Octo IM server public API: `token` header → POST /v1/auth/verify, `Authorization: Bearer` → POST /v1/auth/verify-bot. Config: `OCTO_IM_URL`.
 - **Bot-owner visibility**: users see their bots' todos, bots see their owner's todos. Implemented via `related_uids` (CallerUIDs IN ? queries).
-- **Notifications**: sent via dmworkim POST /v1/internal/notify with X-Internal-Token. Config: `DMWORKIM_URL` (base URL), `NOTIFY_INTERNAL_TOKEN` (auth token).
+- **Notifications**: sent via Octo IM server POST /v1/internal/notify with X-Internal-Token. Config: `OCTO_IM_URL` (base URL), `NOTIFY_INTERNAL_TOKEN` (auth token).
 - **UUIDs** generated in app (google/uuid), not DB.
 - **dbr usage**: use `sess.Select(...).Where(...)` builders; never string-concat user input.
 

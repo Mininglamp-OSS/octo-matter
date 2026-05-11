@@ -45,7 +45,7 @@ type ExtractMessage struct {
 // ExtractInput is the service-level input for matter extraction.
 //
 // CallerToken is the user's IM auth token (empty for bot callers). It is
-// forwarded to dmworkim to verify the caller is a member of ChannelID before
+// forwarded to octoim to verify the caller is a member of ChannelID before
 // the source-channel link is written (PR #34 review r4259131241). Bot path
 // (empty token) skips this check — see ExtractService.CreateFromMessages
 // for the bot trust model rationale.

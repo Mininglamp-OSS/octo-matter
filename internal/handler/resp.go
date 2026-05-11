@@ -124,7 +124,7 @@ func relatedUIDs(c *gin.Context) []string {
 	return []string{uid(c)}
 }
 
-// callerToken returns the user's IM auth token for forwarding to dmworkim
+// callerToken returns the user's IM auth token for forwarding to octoim
 // channel-membership lookups. Returns "" for bot callers (bots are
 // authenticated via Bearer + verify-bot, not the public token used by the
 // channel members API; see PR#34 thread for the trust model). Service-layer

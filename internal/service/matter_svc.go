@@ -170,7 +170,7 @@ type MatterListResult struct {
 
 // ListMatters returns matters visible to callerUIDs in the space. The
 // SourceChannelID filter is honoured ONLY for callers that have proven channel
-// membership via dmworkim (user path with non-empty callerToken). For the bot
+// membership via octoim (user path with non-empty callerToken). For the bot
 // path (callerToken==""), the channel filter is stripped so a leaked bot
 // token cannot enumerate matters via channel-link (PR #34 review r4259071422).
 // Caller still sees matters via creator / assignee / participant filters.
@@ -314,7 +314,7 @@ func (s *MatterService) CanAccessMatter(ctx context.Context, matter *model.Matte
 	return s.canAccessMatter(ctx, matter, callerUIDs, channelID, callerToken)
 }
 
-// RequireChannelMember verifies via dmworkim that one of callerUIDs is a
+// RequireChannelMember verifies via octoim that one of callerUIDs is a
 // current member of channelID. Used as a gate before writing matter_channels
 // (PR #34 review r4259131241): without this, an assignee on matter M could
 // link M to an arbitrary channel they don't belong to, exposing M to that
@@ -348,7 +348,7 @@ func (s *MatterService) RequireChannelMember(ctx context.Context, callerToken, c
 // denied, or (false, err) on infrastructure failure (DB or IM upstream).
 //
 // channel_id is honoured ONLY for callers that have proven channel
-// membership via dmworkim (user path with non-empty callerToken). Otherwise
+// membership via octoim (user path with non-empty callerToken). Otherwise
 // — including the bot path (callerToken=="") — the channel-link claim is
 // stripped before reaching HasAccess, so authz must succeed via creator /
 // assignee / participant. Defense-in-depth: even a leaked bot token cannot

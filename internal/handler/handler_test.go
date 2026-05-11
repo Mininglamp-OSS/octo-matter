@@ -171,7 +171,7 @@ func TestRespondErr_Upstream(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
 
-	respondErr(c, apperr.Upstream("dmworkim unreachable"))
+	respondErr(c, apperr.Upstream("octoim unreachable"))
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", w.Code)

@@ -81,7 +81,7 @@ func TestDedupTargets(t *testing.T) {
 	}
 }
 
-func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
+func TestOctoNotifier_NotifyMatterCreated(t *testing.T) {
 	type captured struct {
 		method string
 		path   string
@@ -106,7 +106,7 @@ func TestDmworkNotifier_NotifyMatterCreated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	n := NewDmworkNotifier(srv.URL, "secret-token")
+	n := NewOctoNotifier(srv.URL, "secret-token")
 	matter := &model.Matter{
 		ID:        "matter1",
 		SpaceID:   "space1",

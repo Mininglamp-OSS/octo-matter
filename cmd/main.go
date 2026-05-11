@@ -14,7 +14,7 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
-	"github.com/Mininglamp-OSS/octo-matter/internal/dmworkim"
+	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
@@ -29,7 +29,7 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid configuration: %v", err)
 	}
-	log.Printf("starting matter-service env=%s dmworkim=%s", cfg.AppEnv, cfg.DmworkIMURL)
+	log.Printf("starting matter-service env=%s octoim=%s", cfg.AppEnv, cfg.OctoIMURL)
 
 	conn, sess, err := repository.NewSession(cfg.MySQLDSN)
 	if err != nil {
@@ -55,10 +55,10 @@ func main() {
 	txMgr := repository.NewTxManager(sess)
 
 	// Notifier
-	notifier := notification.NewDmworkNotifier(cfg.DmworkIMURL, cfg.NotifyInternalToken)
+	notifier := notification.NewOctoNotifier(cfg.OctoIMURL, cfg.NotifyInternalToken)
 	notifyWorker := notification.NewWorker(100, 4)
 	defer notifyWorker.Shutdown()
-	log.Printf("notification enabled via dmworkim %s/v1/internal/notify", cfg.DmworkIMURL)
+	log.Printf("notification enabled via octoim %s/v1/internal/notify", cfg.OctoIMURL)
 	if cfg.NotifyInternalToken == "" {
 		log.Printf("WARN: NOTIFY_INTERNAL_TOKEN not set — requests will be sent without X-Internal-Token")
 	}
@@ -70,10 +70,10 @@ func main() {
 		log.Printf("WARN: LLM_API_KEY not set — extract/timeline will fail if the gateway requires auth")
 	}
 
-	// dmworkim API client (channel-membership lookups for the access checker)
-	imClient := dmworkim.NewClient(cfg.DmworkIMURL, 5*time.Second)
+	// octoim API client (channel-membership lookups for the access checker)
+	imClient := octoim.NewClient(cfg.OctoIMURL, 5*time.Second)
 	defer imClient.Close()
-	log.Printf("dmworkim channel-membership client wired (base=%s)", cfg.DmworkIMURL)
+	log.Printf("octoim channel-membership client wired (base=%s)", cfg.OctoIMURL)
 
 	// Rate limiters for LLM-backed endpoints. Per design-v3.md §8 the
 	// cooldown is 10s. Extract is keyed by uid (no matter exists yet) and
@@ -98,8 +98,8 @@ func main() {
 	activityH := handler.NewActivityHandler(activitySvc)
 
 	// Auth
-	authMW := auth.AuthMiddleware(auth.Config{DmworkIMURL: cfg.DmworkIMURL})
-	spaceMW := auth.SpaceMiddleware(cfg.DmworkIMURL)
+	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
+	spaceMW := auth.SpaceMiddleware(cfg.OctoIMURL)
 
 	// Readiness
 	readiness := func() error { return conn.Ping() }

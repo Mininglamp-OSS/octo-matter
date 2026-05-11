@@ -1,11 +1,11 @@
 // Copyright 2026 MININGLAMP Technology and the OCTO contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Package dmworkim wraps the dmworkim public REST API used by this service
+// Package octoim wraps the octoim public REST API used by this service
 // for cross-cutting authorization checks (channel membership today; potentially
 // more in the future). It transparently caches lookups and forwards the
 // caller's user token, mirroring the pattern in internal/auth.SpaceMiddleware.
-package dmworkim
+package octoim
 
 import (
 	"context"
@@ -28,7 +28,7 @@ const (
 	cacheEvictInterval = 5 * time.Minute
 )
 
-// Client is the dmworkim API client. Construct via NewClient.
+// Client is the octoim API client. Construct via NewClient.
 type Client struct {
 	baseURL string
 	http    *http.Client
@@ -87,7 +87,7 @@ func (c *Client) evictLoop() {
 }
 
 // IsChannelMember reports whether ANY uid in userIDs is a current member of
-// channelID, as resolved by dmworkim. The caller's user token authorizes the
+// channelID, as resolved by octoim. The caller's user token authorizes the
 // lookup itself (IM requires the caller to be a member of channelID).
 //
 //   - (true, nil) — at least one uid is confirmed member
@@ -132,18 +132,18 @@ func (c *Client) queryOne(ctx context.Context, token, channelID, uid string) (bo
 		c.baseURL, url.PathEscape(channelID), url.PathEscape(uid))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return false, fmt.Errorf("dmworkim: build request: %w", err)
+		return false, fmt.Errorf("octoim: build request: %w", err)
 	}
 	req.Header.Set("token", token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("dmworkim: GET %s: %w", endpoint, err)
+		return false, fmt.Errorf("octoim: GET %s: %w", endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 500 {
-		return false, fmt.Errorf("dmworkim: upstream status %d", resp.StatusCode)
+		return false, fmt.Errorf("octoim: upstream status %d", resp.StatusCode)
 	}
 	if resp.StatusCode >= 400 {
 		// 4xx covers IM's "no permission" (caller not in group) and "DB error"
@@ -154,7 +154,7 @@ func (c *Client) queryOne(ctx context.Context, token, channelID, uid string) (bo
 	}
 	var body memberQueryResp
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return false, fmt.Errorf("dmworkim: decode response: %w", err)
+		return false, fmt.Errorf("octoim: decode response: %w", err)
 	}
 	return body.Exists, nil
 }

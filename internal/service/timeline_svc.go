@@ -81,7 +81,7 @@ type TimelineAttachmentInput struct {
 // input. A non-empty Messages slice selects the LLM path.
 //
 // CallerToken is the user's IM auth token (empty for bot callers). It is
-// forwarded to the access checker so dmworkim can verify the caller is an
+// forwarded to the access checker so octoim can verify the caller is an
 // actual member of ChannelID before granting channel-link access.
 type TimelineInput struct {
 	MatterID       string
