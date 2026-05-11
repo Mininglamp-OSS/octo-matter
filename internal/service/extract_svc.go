@@ -17,6 +17,10 @@ const (
 	ExtractMaxMessages = 200
 	// ExtractMaxContentChars truncates each message body server-side.
 	ExtractMaxContentChars = 500
+	// ExtractMaxMessageIDLen bounds each input message_id. Validated server-side
+	// since this id is persisted verbatim into matters.source_msg_ids; an
+	// unbounded value would inflate the JSON column.
+	ExtractMaxMessageIDLen = 255
 )
 
 // ExtractMessageAttachment is a single attachment carried by an input message.
@@ -55,14 +59,14 @@ type ExtractInput struct {
 
 // ExtractResult mirrors the REST response body.
 type ExtractResult struct {
-	ID          string     `json:"id"`
-	SeqNo       int        `json:"seq_no"`
-	Title       string     `json:"title"`
-	Description string     `json:"description"`
-	SourceMsgs  []string   `json:"source_msgs"`
-	Deadline    *int64     `json:"deadline"`
-	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
+	ID          string    `json:"id"`
+	SeqNo       int       `json:"seq_no"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	SourceMsgs  []string  `json:"source_msgs"`
+	Deadline    *int64    `json:"deadline"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // llmTool is the function-calling wrapper this service sends to the LLM gateway.
@@ -309,6 +313,7 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 		SourceChannelID:   &channelIDCopy,
 		SourceChannelType: chTypePtr,
 		SourceName:        in.ChannelName,
+		SourceMsgIDs:      model.JSONStringSlice(v.SourceMsgs),
 	}
 
 	detail, err := s.matterSvc.CreateMatterWithAssignees(ctx, matter, v.Assignees)
@@ -343,6 +348,14 @@ func validateMessages(msgs []ExtractMessage) error {
 	}
 	if len(msgs) > ExtractMaxMessages {
 		return apperr.ValidationError(fmt.Sprintf("msgs exceeds limit of %d", ExtractMaxMessages), "msgs")
+	}
+	for i, m := range msgs {
+		if len(m.MessageID) > ExtractMaxMessageIDLen {
+			return apperr.ValidationError(
+				fmt.Sprintf("msgs[%d].message_id exceeds limit of %d", i, ExtractMaxMessageIDLen),
+				"msgs.message_id",
+			)
+		}
 	}
 	return nil
 }

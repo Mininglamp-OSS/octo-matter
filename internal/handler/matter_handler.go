@@ -34,6 +34,7 @@ type createMatterReq struct {
 	SourceChannelID   *string  `json:"source_channel_id"`
 	SourceChannelType *uint8   `json:"source_channel_type" binding:"omitempty,oneof=1 2 5"`
 	SourceName        *string  `json:"source_name"`
+	SourceMsgIDs      []string `json:"source_msg_ids" binding:"omitempty,max=200,dive,max=255"`
 }
 
 func (h *MatterHandler) Create(c *gin.Context) {
@@ -52,6 +53,7 @@ func (h *MatterHandler) Create(c *gin.Context) {
 		SourceChannelID:   req.SourceChannelID,
 		SourceChannelType: req.SourceChannelType,
 		SourceName:        req.SourceName,
+		SourceMsgIDs:      model.JSONStringSlice(req.SourceMsgIDs),
 	}
 	if req.Deadline != nil {
 		t, err := service.ParseOptionalRFC3339(*req.Deadline)
