@@ -39,9 +39,6 @@ chore: bump dependency versions
 ## Code Style
 
 - **Go**: `gofmt` + `golangci-lint`
-- **TypeScript/JavaScript**: Prettier + ESLint (config in repo)
-- **Swift**: SwiftFormat
-- **Kotlin**: ktlint / Android Studio default
 
 ## Reporting Bugs
 
@@ -64,7 +61,7 @@ project's [Apache License 2.0](LICENSE).
 
 ## Questions?
 
-- Open a [GitHub Discussion](https://github.com/orgs/Mininglamp-AI/discussions)
+- Open a [GitHub Discussion](https://github.com/orgs/Mininglamp-OSS/discussions)
 - Read the [docs](https://docs.octo.chat) _(coming soon)_
 
 Thanks for helping make OCTO better! 🚀

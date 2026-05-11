@@ -39,9 +39,6 @@ chore: bump dependency versions
 ## 代码风格
 
 - **Go**: `gofmt` + `golangci-lint`
-- **TypeScript/JavaScript**: Prettier + ESLint（配置在仓库内）
-- **Swift**: SwiftFormat
-- **Kotlin**: ktlint / Android Studio 默认配置
 
 ## 报告 Bug
 
@@ -63,7 +60,7 @@ chore: bump dependency versions
 
 ## 有问题？
 
-- 开 [GitHub Discussion](https://github.com/orgs/Mininglamp-AI/discussions)
+- 开 [GitHub Discussion](https://github.com/orgs/Mininglamp-OSS/discussions)
 - 阅读 [文档站点](https://docs.octo.chat) _(建设中)_
 
 感谢你一起让 OCTO 变得更好！🚀

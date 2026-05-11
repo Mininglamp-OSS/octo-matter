@@ -1,29 +1,29 @@
 ## Summary
 
-<!-- One-line description of what this PR does. -->
+<!-- What does this PR do? -->
+
+## Related Issue
+
+<!-- Link the issue this PR addresses, e.g. Fixes #123 -->
 
 ## Changes
 
-<!-- List the key changes. Use bullet points. -->
+<!-- Bullet list of concrete changes -->
 
 -
-
-## Motivation
-
-<!-- Why is this change needed? Link to an issue if applicable: Fixes #123 -->
+-
 
 ## Testing
 
-<!-- How was this tested? Include commands or describe manual steps. -->
+<!-- How was this tested? Include commands, screenshots, or test output. -->
 
-- [ ] `go vet ./...` passes
-- [ ] `go test ./...` passes
-- [ ] `go build ./...` passes
+- [ ] Unit tests added/updated
+- [ ] Manually verified
 
 ## Checklist
 
-- [ ] Code is in English (comments, commit messages, variable names)
-- [ ] New features include tests
-- [ ] Bug fixes include regression tests
-- [ ] Documentation updated if behavior changed (README, DESIGN.md, CLAUDE.md)
-- [ ] No unrelated changes included
+- [ ] I have read [CONTRIBUTING.md](../CONTRIBUTING.md)
+- [ ] PR description is in English
+- [ ] Added tests for my changes
+- [ ] Updated documentation
+- [ ] Followed commit message conventions (Conventional Commits)

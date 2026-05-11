@@ -1,3 +1,6 @@
+// Copyright 2026 MININGLAMP Technology and the OCTO contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package apperr defines the sentinel and coded errors shared across the
 // service and handler layers.
 package apperr

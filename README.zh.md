@@ -22,7 +22,7 @@ timeline 子模块记录每个 matter 上的活动（评论、状态变更、LLM
 ## 🚀 快速开始
 
 ```bash
-git clone https://github.com/Mininglamp-AI/octo-matter.git
+git clone https://github.com/Mininglamp-OSS/octo-matter.git
 cd octo-matter
 go build ./cmd
 
@@ -51,7 +51,7 @@ export DB_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
 
 ## 🛠️ 生态
 
-[OCTO](https://github.com/Mininglamp-AI) 开源平台的一部分。
+[OCTO](https://github.com/Mininglamp-OSS) 开源平台的一部分。
 
 ## 🤝 贡献
 

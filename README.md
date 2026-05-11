@@ -8,7 +8,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Mininglamp-AI/octo-server#-what-is-octo"><b>📖 产品 Overview · What is OCTO</b></a> ·
+  <a href="https://github.com/Mininglamp-OSS/octo-server#-what-is-octo"><b>📖 产品 Overview · What is OCTO</b></a> ·
   <a href="#-quickstart"><b>🚀 Quickstart</b></a> ·
   <a href="#-octo-ecosystem"><b>📦 Ecosystem</b></a> ·
   <a href="./CONTRIBUTING.md"><b>🤝 Contributing</b></a>
@@ -41,7 +41,7 @@ matter (comments, status changes, LLM-extracted follow-ups).
 ## 🚀 Quickstart
 
 ```bash
-git clone https://github.com/Mininglamp-AI/octo-matter.git
+git clone https://github.com/Mininglamp-OSS/octo-matter.git
 cd octo-matter
 go build ./cmd
 
@@ -72,7 +72,7 @@ Top-level packages under this module:
 
 ## 🛠️ Ecosystem
 
-Part of the [OCTO](https://github.com/Mininglamp-AI) open-source platform.
+Part of the [OCTO](https://github.com/Mininglamp-OSS) open-source platform.
 
 ## 🤝 Contributing
 
@@ -89,26 +89,26 @@ Made with 🐙 by the OCTO community.
 ---
 <!-- Shared snippet: OCTO repo matrix. Keep identical across all 8 repos. -->
 
-## 📦 OCTO Ecosystem（仓库矩阵）
+## 📦 OCTO Ecosystem
 
 ```mermaid
 graph TD
-  subgraph Clients[客户端]
+  subgraph Clients[Clients]
     Web[octo-web<br/>Web / PC]
     Android[octo-android]
     iOS[octo-ios]
   end
 
-  subgraph Core[核心服务]
-    Server[octo-server<br/>后端 API / 业务]
-    Matter[octo-matter<br/>任务 / Todo 服务]
-    IM[WuKongIM<br/>IM 底座]
+  subgraph Core[Core Services]
+    Server[octo-server<br/>Backend API]
+    Matter[octo-matter<br/>Task / Matter Service]
+    IM[WuKongIM<br/>IM Engine]
   end
 
-  subgraph Libs[共享库 & 工具]
-    Lib[octo-lib<br/>核心库]
-    CLI[octo-daemon-cli<br/>CLI 工具]
-    Adapters[octo-adapters<br/>第三方集成]
+  subgraph Libs[Libraries & Tools]
+    Lib[octo-lib<br/>Core Library]
+    CLI[octo-daemon-cli<br/>CLI Tools]
+    Adapters[octo-adapters<br/>Third-party Integrations]
   end
 
   Web --> Server
@@ -123,14 +123,14 @@ graph TD
   Adapters -.uses.-> Lib
 ```
 
-| 仓库 | 语言 | 职责 | 状态 |
-|------|------|------|------|
-| [`octo-server`](https://github.com/Mininglamp-AI/octo-server) | Go | 后端 API、业务编排、龙虾调度 | Public |
-| [`octo-matter`](https://github.com/Mininglamp-AI/octo-matter) | Go | 任务 / Todo / Matter 服务 | Public |
-| [`octo-web`](https://github.com/Mininglamp-AI/octo-web) | TypeScript / React | Web & PC 客户端 | Public |
-| [`octo-android`](https://github.com/Mininglamp-AI/octo-android) | Kotlin / Java | Android 客户端 | Public |
-| [`octo-ios`](https://github.com/Mininglamp-AI/octo-ios) | Swift / Objective-C | iOS 客户端 | Public |
-| [`octo-lib`](https://github.com/Mininglamp-AI/octo-lib) | Go | 核心领域模型 / 协议 / 工具库 | Public |
-| [`octo-daemon-cli`](https://github.com/Mininglamp-AI/octo-daemon-cli) | Go | 运维/接入 CLI、本地守护进程 | Public |
-| [`octo-adapters`](https://github.com/Mininglamp-AI/octo-adapters) | TypeScript / Python | 第三方系统集成（IM / SSO / 存储等） | Public |
-| [`WuKongIM`](https://github.com/Mininglamp-AI/WuKongIM) | Go | IM 底座（fork，针对 OCTO 增强） | Public |
+| Repo | Language | Purpose | Status |
+|------|----------|---------|--------|
+| [`octo-server`](https://github.com/Mininglamp-OSS/octo-server) | Go | Backend API, orchestration, Lobster agent dispatch | Public |
+| [`octo-matter`](https://github.com/Mininglamp-OSS/octo-matter) | Go | Task / Todo / Matter service | Public |
+| [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) | TypeScript / React | Web & PC client | Public |
+| [`octo-android`](https://github.com/Mininglamp-OSS/octo-android) | Kotlin / Java | Android client | Public |
+| [`octo-ios`](https://github.com/Mininglamp-OSS/octo-ios) | Swift / Objective-C | iOS client | Public |
+| [`octo-lib`](https://github.com/Mininglamp-OSS/octo-lib) | Go | Core domain models / protocols / utilities | Public |
+| [`octo-daemon-cli`](https://github.com/Mininglamp-OSS/octo-daemon-cli) | Go | Ops & onboarding CLI, local daemon | Public |
+| [`octo-adapters`](https://github.com/Mininglamp-OSS/octo-adapters) | TypeScript / Python | Third-party integrations (IM / SSO / storage) | Public |
+| [`WuKongIM`](https://github.com/Mininglamp-OSS/WuKongIM) | Go | IM engine (fork, enhanced for OCTO) | Public |

@@ -1,3 +1,6 @@
+// Copyright 2026 MININGLAMP Technology and the OCTO contributors
+// SPDX-License-Identifier: Apache-2.0
+
 // Package dmworkim wraps the dmworkim public REST API used by this service
 // for cross-cutting authorization checks (channel membership today; potentially
 // more in the future). It transparently caches lookups and forwards the
