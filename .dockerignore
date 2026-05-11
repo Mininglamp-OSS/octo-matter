@@ -1,8 +1,5 @@
-# Internal design docs / READMEs — not needed inside the build context, and
-# design-v3.md in particular contains internal team names and architecture
-# decisions that should not ship in any image artifact.
+# Internal design docs — not needed in build context
 *.md
-design-v3.md
 docs/
 
 # VCS metadata

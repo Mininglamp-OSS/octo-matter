@@ -82,7 +82,7 @@ func SpaceForbidden() *AppError {
 }
 
 // Upstream renders as 503 UPSTREAM_UNAVAILABLE. Use when a synchronous
-// dependency (e.g. dmworkim) is unreachable or returns 5xx — the request can
+// dependency (e.g. octoim) is unreachable or returns 5xx — the request can
 // be retried, but the failure is not the caller's fault.
 func Upstream(msg string) *AppError {
 	if msg == "" {

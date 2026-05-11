@@ -73,7 +73,7 @@ func (e errorAccessChecker) CanAccessMatter(_ context.Context, _ *model.Matter, 
 
 // recordingAccessChecker captures the channelID + callerToken args so we can
 // assert ListActivities never enables the channel-membership branch (PR #39
-// review r4259484583 — would leak cross-channel audit events otherwise).
+// — would leak cross-channel audit events otherwise).
 type recordingAccessChecker struct {
 	gotChannelID string
 	gotToken     string
@@ -239,7 +239,7 @@ func TestActivityService_ListActivities_NilDetailSerializesAsNull(t *testing.T) 
 }
 
 // TestActivityService_ListActivities_DoesNotEnableChannelMembership is the
-// regression guard for PR #39 review r4259484583. ListActivities must invoke
+// regression guard for PR #39. ListActivities must invoke
 // CanAccessMatter with empty channelID + callerToken so a caller that is
 // merely a member of a linked channel (and not creator/assignee/participant)
 // cannot read the matter-global audit log.

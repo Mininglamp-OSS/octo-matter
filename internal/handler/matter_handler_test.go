@@ -99,7 +99,7 @@ func TestCreateMatterReq_AcceptsClientSourceMsgsObjectShape(t *testing.T) {
 }
 
 // TestCreateMatterReq_ExplicitEmptySourceMsgIDsWinsOverObjectShape covers the
-// review #44 round-3 blocking nit: when the client posts an explicit empty
+// round-3 blocking nit: when the client posts an explicit empty
 // `source_msg_ids: []` alongside `source_msgs: [{...}]`, the empty list must
 // win — otherwise stale msg objects would silently leak into storage despite
 // the client's deliberate "clear the list" intent.
@@ -207,7 +207,7 @@ func TestCreateMatterReq_AbsentSourceMsgIDsFieldFallsBackToObjectShape(t *testin
 }
 
 // TestCreateMatterReq_RejectsSourceMsgsMissingMessageID guards the nested
-// binding tag (review #44 round-3 non-blocking): each source_msgs entry
+// binding tag: each source_msgs entry
 // must carry a non-empty message_id, otherwise empty-id rows would land in
 // the JSON column.
 func TestCreateMatterReq_RejectsSourceMsgsMissingMessageID(t *testing.T) {
@@ -236,7 +236,7 @@ func TestCreateMatterReq_RejectsSourceMsgsMissingMessageID(t *testing.T) {
 }
 
 // TestCreateMatterReq_RejectsOversizedSourceMsgs guards the count bound on
-// the nested array (review #44 round-3 non-blocking).
+// the nested array.
 func TestCreateMatterReq_RejectsOversizedSourceMsgs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -310,7 +310,7 @@ func TestCreateMatterReq_ExplicitSourceMsgIDsTakesPrecedence(t *testing.T) {
 
 // TestCreateMatterReq_RejectsOversizedSourceMsgIDs guards the manual-create
 // path against an unbounded JSON array reaching the storage layer. The extract
-// path caps msgs at 200; the manual path must mirror that bound (review #43).
+// path caps msgs at 200; the manual path must mirror that bound.
 func TestCreateMatterReq_RejectsOversizedSourceMsgIDs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

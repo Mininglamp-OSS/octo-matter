@@ -124,7 +124,7 @@ func (r *MatterRepo) ListBySpace(ctx context.Context, spaceID string, filter Mat
 	// IDs are gated upstream by IsChannelMember so the channel branch cannot
 	// leak matters to non-members. Using IN over a deduped slice ensures the
 	// dual-membership case (different ids passed for both params) unlocks
-	// either channel, not just one (PR #41 review).
+	// either channel, not just one.
 	var visibleChannelIDs []string
 	if filter.SourceChannelID != nil {
 		visibleChannelIDs = append(visibleChannelIDs, *filter.SourceChannelID)

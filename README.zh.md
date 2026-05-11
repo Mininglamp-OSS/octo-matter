@@ -44,16 +44,16 @@ timeline 子模块记录每个 matter 上的活动（评论、状态变更、LLM
 ```bash
 git clone https://github.com/Mininglamp-OSS/octo-matter.git
 cd octo-matter
-go build ./cmd
+go build -o octo-matter ./cmd
 
 # 配置通过环境变量（完整列表见 internal/config/config.go）
 export LLM_API_URL=https://api.example.com/v1
-export DB_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
+export MYSQL_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
 
-./cmd serve
+./octo-matter
 ```
 
-依赖：MySQL + Redis + 任意 OpenAI 兼容的 LLM endpoint。
+Minimal external dependencies — MySQL + an LLM endpoint
 
 ## 📦 模块与架构
 

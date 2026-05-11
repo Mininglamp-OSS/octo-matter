@@ -1,4 +1,4 @@
-package dmworkim
+package octoim
 
 import (
 	"context"
@@ -223,7 +223,7 @@ func TestClient_IsChannelMember_CacheKeyDistinguishesUIDs(t *testing.T) {
 }
 
 // TestClient_IsChannelMember_CacheKeyDistinguishesTokenSuffix covers PR #34
-// review r4259102520: keying the cache by a token PREFIX would let two
+//: keying the cache by a token PREFIX would let two
 // different tokens with the same first 16 bytes share an authorization
 // result. The cache key must derive from the FULL token (e.g. SHA-256).
 func TestClient_IsChannelMember_CacheKeyDistinguishesTokenSuffix(t *testing.T) {

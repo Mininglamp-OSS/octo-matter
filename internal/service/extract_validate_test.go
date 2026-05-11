@@ -202,7 +202,7 @@ func TestValidateExtractArgs(t *testing.T) {
 
 func int64Ptr(v int64) *int64 { return &v }
 
-// TestValidateExtractArgs_LengthCaps covers PR #34 review r4259102520:
+// TestValidateExtractArgs_LengthCaps covers PR #34:
 // LLM may emit title/description longer than DB column / handler binding
 // allows, which would surface as a 500 at INSERT time. Service must clip
 // to safe limits (or drop, depending on field) before persistence.

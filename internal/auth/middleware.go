@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,7 +16,7 @@ import (
 
 // Config holds auth middleware configuration.
 type Config struct {
-	DmworkIMURL string // dmworkim base URL
+	OctoIMURL string // octoim base URL
 }
 
 // --- verify API response types ---
@@ -40,7 +41,7 @@ type verifyBotResp struct {
 	SpaceID   string `json:"space_id"`
 }
 
-// AuthMiddleware authenticates requests by calling dmworkim's verify API.
+// AuthMiddleware authenticates requests by calling octoim's verify API.
 // Supports two auth paths:
 //   - User: "token" header → POST /v1/auth/verify
 //   - Bot:  "Authorization: Bearer <bot_token>" → POST /v1/auth/verify-bot
@@ -48,7 +49,7 @@ type verifyBotResp struct {
 // On success, injects into gin context:
 //   - "uid", "name", "role" — caller identity
 //   - "related_uids" — [self, owned_bots...] or [self, owner] for visibility
-// verifyCache caches auth verify results to avoid calling dmworkim on every request.
+// verifyCache caches auth verify results to avoid calling octoim on every request.
 // It bounds memory via periodic eviction of expired entries and a hard cap.
 type verifyCache struct {
 	mu      sync.RWMutex
@@ -111,7 +112,7 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 		// Check for Bot auth first
 		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
 			botToken := strings.TrimPrefix(authHeader, "Bearer ")
-			handleBotAuth(c, client, cfg.DmworkIMURL, botToken, cache)
+			handleBotAuth(c, client, cfg.OctoIMURL, botToken, cache)
 			return
 		}
 
@@ -123,7 +124,7 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 			})
 			return
 		}
-		handleUserAuth(c, client, cfg.DmworkIMURL, token, cache)
+		handleUserAuth(c, client, cfg.OctoIMURL, token, cache)
 	}
 }
 
@@ -259,8 +260,8 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 }
 
 // SpaceMiddleware reads X-Space-Id header and validates membership
-// by calling dmworkim's public API (token is forwarded).
-func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
+// by calling octoim's public API (token is forwarded).
+func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
 	cache := newSpaceCache()
 
@@ -277,8 +278,8 @@ func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 			return
 		}
 
-		// Validate via dmworkim public API
-		if dmworkIMURL != "" {
+		// Validate via octoim public API
+		if octoIMURL != "" {
 			token := c.GetHeader("token")
 			if token == "" {
 				c.Set("space_id", spaceID)
@@ -299,20 +300,25 @@ func SpaceMiddleware(dmworkIMURL string) gin.HandlerFunc {
 				return
 			}
 
-			req, _ := http.NewRequest("GET", dmworkIMURL+"/v1/space/"+spaceID, nil)
+			req, _ := http.NewRequest("GET", octoIMURL+"/v1/space/"+spaceID, nil)
 			req.Header.Set("token", token)
 			resp, err := client.Do(req)
-			if err == nil {
-				resp.Body.Close()
-				if resp.StatusCode != http.StatusOK {
-					cache.set(cacheKey, false, 30*time.Second)
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-						"error": gin.H{"code": "SPACE_FORBIDDEN", "message": "not a member of this space"},
-					})
-					return
-				}
-				cache.set(cacheKey, true, 60*time.Second)
+			if err != nil {
+				log.Printf("SpaceMiddleware: octoim space check failed: %v", err)
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{"code": "UPSTREAM_ERROR", "message": "space verification service unavailable"},
+				})
+				return
 			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("SpaceMiddleware: octoim space check returned status %d", resp.StatusCode)
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{"code": "UPSTREAM_ERROR", "message": "space verification service unavailable"},
+				})
+				return
+			}
+			cache.set(cacheKey, true, 60*time.Second)
 		}
 
 		c.Set("space_id", spaceID)

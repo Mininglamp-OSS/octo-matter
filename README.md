@@ -45,16 +45,16 @@ status changes, LLM-extracted follow-ups).
 ```bash
 git clone https://github.com/Mininglamp-OSS/octo-matter.git
 cd octo-matter
-go build ./cmd
+go build -o octo-matter ./cmd
 
 # configure via env vars (see internal/config/config.go for the full list)
 export LLM_API_URL=https://api.example.com/v1
-export DB_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
+export MYSQL_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
 
-./cmd serve
+./octo-matter
 ```
 
-Dependencies: MySQL + Redis + any OpenAI-compatible LLM endpoint.
+Minimal external dependencies — MySQL + an LLM endpoint
 
 ## 📦 Modules / Architecture
 
@@ -97,8 +97,7 @@ graph TD
   subgraph Core[Core Services]
     Server[octo-server<br/>Backend API]
     Matter[octo-matter<br/>Task / Todo]
-    Summary[octo-smart-summary<br/>AI Summary]
-    Admin[octo-admin<br/>Admin Console]
+    IM[WuKongIM<br/>IM Engine]
   end
 
   subgraph Shared[Shared Libraries & Integrations]
@@ -109,9 +108,8 @@ graph TD
   Web --> Server
   Android --> Server
   iOS --> Server
-  Admin --> Server
   Server --> Matter
-  Server --> Summary
+  Server --> IM
   Server --> Adapters
   Server -.uses.-> Lib
   Matter -.uses.-> Lib
@@ -122,11 +120,11 @@ graph TD
 |---|---|---|
 | [`octo-server`](https://github.com/Mininglamp-OSS/octo-server) | Go | Backend API · business orchestration · Lobster agent scheduling |
 | [`octo-matter`](https://github.com/Mininglamp-OSS/octo-matter) | Go | Task / Todo / Matter micro-service |
-| [`octo-smart-summary`](https://github.com/Mininglamp-OSS/octo-smart-summary) | Go | LLM-powered conversation summarisation |
+| [`octo-daemon-cli`](https://github.com/Mininglamp-OSS/octo-daemon-cli) | Go | Ops & onboarding CLI, local daemon |
 | [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) | TypeScript / React | Web & PC (Electron) client |
 | [`octo-android`](https://github.com/Mininglamp-OSS/octo-android) | Kotlin / Java | Native Android client |
 | [`octo-ios`](https://github.com/Mininglamp-OSS/octo-ios) | Swift / Objective-C | Native iOS client |
-| [`octo-admin`](https://github.com/Mininglamp-OSS/octo-admin) | TypeScript / React | Admin console (tenant / org / user / channel management) |
+| [`WuKongIM`](https://github.com/Mininglamp-OSS/WuKongIM) | Go | IM engine (fork, enhanced for OCTO) |
 | [`octo-lib`](https://github.com/Mininglamp-OSS/octo-lib) | Go | Shared core library (protocol, crypto, storage, HTTP) |
 | [`octo-adapters`](https://github.com/Mininglamp-OSS/octo-adapters) | TypeScript / Python | Third-party integrations (IM bridges, AI channels) |
 

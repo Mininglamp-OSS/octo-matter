@@ -48,7 +48,7 @@ func (h *ActivityHandler) List(c *gin.Context) {
 	}
 	// NOTE: source_channel_id is intentionally NOT accepted here. Activities
 	// are a matter-global audit log; admitting channel-member-only callers
-	// would leak cross-channel activity. See PR #39 review r4259484583.
+	// would leak cross-channel activity. See PR #39.
 	items, hasMore, err := h.svc.ListActivities(
 		c.Request.Context(),
 		matterID,

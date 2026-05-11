@@ -78,7 +78,7 @@ type TimelineAttachmentInput struct {
 // input. A non-empty Messages slice selects the LLM path.
 //
 // CallerToken is the user's IM auth token (empty for bot callers). It is
-// forwarded to the access checker so dmworkim can verify the caller is an
+// forwarded to the access checker so octoim can verify the caller is an
 // actual member of ChannelID before granting channel-link access.
 type TimelineInput struct {
 	MatterID       string
@@ -423,7 +423,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 	}
 
 	// Rate-limit AFTER access — a forbidden caller must not consume the
-	// legitimate user's cooldown (PR #34 review r4259115029). Key is
+	// legitimate user's cooldown. Key is
 	// (matter_id, actor_uid) per design-v3.md §8.
 	if s.limiter != nil && in.ActorUID != "" {
 		if !s.limiter.Allow(in.MatterID + ":" + in.ActorUID) {
@@ -431,7 +431,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		}
 	}
 
-	// Channel-source verification (PR #34 review r4259157846): EVERY user
+	// Channel-source verification: EVERY user
 	// timeline write must prove channel membership for in.ChannelID, not
 	// just the auto-link branch. Otherwise an assignee could spoof "from
 	// channel X" entries on an already-linked matter without being in X.
@@ -492,7 +492,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 			if !errors.Is(ferr, apperr.ErrNotFound) {
 				return ferr
 			}
-			// New-link write site (PR #34 review r4259131241):
+			// New-link write site:
 			//   - Bot path: forbidden — bots may not introduce new channel
 			//     links to existing matters; require a user to link first.
 			//   - User path: already IM-verified above (pre-tx); proceed.

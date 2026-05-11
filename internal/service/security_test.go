@@ -542,7 +542,7 @@ func TestSetStatus_RejectsInvalidStatus(t *testing.T) {
 
 func strPtr(s string) *string { return &s }
 
-// --- New permission path tests (review feedback #1) ---
+// --- New permission path tests ---
 
 func TestMatterService_GetMatter_ParticipantCanAccess(t *testing.T) {
 	matter := &model.Matter{ID: "t1", SpaceID: "sp1", CreatorID: "owner", Status: model.MatterStatusOpen}
