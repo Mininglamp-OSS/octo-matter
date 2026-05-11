@@ -1,95 +1,70 @@
-# Contributing to Octo Todo
+# Contributing to OCTO
 
-Thank you for your interest in contributing! This guide will help you get started.
+Thanks for your interest in contributing to OCTO! 🐙 We welcome contributions of all sizes.
 
-## Development Environment
+## Getting Started
 
-### Prerequisites
+1. **Fork** the repo and create your branch from `main`.
+2. **Install dependencies** — see the project's README for setup instructions.
+3. **Make your changes** — follow existing code style.
+4. **Add tests** — if you're fixing a bug or adding a feature, please add tests.
+5. **Update docs** — if behavior changes, update the README/docs accordingly.
+6. **Open a Pull Request** — fill in the PR template.
 
-- **Go 1.25+** — [download](https://go.dev/dl/)
-- **MySQL 8.0** — for integration testing / local dev
-- **Docker & Docker Compose** — for running the full stack locally
+## Development Workflow
 
-### Setup
+- All changes go through a Pull Request.
+- PRs must pass CI before merging.
+- PRs require at least one approving review from a maintainer.
+- We use squash-merge to keep history clean.
 
-```bash
-git clone https://github.com/Mininglamp-OSS/octo-matter.git
-cd todos
-cp .env.example .env   # adjust DB credentials if needed
-docker compose up -d   # starts MySQL + Redis
-go build ./...
-go test ./...
+## Commit Messages
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
 ```
+feat: add user presence API
+fix: resolve message ordering race condition
+docs: update README install steps
+chore: bump dependency versions
+```
+
+## Pull Request Description
+
+- Describe **what** you changed and **why**.
+- Reference any related issues (e.g. `Fixes #123`).
+- Include screenshots for UI changes.
+- **Write PR descriptions in English** to keep the history accessible to the global community.
 
 ## Code Style
 
-- Run `gofmt` on all Go files before committing.
-- Use [`golangci-lint`](https://golangci-lint.run/) for static analysis:
-  ```bash
-  golangci-lint run ./...
-  ```
-- Follow standard Go conventions: effective Go, Go Code Review Comments.
-- All code, comments, and commit messages must be in **English**.
+- **Go**: `gofmt` + `golangci-lint`
+- **TypeScript/JavaScript**: Prettier + ESLint (config in repo)
+- **Swift**: SwiftFormat
+- **Kotlin**: ktlint / Android Studio default
 
-## Commit Convention
+## Reporting Bugs
 
-We follow [Conventional Commits](https://www.conventionalcommits.org/):
+Open a GitHub issue using the **Bug Report** template. Include:
 
-```
-<type>(<scope>): <short summary>
-```
-
-**Types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`
-
-Examples:
-- `feat(handler): add list todos endpoint`
-- `fix(repository): correct space_id filter in query`
-- `docs: update README setup instructions`
-
-## Pull Request Process
-
-1. **Branch off `main`** — use a descriptive branch name (e.g. `feat/add-labels`, `fix/cursor-pagination`).
-2. **Keep PRs focused** — one logical change per PR.
-3. **Ensure CI passes** — `go vet`, `go build`, and `go test` must all succeed.
-4. **Write tests** — new features require tests; bug fixes should include a regression test.
-5. **Update documentation** — if your change affects the API or configuration, update README.md or docs/.
-6. **Request review** — at least one approval is required before merging.
-
-## Testing
-
-- All tests must pass before submitting a PR:
-  ```bash
-  go test ./...
-  ```
-- Run a specific test with:
-  ```bash
-  go test ./internal/model -run TestIsValidStatus -v
-  ```
-- Use table-driven tests where appropriate.
-- Use fakes over mocks for repository interfaces.
-
-## Project Structure
-
-```
-cmd/main.go              # entry point
-internal/
-  handler/               # HTTP layer (Gin)
-  service/               # business logic
-  repository/            # database queries (dbr)
-  model/                 # domain structs
-  auth/                  # authentication middleware
-  config/                # environment-based config
-migrations/              # SQL migration files
-```
-
-## Reporting Issues
-
-Open an issue on GitHub with:
-- A clear title and description
-- Steps to reproduce (if applicable)
 - Expected vs actual behavior
-- Go version and OS
+- Steps to reproduce
+- Environment (OS, version, etc.)
+- Logs/screenshots if relevant
+
+## Suggesting Features
+
+Open a GitHub issue using the **Feature Request** template. Explain the
+use case and why existing features don't solve it.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+By contributing, you agree that your contributions will be licensed under the
+project's [Apache License 2.0](LICENSE).
+
+## Questions?
+
+- Open a [GitHub Discussion](https://github.com/orgs/Mininglamp-AI/discussions)
+- Read the [docs](https://docs.octo.chat) _(coming soon)_
+
+Thanks for helping make OCTO better! 🚀

@@ -1,218 +1,136 @@
-# Octo Todo Service
+<p align="center">
+  <img src="./docs/assets/logo-light.png" width="200" alt="OCTO">
+</p>
 
-Simple task management microservice for the Octo ecosystem.
+<p align="center">
+  <b>OCTO — 为人和 AI Agent 协作而生的开源工作平台</b><br/>
+  <sub>让 <b>龙虾（Lobster / OpenClaw-powered digital double agents）</b> 去「思」和「行」，让人聚焦在「品」</sub>
+</p>
 
-## Core Concepts
+<p align="center">
+  <a href="https://github.com/Mininglamp-AI/octo-server#-what-is-octo"><b>📖 产品 Overview · What is OCTO</b></a> ·
+  <a href="#-quickstart"><b>🚀 Quickstart</b></a> ·
+  <a href="#-octo-ecosystem"><b>📦 Ecosystem</b></a> ·
+  <a href="./CONTRIBUTING.md"><b>🤝 Contributing</b></a>
+</p>
 
-- **Todo** — Atomic task unit with two statuses: `open` and `closed`. Creator or assignee can close or reopen
-- **Goal** — Optional organizational container. Sidebar lists all goals; selecting a goal shows its todos
-- **Space** — All data is scoped to a Space for multi-tenant isolation
-- **Source Context** — Each todo records where it was created (group channel, thread, etc.)
+---
 
-## Architecture
+> 🌐 **Read in**: **English** · [简体中文](README.zh.md)
 
-```
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│ todo-web │  │ octo-cli │  │ octo     │
-│ (React)  │  │ (Go CLI) │  │ Bot      │
-└────┬─────┘  └────┬─────┘  └────┬─────┘
-     │             │              │
-     └──────┬──────┘──────────────┘
-            │  token header + X-Space-ID
-            v
-     ┌──────────────┐     ┌──────────────┐
-     │ todo-service  │────>│  Octo IM    │
-     │ (Go/Gin/dbr) │     │ internal API │
-     └──────┬───────┘     └──────────────┘
-            │
-     ┌──────┴──────┐
-     │   MySQL 8   │
-     └─────────────┘
-```
+# OCTO Matter
 
-## Tech Stack
+> **Lightweight task / todo / "matter" service** for the OCTO platform.
 
-| Component | Technology |
-|-----------|-----------|
-| Language | Go 1.25+ |
-| HTTP | Gin |
-| ORM | gocraft/dbr/v2 |
-| Database | MySQL 8 |
-| UUID | google/uuid |
-| Validation | go-playground/validator/v10 |
+`octo-matter` is a Go service that manages **matters** — a generalised
+task / todo / action-item primitive used by the OCTO clients and by
+Lobster agents. It exposes a REST API for create / update / assign /
+close, plus a timeline sub-service that records activity against each
+matter (comments, status changes, LLM-extracted follow-ups).
 
-## Project Structure
+## ✨ Features
 
-```
-todos/
-├── cmd/main.go                    # Entry point
-├── internal/
-│   ├── auth/middleware.go         # Auth middleware (stub/jwt/bot modes)
-│   ├── config/config.go          # Environment-based configuration
-│   ├── model/
-│   │   ├── todo.go               # Todo model (open/closed status)
-│   │   ├── goal.go               # Goal + GoalAssignee models
-│   │   ├── assignee.go           # TodoAssignee model
-│   │   ├── comment.go            # TodoComment model
-│   │   └── comment_attachment.go # CommentAttachment model
-│   ├── repository/               # Data access layer (dbr)
-│   ├── service/                  # Business logic layer
-│   └── handler/                  # HTTP handler layer (Gin)
-├── migrations/
-│   ├── 001_init.up.sql
-│   └── 001_init.down.sql
-├── docs/DESIGN.md                # Architecture design document
-├── Dockerfile
-├── docker-compose.yaml
-└── CLAUDE.md                     # AI coding conventions
-```
+- CRUD + assignment + visibility controls for matters
+- Per-matter **timeline** with append-only activity records
+- Pluggable **LLM extractor** that turns free-form text (chat snippets,
+  meeting notes) into structured matter drafts
+- **Notifier** abstraction for integrating with the OCTO IM backend
+  (default) or any HTTP webhook sink
+- Minimal external dependencies — MySQL + Redis + an LLM endpoint
 
-## Current Implementation Status
-
-The following features are **designed** in `docs/DESIGN.md` but **not yet implemented**:
-
-- **Redis caching** — declared in docker-compose and config but not wired
-- **Rate limiting** — sliding window design exists but no middleware
-- **Chat notifications** — Bot API push designed but not built
-
-## Quick Start
-
-### Docker Compose (recommended)
+## 🚀 Quickstart
 
 ```bash
-git clone git@github.com:Mininglamp-OSS/octo-matter.git
-cd todos
-docker compose up -d
-curl http://localhost:8080/health
+git clone https://github.com/Mininglamp-AI/octo-matter.git
+cd octo-matter
+go build ./cmd
+
+# configure via env vars (see internal/config/config.go for the full list)
+export LLM_API_URL=https://api.example.com/v1
+export DB_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
+
+./cmd serve
 ```
 
-### Local Development
+## 🧱 Modules
 
-```bash
-# Prerequisites: Go 1.25+, MySQL 8
+Top-level packages under this module:
 
-git clone git@github.com:Mininglamp-OSS/octo-matter.git
-cd todos
+| Path | Purpose |
+|---|---|
+| `cmd/` | Service entrypoint + timeline transaction helper |
+| `internal/config/` | Env-driven config loader |
+| `internal/handler/` | HTTP handlers (matter, timeline, activity, extract) |
+| `internal/service/` | Business logic (access control, LLM extraction, timeline) |
+| `internal/repository/` | MySQL repositories for matters, assignees, channels, timelines |
+| `internal/llm/` | LLM client — OpenAI-compatible `/v1/chat/completions` |
+| `internal/notification/` | Notifier interface + OCTO-IM implementation |
+| `internal/apperr/` | Typed application errors |
+| `internal/model/` | Shared data models |
+| `internal/middleware/` | Auth / logging / recovery middleware |
+| `migrations/` | SQL schema migrations |
 
-# Create database and run migrations
-mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS octo_todo"
-mysql -u root -p octo_todo < migrations/001_init.up.sql
+## 🛠️ Ecosystem
 
-# Set environment variables
-export MYSQL_DSN="root:root@tcp(localhost:3306)/octo_todo?charset=utf8mb4&parseTime=true"
-export SERVER_PORT="8080"
+Part of the [OCTO](https://github.com/Mininglamp-AI) open-source platform.
 
-# Build and run
-go build -o todo-service ./cmd
-./todo-service
+## 🤝 Contributing
 
-# Run tests
-go test ./... -v
+See [CONTRIBUTING.md](CONTRIBUTING.md). Please also read our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## 📄 License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
+
+---
+
+Made with 🐙 by the OCTO community.
+
+---
+<!-- Shared snippet: OCTO repo matrix. Keep identical across all 8 repos. -->
+
+## 📦 OCTO Ecosystem（仓库矩阵）
+
+```mermaid
+graph TD
+  subgraph Clients[客户端]
+    Web[octo-web<br/>Web / PC]
+    Android[octo-android]
+    iOS[octo-ios]
+  end
+
+  subgraph Core[核心服务]
+    Server[octo-server<br/>后端 API / 业务]
+    Matter[octo-matter<br/>任务 / Todo 服务]
+    IM[WuKongIM<br/>IM 底座]
+  end
+
+  subgraph Libs[共享库 & 工具]
+    Lib[octo-lib<br/>核心库]
+    CLI[octo-daemon-cli<br/>CLI 工具]
+    Adapters[octo-adapters<br/>第三方集成]
+  end
+
+  Web --> Server
+  Android --> Server
+  iOS --> Server
+  Server --> IM
+  Server --> Matter
+  Server --> Adapters
+  Server -.uses.-> Lib
+  Matter -.uses.-> Lib
+  CLI -.uses.-> Lib
+  Adapters -.uses.-> Lib
 ```
 
-## API Reference
-
-All endpoints require:
-- Authentication header (token for users, Authorization: Bot for bots)
-- `X-Space-ID` header — Space ID for data isolation (user auth; bot auth resolves automatically)
-
-### Health
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Liveness check |
-| GET | `/health/ready` | Readiness check (probes MySQL) |
-
-### Goals
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/goals` | Create goal |
-| GET | `/api/v1/goals` | List goals (paginated) |
-| GET | `/api/v1/goals/:id` | Get goal detail + assignees |
-| PUT | `/api/v1/goals/:id` | Update goal (creator only) |
-| DELETE | `/api/v1/goals/:id` | Archive goal (creator only) |
-| POST | `/api/v1/goals/:id/assignees` | Add assignee (creator only) |
-| DELETE | `/api/v1/goals/:id/assignees/:uid` | Remove assignee (creator only) |
-
-### Todos
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/todos` | Create todo |
-| GET | `/api/v1/todos` | List todos (paginated, filterable) |
-| GET | `/api/v1/todos/:id` | Get todo detail + assignees |
-| PUT | `/api/v1/todos/:id` | Update todo (creator only) |
-| PUT | `/api/v1/todos/:id/status` | Set status: open or closed |
-| DELETE | `/api/v1/todos/:id` | Soft delete (creator only) |
-| POST | `/api/v1/todos/:id/assignees` | Add assignee (creator only) |
-| DELETE | `/api/v1/todos/:id/assignees/:uid` | Remove assignee (creator only) |
-
-#### List Filters
-
-```
-GET /api/v1/todos?status=open&assignee_id=me&goal_id=xxx&limit=20&cursor=xxx
-```
-
-| Parameter | Description |
-|-----------|-------------|
-| `status` | Filter by status (`open` or `closed`) |
-| `goal_id` | Filter by goal |
-| `assignee_id` | Filter by assignee (`me` = current user) |
-| `creator_id` | Filter by creator (`me` = current user) |
-| `source_channel_id` | Filter by source channel |
-| `source_channel_type` | Filter by channel type (2=group, 5=thread) |
-| `q` | Text search on title |
-| `limit` | Page size (default 20, max 100) |
-| `cursor` | Cursor for pagination |
-
-#### Set Status
-
-```
-PUT /api/v1/todos/:id/status
-{ "status": "closed" }
-```
-
-Creator or assignee can set status to `open` or `closed`. Idempotent — setting the current status is a no-op. 
-
-### Error Response Format
-
-```json
-{
-  "error": {
-    "code": "FORBIDDEN",
-    "message": "only creator or assignee can change status"
-  }
-}
-```
-
-## Authentication
-
-Dual-path auth via dmworkim verify API:
-
-| Header | Path | Use case |
-|--------|------|----------|
-| `token` | User token → POST dmworkim /v1/auth/verify | Human users (dmwork-web) |
-| `Authorization: Bearer <bot_token>` | Bot token → POST dmworkim /v1/auth/verify-bot | Bot/agent automation |
-
-Bot-owner visibility: users see their bots' goals/todos, bots see their owner's.
-
-Config: `DMWORKIM_URL` (dmworkim base URL) + `WUKONGIM_URL` (notification delivery).
-
-## Design Document
-
-Full architecture design with data model, API specification, auth strategy:
-
-→ **[docs/DESIGN.md](docs/DESIGN.md)**
-
-## Related Repositories
-
-| Repository | Description |
-|-----------|-------------|
-| [Mininglamp-OSS/octo-server](https://github.com/Mininglamp-OSS/octo-server) | Core IM platform (auth verify API) |
-| [Mininglamp-OSS/octo-cli](https://github.com/Mininglamp-OSS/octo-cli) | Unified Octo CLI |
-| [Mininglamp-OSS/octo-web](https://github.com/Mininglamp-OSS/octo-web) | Web frontend (todo-web module) |
-
-## License
-
-Apache-2.0
+| 仓库 | 语言 | 职责 | 状态 |
+|------|------|------|------|
+| [`octo-server`](https://github.com/Mininglamp-AI/octo-server) | Go | 后端 API、业务编排、龙虾调度 | Public |
+| [`octo-matter`](https://github.com/Mininglamp-AI/octo-matter) | Go | 任务 / Todo / Matter 服务 | Public |
+| [`octo-web`](https://github.com/Mininglamp-AI/octo-web) | TypeScript / React | Web & PC 客户端 | Public |
+| [`octo-android`](https://github.com/Mininglamp-AI/octo-android) | Kotlin / Java | Android 客户端 | Public |
+| [`octo-ios`](https://github.com/Mininglamp-AI/octo-ios) | Swift / Objective-C | iOS 客户端 | Public |
+| [`octo-lib`](https://github.com/Mininglamp-AI/octo-lib) | Go | 核心领域模型 / 协议 / 工具库 | Public |
+| [`octo-daemon-cli`](https://github.com/Mininglamp-AI/octo-daemon-cli) | Go | 运维/接入 CLI、本地守护进程 | Public |
+| [`octo-adapters`](https://github.com/Mininglamp-AI/octo-adapters) | TypeScript / Python | 第三方系统集成（IM / SSO / 存储等） | Public |
+| [`WuKongIM`](https://github.com/Mininglamp-AI/WuKongIM) | Go | IM 底座（fork，针对 OCTO 增强） | Public |
