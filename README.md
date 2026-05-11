@@ -1,218 +1,158 @@
-# Octo Todo Service
+<p align="center">
+  <img src="./docs/assets/logo-light.png#gh-light-mode-only" width="200" alt="OCTO">
+  <img src="./docs/assets/logo-dark.png#gh-dark-mode-only" width="200" alt="OCTO">
+</p>
 
-Simple task management microservice for the Octo ecosystem.
+<p align="center">
+  <b>OCTO — the open workplace built for humans × AI agents.</b><br/>
+  <sub>Let <b>Lobsters</b> (OpenClaw-powered digital doubles) do the <i>thinking</i> and <i>doing</i>. You focus on <i>taste</i>.</sub>
+</p>
 
-## Core Concepts
+<p align="center">
+  <a href="https://github.com/Mininglamp-OSS"><b>🏠 OCTO Home</b></a> ·
+  <a href="#-quickstart"><b>🚀 Quickstart</b></a> ·
+  <a href="#-octo-ecosystem"><b>📦 Ecosystem</b></a> ·
+  <a href="./CONTRIBUTING.md"><b>🤝 Contributing</b></a>
+</p>
 
-- **Todo** — Atomic task unit with two statuses: `open` and `closed`. Creator or assignee can close or reopen
-- **Goal** — Optional organizational container. Sidebar lists all goals; selecting a goal shows its todos
-- **Space** — All data is scoped to a Space for multi-tenant isolation
-- **Source Context** — Each todo records where it was created (group channel, thread, etc.)
+<p align="center">
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="./README.zh.md"><img src="https://img.shields.io/badge/lang-简体中文-red.svg" alt="简体中文"></a>
+</p>
 
-## Architecture
+---
 
-```
-┌──────────┐  ┌──────────┐  ┌──────────┐
-│ todo-web │  │ octo-cli │  │ octo     │
-│ (React)  │  │ (Go CLI) │  │ Bot      │
-└────┬─────┘  └────┬─────┘  └────┬─────┘
-     │             │              │
-     └──────┬──────┘──────────────┘
-            │  token header + X-Space-ID
-            v
-     ┌──────────────┐     ┌──────────────┐
-     │ todo-service  │────>│  Octo IM    │
-     │ (Go/Gin/dbr) │     │ internal API │
-     └──────┬───────┘     └──────────────┘
-            │
-     ┌──────┴──────┐
-     │   MySQL 8   │
-     └─────────────┘
-```
+> 🌐 **Read in**: **English** · [简体中文](README.zh.md)
 
-## Tech Stack
+# OCTO Matter
 
-| Component | Technology |
-|-----------|-----------|
-| Language | Go 1.25+ |
-| HTTP | Gin |
-| ORM | gocraft/dbr/v2 |
-| Database | MySQL 8 |
-| UUID | google/uuid |
-| Validation | go-playground/validator/v10 |
+> **Lightweight task / todo / "matter" service** — the generalised action-item primitive used by OCTO clients and Lobster agents.
 
-## Project Structure
+`octo-matter` is a focused Go service that manages **matters** — a generalised
+task / todo / action-item primitive used by the OCTO clients and by Lobster
+agents. It exposes a REST API for create / update / assign / close, plus a
+timeline sub-service that records activity against each matter (comments,
+status changes, LLM-extracted follow-ups).
 
-```
-todos/
-├── cmd/main.go                    # Entry point
-├── internal/
-│   ├── auth/middleware.go         # Auth middleware (stub/jwt/bot modes)
-│   ├── config/config.go          # Environment-based configuration
-│   ├── model/
-│   │   ├── todo.go               # Todo model (open/closed status)
-│   │   ├── goal.go               # Goal + GoalAssignee models
-│   │   ├── assignee.go           # TodoAssignee model
-│   │   ├── comment.go            # TodoComment model
-│   │   └── comment_attachment.go # CommentAttachment model
-│   ├── repository/               # Data access layer (dbr)
-│   ├── service/                  # Business logic layer
-│   └── handler/                  # HTTP handler layer (Gin)
-├── migrations/
-│   ├── 001_init.up.sql
-│   └── 001_init.down.sql
-├── docs/DESIGN.md                # Architecture design document
-├── Dockerfile
-├── docker-compose.yaml
-└── CLAUDE.md                     # AI coding conventions
-```
+## 🌟 Why OCTO Matter
 
-## Current Implementation Status
+- **Task + timeline in one service.** Every matter owns its own append-only activity stream, so "what happened to this task?" is a single database query, not a stitched reconstruction across four microservices.
+- **Turn chat into structured work.** A pluggable LLM extractor turns free-form text (chat snippets, meeting notes) into structured matter drafts — Lobster agents can surface candidate todos with one call.
+- **Notifier-abstracted.** Ships with a first-class `octo-server` IM notifier and a generic HTTP-webhook sink, so matter events fan out to wherever the team already is.
 
-The following features are **designed** in `docs/DESIGN.md` but **not yet implemented**:
-
-- **Redis caching** — declared in docker-compose and config but not wired
-- **Rate limiting** — sliding window design exists but no middleware
-- **Chat notifications** — Bot API push designed but not built
-
-## Quick Start
-
-### Docker Compose (recommended)
+## 🚀 Quickstart
 
 ```bash
-git clone git@github.com:Mininglamp-OSS/octo-matter.git
-cd todos
-docker compose up -d
-curl http://localhost:8080/health
+git clone https://github.com/Mininglamp-OSS/octo-matter.git
+cd octo-matter
+go build ./cmd
+
+# configure via env vars (see internal/config/config.go for the full list)
+export LLM_API_URL=https://api.example.com/v1
+export DB_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
+
+./cmd serve
 ```
 
-### Local Development
+Dependencies: MySQL + Redis + any OpenAI-compatible LLM endpoint.
 
-```bash
-# Prerequisites: Go 1.25+, MySQL 8
+## 📦 Modules / Architecture
 
-git clone git@github.com:Mininglamp-OSS/octo-matter.git
-cd todos
+Top-level packages under this module:
 
-# Create database and run migrations
-mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS octo_todo"
-mysql -u root -p octo_todo < migrations/001_init.up.sql
+| Path | Purpose |
+|---|---|
+| `cmd/` | Service entrypoint + timeline transaction helper |
+| `internal/config/` | Env-driven config loader |
+| `internal/handler/` | HTTP handlers (matter, timeline, activity, extract) |
+| `internal/service/` | Business logic (access control, LLM extraction, timeline) |
+| `internal/repository/` | MySQL repositories for matters, assignees, channels, timelines |
+| `internal/llm/` | LLM client — OpenAI-compatible `/v1/chat/completions` |
+| `internal/notification/` | Notifier interface + OCTO-IM implementation |
+| `internal/apperr/` | Typed application errors |
+| `internal/model/` | Shared data models |
+| `internal/middleware/` | Auth / logging / recovery middleware |
+| `migrations/` | SQL schema migrations |
 
-# Set environment variables
-export MYSQL_DSN="root:root@tcp(localhost:3306)/octo_todo?charset=utf8mb4&parseTime=true"
-export SERVER_PORT="8080"
+Request lifecycle:
 
-# Build and run
-go build -o todo-service ./cmd
-./todo-service
+1. **Ingest** — either a human `POST /matters` call, or an `/extract` call with free-form text.
+2. **Access-control** — per-org + per-channel visibility rules.
+3. **Persist** — matter row + initial timeline record in one transaction.
+4. **Notify** — push an event via the configured `Notifier` (OCTO IM, webhook, or both).
+5. **Loop** — subsequent updates append to the same timeline, giving a complete audit trail.
 
-# Run tests
-go test ./... -v
+## 🔗 OCTO Ecosystem
+
+<!-- shared snippet: OCTO repo matrix. Keep identical across all 9 repos. -->
+
+```mermaid
+graph TD
+  subgraph Clients[Clients]
+    Web[octo-web<br/>Web / PC]
+    Android[octo-android<br/>Android]
+    iOS[octo-ios<br/>iOS]
+  end
+
+  subgraph Core[Core Services]
+    Server[octo-server<br/>Backend API]
+    Matter[octo-matter<br/>Task / Todo]
+    Summary[octo-smart-summary<br/>AI Summary]
+    Admin[octo-admin<br/>Admin Console]
+  end
+
+  subgraph Shared[Shared Libraries & Integrations]
+    Lib[octo-lib<br/>Core Go Library]
+    Adapters[octo-adapters<br/>Third-party Adapters]
+  end
+
+  Web --> Server
+  Android --> Server
+  iOS --> Server
+  Admin --> Server
+  Server --> Matter
+  Server --> Summary
+  Server --> Adapters
+  Server -.uses.-> Lib
+  Matter -.uses.-> Lib
+  Adapters -.uses.-> Lib
 ```
 
-## API Reference
+| Repository | Language | Role |
+|---|---|---|
+| [`octo-server`](https://github.com/Mininglamp-OSS/octo-server) | Go | Backend API · business orchestration · Lobster agent scheduling |
+| [`octo-matter`](https://github.com/Mininglamp-OSS/octo-matter) | Go | Task / Todo / Matter micro-service |
+| [`octo-smart-summary`](https://github.com/Mininglamp-OSS/octo-smart-summary) | Go | LLM-powered conversation summarisation |
+| [`octo-web`](https://github.com/Mininglamp-OSS/octo-web) | TypeScript / React | Web & PC (Electron) client |
+| [`octo-android`](https://github.com/Mininglamp-OSS/octo-android) | Kotlin / Java | Native Android client |
+| [`octo-ios`](https://github.com/Mininglamp-OSS/octo-ios) | Swift / Objective-C | Native iOS client |
+| [`octo-admin`](https://github.com/Mininglamp-OSS/octo-admin) | TypeScript / React | Admin console (tenant / org / user / channel management) |
+| [`octo-lib`](https://github.com/Mininglamp-OSS/octo-lib) | Go | Shared core library (protocol, crypto, storage, HTTP) |
+| [`octo-adapters`](https://github.com/Mininglamp-OSS/octo-adapters) | TypeScript / Python | Third-party integrations (IM bridges, AI channels) |
 
-All endpoints require:
-- Authentication header (token for users, Authorization: Bot for bots)
-- `X-Space-ID` header — Space ID for data isolation (user auth; bot auth resolves automatically)
+## 🧭 Philosophy
 
-### Health
+OCTO ships under three shared principles that apply to every repository in this matrix:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/health` | Liveness check |
-| GET | `/health/ready` | Readiness check (probes MySQL) |
+1. **Local-first.** Anything that can run on the user's own box — chats, embeddings, agents — should. Your data stays yours; cloud is a choice, not a requirement.
+2. **Humans judge, AI thinks and acts.** Humans focus on *taste* (what matters, what's right, what to ship). Lobster agents — OpenClaw-powered digital doubles — carry the *thinking* and *execution* load.
+3. **Release-as-product.** Every open-source cut is shipped as a self-contained product, not a code dump: one squash per release, Apache 2.0, no internal baggage, reproducible from this repo alone.
 
-### Goals
+## 🤝 Contributing
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/goals` | Create goal |
-| GET | `/api/v1/goals` | List goals (paginated) |
-| GET | `/api/v1/goals/:id` | Get goal detail + assignees |
-| PUT | `/api/v1/goals/:id` | Update goal (creator only) |
-| DELETE | `/api/v1/goals/:id` | Archive goal (creator only) |
-| POST | `/api/v1/goals/:id/assignees` | Add assignee (creator only) |
-| DELETE | `/api/v1/goals/:id/assignees/:uid` | Remove assignee (creator only) |
+We love pull requests! Before you open one, please read:
 
-### Todos
+- [CONTRIBUTING.md](CONTRIBUTING.md) — workflow, branch model, commit style
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — community expectations
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/todos` | Create todo |
-| GET | `/api/v1/todos` | List todos (paginated, filterable) |
-| GET | `/api/v1/todos/:id` | Get todo detail + assignees |
-| PUT | `/api/v1/todos/:id` | Update todo (creator only) |
-| PUT | `/api/v1/todos/:id/status` | Set status: open or closed |
-| DELETE | `/api/v1/todos/:id` | Soft delete (creator only) |
-| POST | `/api/v1/todos/:id/assignees` | Add assignee (creator only) |
-| DELETE | `/api/v1/todos/:id/assignees/:uid` | Remove assignee (creator only) |
+For security issues please follow [SECURITY.md](SECURITY.md) instead of the public tracker.
 
-#### List Filters
+## 📄 License
 
-```
-GET /api/v1/todos?status=open&assignee_id=me&goal_id=xxx&limit=20&cursor=xxx
-```
+Apache License 2.0 — see [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for third-party attributions.
 
-| Parameter | Description |
-|-----------|-------------|
-| `status` | Filter by status (`open` or `closed`) |
-| `goal_id` | Filter by goal |
-| `assignee_id` | Filter by assignee (`me` = current user) |
-| `creator_id` | Filter by creator (`me` = current user) |
-| `source_channel_id` | Filter by source channel |
-| `source_channel_type` | Filter by channel type (2=group, 5=thread) |
-| `q` | Text search on title |
-| `limit` | Page size (default 20, max 100) |
-| `cursor` | Cursor for pagination |
+---
 
-#### Set Status
-
-```
-PUT /api/v1/todos/:id/status
-{ "status": "closed" }
-```
-
-Creator or assignee can set status to `open` or `closed`. Idempotent — setting the current status is a no-op. 
-
-### Error Response Format
-
-```json
-{
-  "error": {
-    "code": "FORBIDDEN",
-    "message": "only creator or assignee can change status"
-  }
-}
-```
-
-## Authentication
-
-Dual-path auth via dmworkim verify API:
-
-| Header | Path | Use case |
-|--------|------|----------|
-| `token` | User token → POST dmworkim /v1/auth/verify | Human users (dmwork-web) |
-| `Authorization: Bearer <bot_token>` | Bot token → POST dmworkim /v1/auth/verify-bot | Bot/agent automation |
-
-Bot-owner visibility: users see their bots' goals/todos, bots see their owner's.
-
-Config: `DMWORKIM_URL` (dmworkim base URL) + `WUKONGIM_URL` (notification delivery).
-
-## Design Document
-
-Full architecture design with data model, API specification, auth strategy:
-
-→ **[docs/DESIGN.md](docs/DESIGN.md)**
-
-## Related Repositories
-
-| Repository | Description |
-|-----------|-------------|
-| [Mininglamp-OSS/octo-server](https://github.com/Mininglamp-OSS/octo-server) | Core IM platform (auth verify API) |
-| [Mininglamp-OSS/octo-cli](https://github.com/Mininglamp-OSS/octo-cli) | Unified Octo CLI |
-| [Mininglamp-OSS/octo-web](https://github.com/Mininglamp-OSS/octo-web) | Web frontend (todo-web module) |
-
-## License
-
-Apache-2.0
+<p align="center">
+  <sub>Made with 🐙 by <b>OCTO Contributors</b> · <a href="https://github.com/Mininglamp-OSS">Mininglamp-OSS</a></sub>
+</p>
