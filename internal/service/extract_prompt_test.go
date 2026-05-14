@@ -14,7 +14,6 @@ import (
 //   - title naming  — 动宾 + ≤20 字 + 禁套话
 //   - description shape — 50–150 字 + 保留原话
 //   - assignee priority — 显式认领 > 被指派 > creator fallback
-//   - bot/agent exclusion — Bot accounts must not be picked as assignee
 //   - deadline policy — relative-date parsing + null on absence (NO "+7 day" default)
 //   - source filtering — drop greetings/reactions/previews
 //   - current date + Chinese weekday — model needs both to resolve "本周五"
@@ -62,11 +61,9 @@ func TestBuildExtractSystemPrompt_Anchors(t *testing.T) {
 		"👍",
 		"加入/退出群通知",
 		"若把这条消息从 timeline 里删掉",
-		// assignee priority + agent exclusion
+		// assignee priority
 		"显式认领",
 		"@X 你来",
-		"PPTBot",
-		"不得作为 assignee",
 		// constraint table
 		"禁止虚构",
 		"输出语言跟随消息",

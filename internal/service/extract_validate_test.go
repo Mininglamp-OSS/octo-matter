@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -50,7 +51,6 @@ func TestValidateExtractArgs(t *testing.T) {
 	}
 	// Deadline reference point: 2026-05-15 (well within ±5 years of 2026-05-14
 	// "now" used below). UTC midnight is what parseLLMDeadline emits.
-	dlString := "2026-05-15"
 	dlTime := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
 	now := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
 
@@ -66,7 +66,7 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1", "m3"},
 				AssigneeUIDs: []string{"u1", "u2"},
-				Deadline:     &dlString,
+				Deadline:     flexDate("2026-05-15"),
 			},
 			wantSourceMsgs: []string{"m1", "m3"},
 			wantAssignees:  []string{"u1", "u2"},
@@ -149,7 +149,7 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     nil,
+				Deadline:     flexibleDate{},
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
@@ -160,7 +160,7 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     strPtr(""),
+				Deadline:     flexDate(""),
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
@@ -171,7 +171,7 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     strPtr("   "),
+				Deadline:     flexDate("   "),
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
@@ -182,7 +182,7 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     strPtr("next Friday"),
+				Deadline:     flexDate("next Friday"),
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
@@ -193,7 +193,7 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     strPtr("2026-05-15T18:00:00Z"),
+				Deadline:     flexDate("2026-05-15T18:00:00Z"),
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
@@ -224,7 +224,6 @@ func TestValidateExtractArgs(t *testing.T) {
 		})
 	}
 }
-
 
 // TestValidateExtractArgs_LengthCaps covers PR #34:
 // LLM may emit title/description longer than DB column / handler binding
@@ -285,7 +284,7 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-			Deadline:     strPtr("2099-12-31"),
+			Deadline:     flexDate("2099-12-31"),
 		}, in, now)
 		if v.Deadline != nil {
 			t.Errorf("far-future deadline must be dropped, got %v", v.Deadline)
@@ -299,7 +298,7 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-			Deadline:     strPtr("2020-01-01"),
+			Deadline:     flexDate("2020-01-01"),
 		}, in, now)
 		if v.Deadline != nil {
 			t.Errorf("far-past deadline must be dropped, got %v", v.Deadline)
@@ -312,12 +311,147 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-			Deadline:     strPtr("2026-05-15"),
+			Deadline:     flexDate("2026-05-15"),
 		}, in, now)
 		if v.Deadline == nil {
 			t.Errorf("reasonable deadline must be kept")
 		}
 	})
+}
+
+// TestExtractToolArgs_FlexibleDeadline locks down the migration-fail-soft
+// contract on the `deadline` field. The new schema is YYYY-MM-DD string,
+// but a model that hasn't picked up the change yet (or a buggy gateway) may
+// still emit a number, bool, or other type. The whole extractToolArgs must
+// still decode — `deadline` falls through to nil for any non-string shape.
+// This is the difference between "matter created with deadline=nil" and
+// "422 LLM_EMPTY_EXTRACTION" for the user.
+func TestExtractToolArgs_FlexibleDeadline(t *testing.T) {
+	cases := []struct {
+		name        string
+		raw         string
+		wantDLNil   bool
+		wantDLValue string // only checked when wantDLNil == false
+		wantTitle   string
+	}{
+		{
+			name:        "string YYYY-MM-DD survives",
+			raw:         `{"title":"t","description":"d","deadline":"2026-05-15","source_msg_ids":[],"assignee_uids":[]}`,
+			wantDLNil:   false,
+			wantDLValue: "2026-05-15",
+			wantTitle:   "t",
+		},
+		{
+			name:      "explicit null → nil",
+			raw:       `{"title":"t","description":"d","deadline":null,"source_msg_ids":[],"assignee_uids":[]}`,
+			wantDLNil: true,
+			wantTitle: "t",
+		},
+		{
+			// Legacy number format: model echoes the old Unix-seconds schema.
+			// Must NOT fail Unmarshal — drop only the deadline, keep title.
+			name:      "legacy unix-seconds number → silently nil",
+			raw:       `{"title":"t","description":"d","deadline":1234567890,"source_msg_ids":[],"assignee_uids":[]}`,
+			wantDLNil: true,
+			wantTitle: "t",
+		},
+		{
+			name:      "boolean shape → silently nil",
+			raw:       `{"title":"t","description":"d","deadline":true,"source_msg_ids":[],"assignee_uids":[]}`,
+			wantDLNil: true,
+			wantTitle: "t",
+		},
+		{
+			name:      "object shape → silently nil",
+			raw:       `{"title":"t","description":"d","deadline":{"year":2026},"source_msg_ids":[],"assignee_uids":[]}`,
+			wantDLNil: true,
+			wantTitle: "t",
+		},
+		{
+			name:      "missing key → nil (zero-value)",
+			raw:       `{"title":"t","description":"d","source_msg_ids":[],"assignee_uids":[]}`,
+			wantDLNil: true,
+			wantTitle: "t",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got extractToolArgs
+			if err := json.Unmarshal([]byte(tc.raw), &got); err != nil {
+				t.Fatalf("Unmarshal should fail-soft, got err: %v", err)
+			}
+			if got.Title != tc.wantTitle {
+				t.Errorf("title: got %q want %q", got.Title, tc.wantTitle)
+			}
+			if tc.wantDLNil {
+				if got.Deadline.raw != nil {
+					t.Errorf("deadline expected nil, got %q", *got.Deadline.raw)
+				}
+				return
+			}
+			if got.Deadline.raw == nil {
+				t.Errorf("deadline expected %q, got nil", tc.wantDLValue)
+			} else if *got.Deadline.raw != tc.wantDLValue {
+				t.Errorf("deadline: got %q want %q", *got.Deadline.raw, tc.wantDLValue)
+			}
+		})
+	}
+}
+
+// TestResolveLocation covers Asia/Shanghai default, override happy path,
+// unknown name fallback, and empty-string default.
+func TestResolveLocation(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string // expected location name
+	}{
+		{"empty → Asia/Shanghai", "", "Asia/Shanghai"},
+		{"explicit Asia/Shanghai", "Asia/Shanghai", "Asia/Shanghai"},
+		{"explicit UTC", "UTC", "UTC"},
+		{"unknown → default", "Fake/Notreal", "Asia/Shanghai"},
+		{"empty after garbage", "Mars/Olympus", "Asia/Shanghai"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveLocation(tc.in)
+			if got.String() != tc.want {
+				t.Errorf("got %q, want %q", got.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildExtractSystemPrompt_HonorsTimezone confirms the user-facing
+// "当前日期" line reflects the resolved timezone, so a user at 00:30
+// Asia/Shanghai sees today's local date in the prompt, not yesterday's UTC.
+func TestBuildExtractSystemPrompt_HonorsTimezone(t *testing.T) {
+	// 2026-05-14T16:30:00Z is 2026-05-15 00:30 in Asia/Shanghai (UTC+8).
+	asiaUTC := time.Date(2026, 5, 14, 16, 30, 0, 0, time.UTC)
+	loc := resolveLocation("Asia/Shanghai")
+	local := asiaUTC.In(loc)
+
+	in := ExtractInput{ChannelID: "ch", CreatorUID: "c"}
+	got := buildExtractSystemPrompt(in, local)
+	if !strings.Contains(got, "当前日期：2026-05-15") {
+		t.Errorf("expected Asia/Shanghai-local date in prompt, got:\n%s", got)
+	}
+	// Same instant, UTC-anchored, should read as the previous day.
+	gotUTC := buildExtractSystemPrompt(in, asiaUTC)
+	if !strings.Contains(gotUTC, "当前日期：2026-05-14") {
+		t.Errorf("UTC anchor should read as 2026-05-14, got:\n%s", gotUTC)
+	}
+}
+
+// flexDate wraps a date string in the test-scope flexibleDate type. Empty
+// string yields a nil-raw flexibleDate (matching the "model returned null"
+// case), so call sites can express both "no deadline" and "deadline=X" in
+// a single helper.
+func flexDate(s string) flexibleDate {
+	if s == "" {
+		return flexibleDate{}
+	}
+	return flexibleDate{raw: &s}
 }
 
 func equalStringSlices(a, b []string) bool {

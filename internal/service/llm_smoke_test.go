@@ -93,7 +93,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 		t.Fatalf("could not unmarshal LLM output into extractToolArgs: %v", err)
 	}
 	t.Logf("Parsed: title=%q description=%q deadline=%v source_msg_ids=%v assignee_uids=%v",
-		args.Title, args.Description, args.Deadline, args.SourceMsgIDs, args.AssigneeUIDs)
+		args.Title, args.Description, args.Deadline.raw, args.SourceMsgIDs, args.AssigneeUIDs)
 
 	// Hard requirements:
 	if strings.TrimSpace(args.Title) == "" {
@@ -105,10 +105,10 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 
 	// Soft expectations — log warnings so we can see model behaviour without
 	// failing the whole gate (the validate step covers fallbacks).
-	if args.Deadline == nil {
+	if args.Deadline.raw == nil {
 		t.Logf("WARN: deadline is null — model didn't infer a date despite the explicit 5/15 mention")
 	} else {
-		t.Logf("Deadline parsed: %s", *args.Deadline)
+		t.Logf("Deadline parsed: %s", *args.Deadline.raw)
 	}
 	if len(args.SourceMsgIDs) == 0 {
 		t.Errorf("source_msg_ids is empty — model did not select supporting message ids")
@@ -209,11 +209,13 @@ func TestSmoke_ExtractMatterProgress_AcceptsV3Schema(t *testing.T) {
 
 func strPtrSmoke(s string) *string { return &s }
 
-// TestSmoke_ExtractMatter_BotNotAssignee asserts the smart-create prompt rule
-// "bot / agent must not be picked as assignee". A chat where a bot says
-// "我来负责" must still resolve to the human creator (or another human), not
-// the bot. This is the single most regression-prone rule because GPT-style
-// models love to default to "whoever said '我来'".
+// TestSmoke_ExtractMatter_BotNotAssignee is an observational smoke test:
+// when a bot says "我来负责" amid human chatter, *does* the model still pick
+// the bot as assignee? The service does NOT promise bot exclusion as an
+// invariant — neither prompt nor server-side validation knows which UID is
+// a bot — so this test only logs the outcome, it never fails the gate.
+// (See PR #7 review: bot-exclusion was descoped because it requires
+// authoritative sender-type metadata we don't yet plumb through.)
 func TestSmoke_ExtractMatter_BotNotAssignee(t *testing.T) {
 	c := smokeClient(t)
 	in := ExtractInput{
@@ -256,13 +258,7 @@ func TestSmoke_ExtractMatter_BotNotAssignee(t *testing.T) {
 
 	for _, uid := range args.AssigneeUIDs {
 		if uid == "uid_bot_ppt" {
-			t.Errorf("PPTBot was picked as assignee despite explicit rule; prompt regressed")
-		}
-	}
-	v := validateExtractArgs(args, in, time.Now().UTC())
-	for _, uid := range v.Assignees {
-		if uid == "uid_bot_ppt" {
-			t.Errorf("bot survived validation as assignee: %v", v.Assignees)
+			t.Logf("OBSERVATION: PPTBot was selected as assignee (model: %v) — service does not enforce exclusion, surfaced for awareness only", args.AssigneeUIDs)
 		}
 	}
 }
@@ -309,8 +305,8 @@ func TestSmoke_ExtractMatter_NoDeadlineReturnsNull(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &args); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if args.Deadline != nil {
-		t.Errorf("expected deadline=null when no time was mentioned, got %q (model fabricated)", *args.Deadline)
+	if args.Deadline.raw != nil {
+		t.Errorf("expected deadline=null when no time was mentioned, got %q (model fabricated)", *args.Deadline.raw)
 	}
 }
 
@@ -377,7 +373,12 @@ func TestSmoke_ExtractMatter_TitleQuality(t *testing.T) {
 			t.Errorf("title ends with banned punctuation/emoji %q: %q", s, title)
 		}
 	}
+	// Prompt asserts ≤ 20 汉字. Surface 21–30 as a warning (model drift to
+	// watch); fail hard above 30 because that is no longer a recoverable
+	// "slightly over" case but a clear regression.
 	if runeLen := len([]rune(title)); runeLen > 30 {
-		t.Errorf("title too long (%d runes), expected ≤ 20 (soft cap 30): %q", runeLen, title)
+		t.Errorf("title too long (%d runes), expected ≤ 20: %q", runeLen, title)
+	} else if runeLen := len([]rune(title)); runeLen > 20 {
+		t.Logf("WARN: title length %d runes exceeds prompt-stated 20 cap (within soft tolerance): %q", runeLen, title)
 	}
 }

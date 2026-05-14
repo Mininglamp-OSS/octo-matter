@@ -21,6 +21,16 @@ import (
 // `now` is injected (not read from time.Now()) so the legacy and new prompts
 // reference the same wall clock — otherwise A/B runs spanning midnight would
 // disagree on the date and confound the comparison.
+//
+// CAVEAT: this is a "legacy prompt × current tool schema" pairing, not a
+// faithful reproduction of the historical extract path. The historical
+// `deadline` field was `*int64` Unix seconds; the current schema is the
+// YYYY-MM-DD string introduced in this PR. We pair the old text with the
+// new schema because (a) we cannot easily revert the schema mid-comparison
+// and (b) the deadline-format change is itself a documented improvement.
+// If you cite N-run numbers, be clear that they measure
+// "old prompt text + new schema" vs "new prompt text + new schema",
+// i.e. they isolate the prompt-content delta only.
 func legacyBuildExtractSystemPrompt(in ExtractInput, now time.Time) string {
 	var b strings.Builder
 	b.WriteString("你是事项抽取助手。根据群聊消息提取出一个结构化事项，必须通过 extract_matter 函数返回。\n")
@@ -202,7 +212,11 @@ func TestCompare_LegacyVsSmart_NRuns(t *testing.T) {
 
 	fixtures := []fixture{
 		{
-			name: "F1_BotExcluded",
+			// Observational: the service no longer enforces bot exclusion.
+			// We still log the rate because watching whether the model
+			// *naturally* picks a bot UID is useful telemetry when comparing
+			// models / prompts. Do not interpret a low rate here as a SLA.
+			name: "F1_BotInAssignee_Observational",
 			in: ExtractInput{
 				ChannelID: "ch", ChannelName: ptrStrCmp("产品研发-AI 视频群"),
 				CreatorUID: "uid_wyl",
@@ -233,7 +247,7 @@ func TestCompare_LegacyVsSmart_NRuns(t *testing.T) {
 				},
 			},
 			check: func(a extractToolArgs) map[string]bool {
-				return map[string]bool{"deadline=null": a.Deadline == nil}
+				return map[string]bool{"deadline=null": a.Deadline.raw == nil}
 			},
 		},
 		{
@@ -250,9 +264,9 @@ func TestCompare_LegacyVsSmart_NRuns(t *testing.T) {
 				// refNow = 2026-05-14 Thu → 下周三 = 2026-05-20.
 				correctYear := false
 				exactDate := false
-				if a.Deadline != nil {
-					correctYear = strings.HasPrefix(*a.Deadline, "2026-")
-					exactDate = *a.Deadline == "2026-05-20"
+				if a.Deadline.raw != nil {
+					correctYear = strings.HasPrefix(*a.Deadline.raw, "2026-")
+					exactDate = *a.Deadline.raw == "2026-05-20"
 				}
 				return map[string]bool{
 					"deadline 年份=2026":    correctYear,
@@ -417,8 +431,8 @@ func logArgs(t *testing.T, a extractToolArgs, err error) {
 		return
 	}
 	dl := "<nil>"
-	if a.Deadline != nil {
-		dl = *a.Deadline
+	if a.Deadline.raw != nil {
+		dl = *a.Deadline.raw
 	}
 	t.Logf("  title       : %q", a.Title)
 	t.Logf("  description : %q", a.Description)
