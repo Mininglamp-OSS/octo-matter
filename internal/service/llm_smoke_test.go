@@ -79,7 +79,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 			},
 		},
 	}
-	systemPrompt := buildExtractSystemPrompt(in)
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
 
 	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
@@ -108,8 +108,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 	if args.Deadline == nil {
 		t.Logf("WARN: deadline is null — model didn't infer a date despite the explicit 5/15 mention")
 	} else {
-		when := time.Unix(*args.Deadline, 0).UTC()
-		t.Logf("Deadline parsed: %s", when.Format(time.RFC3339))
+		t.Logf("Deadline parsed: %s", *args.Deadline)
 	}
 	if len(args.SourceMsgIDs) == 0 {
 		t.Errorf("source_msg_ids is empty — model did not select supporting message ids")
@@ -119,7 +118,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 	}
 
 	// Validate the cleaning pipeline accepts what the real model returned:
-	v := validateExtractArgs(args, in)
+	v := validateExtractArgs(args, in, time.Now().UTC())
 	t.Logf("After validation: assignees=%v source_msgs=%v deadline=%v",
 		v.Assignees, v.SourceMsgs, v.Deadline)
 	if len(v.Assignees) == 0 {
@@ -209,3 +208,176 @@ func TestSmoke_ExtractMatterProgress_AcceptsV3Schema(t *testing.T) {
 }
 
 func strPtrSmoke(s string) *string { return &s }
+
+// TestSmoke_ExtractMatter_BotNotAssignee asserts the smart-create prompt rule
+// "bot / agent must not be picked as assignee". A chat where a bot says
+// "我来负责" must still resolve to the human creator (or another human), not
+// the bot. This is the single most regression-prone rule because GPT-style
+// models love to default to "whoever said '我来'".
+func TestSmoke_ExtractMatter_BotNotAssignee(t *testing.T) {
+	c := smokeClient(t)
+	in := ExtractInput{
+		SpaceID:     "sp-smoke",
+		ChannelType: 2,
+		ChannelID:   "ch-smoke",
+		ChannelName: strPtrSmoke("产品研发-智能事项群"),
+		CreatorUID:  "uid_human_a",
+		Messages: []ExtractMessage{
+			{
+				MessageID: "b_001",
+				FromUID:   "uid_human_a",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-2 * time.Hour).Unix(),
+				Content:   "下周要给董事会做一份 30 分钟的 Octo 介绍 PPT。",
+			},
+			{
+				MessageID: "b_002",
+				FromUID:   "uid_bot_ppt",
+				FromUname: "PPTBot",
+				Timestamp: time.Now().Add(-90 * time.Minute).Unix(),
+				Content:   "[bot] 我来负责出大纲和初稿。",
+			},
+		},
+	}
+
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
+	userPrompt := buildMessagesPrompt(in.Messages)
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	t.Logf("LLM raw arguments:\n%s", raw)
+
+	var args extractToolArgs
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t.Logf("assignees=%v", args.AssigneeUIDs)
+
+	for _, uid := range args.AssigneeUIDs {
+		if uid == "uid_bot_ppt" {
+			t.Errorf("PPTBot was picked as assignee despite explicit rule; prompt regressed")
+		}
+	}
+	v := validateExtractArgs(args, in, time.Now().UTC())
+	for _, uid := range v.Assignees {
+		if uid == "uid_bot_ppt" {
+			t.Errorf("bot survived validation as assignee: %v", v.Assignees)
+		}
+	}
+}
+
+// TestSmoke_ExtractMatter_NoDeadlineReturnsNull asserts the prompt rule
+// "no time line in messages → deadline = null, do not fabricate / default to +7d".
+// smart_create's spec suggested a +7-day fallback; we deliberately rejected
+// that. This test catches drift back to the +7d default.
+func TestSmoke_ExtractMatter_NoDeadlineReturnsNull(t *testing.T) {
+	c := smokeClient(t)
+	in := ExtractInput{
+		SpaceID:     "sp-smoke",
+		ChannelType: 2,
+		ChannelID:   "ch-smoke",
+		ChannelName: strPtrSmoke("产研内部群"),
+		CreatorUID:  "uid_human_a",
+		Messages: []ExtractMessage{
+			{
+				MessageID: "n_001",
+				FromUID:   "uid_human_a",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-2 * time.Hour).Unix(),
+				Content:   "所有产研群以后必须用 Kano 模型排 P0/P1/P2，不再拍脑门。",
+			},
+			{
+				MessageID: "n_002",
+				FromUID:   "uid_human_b",
+				FromUname: "吴明辉",
+				Timestamp: time.Now().Add(-90 * time.Minute).Unix(),
+				Content:   "同意，我来推。",
+			},
+		},
+	}
+
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
+	userPrompt := buildMessagesPrompt(in.Messages)
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	t.Logf("LLM raw arguments:\n%s", raw)
+
+	var args extractToolArgs
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if args.Deadline != nil {
+		t.Errorf("expected deadline=null when no time was mentioned, got %q (model fabricated)", *args.Deadline)
+	}
+}
+
+// TestSmoke_ExtractMatter_TitleQuality asserts the title-naming rules from
+// smart_create:
+//   - ≤ 20 汉字 (we allow ≤ 40 chars as a soft cap because runes vary)
+//   - no banned空泛词 prefix ("关于…", "讨论…", "针对…")
+//   - no trailing punctuation/emoji
+func TestSmoke_ExtractMatter_TitleQuality(t *testing.T) {
+	c := smokeClient(t)
+	in := ExtractInput{
+		SpaceID:     "sp-smoke",
+		ChannelType: 2,
+		ChannelID:   "ch-smoke",
+		ChannelName: strPtrSmoke("Octo 设计群"),
+		CreatorUID:  "uid_wyl",
+		Messages: []ExtractMessage{
+			{
+				MessageID: "t_001",
+				FromUID:   "uid_wyl",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-3 * time.Hour).Unix(),
+				Content:   "5/15 董事会，30 分钟，我想讲清楚 Octo 跟 Linear / 玛蒂卡的差异。",
+			},
+			{
+				MessageID: "t_002",
+				FromUID:   "uid_wyl",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-2 * time.Hour).Unix(),
+				Content:   "核心 tagline 用 \"Agents do, Humans decide\"。",
+			},
+			{
+				MessageID: "t_003",
+				FromUID:   "uid_whm",
+				FromUname: "吴明辉",
+				Timestamp: time.Now().Add(-1 * time.Hour).Unix(),
+				Content:   "GTM 路径单独一段，Coze 接入是关键。",
+			},
+		},
+	}
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
+	userPrompt := buildMessagesPrompt(in.Messages)
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+
+	var args extractToolArgs
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t.Logf("title=%q", args.Title)
+
+	title := strings.TrimSpace(args.Title)
+	bannedPrefixes := []string{"关于", "讨论", "针对"}
+	for _, p := range bannedPrefixes {
+		if strings.HasPrefix(title, p) {
+			t.Errorf("title starts with banned prefix %q: %q", p, title)
+		}
+	}
+	bannedSuffixes := []string{"。", "！", "？", ".", "!", "?", "🎉", "✨"}
+	for _, s := range bannedSuffixes {
+		if strings.HasSuffix(title, s) {
+			t.Errorf("title ends with banned punctuation/emoji %q: %q", s, title)
+		}
+	}
+	if runeLen := len([]rune(title)); runeLen > 30 {
+		t.Errorf("title too long (%d runes), expected ≤ 20 (soft cap 30): %q", runeLen, title)
+	}
+}

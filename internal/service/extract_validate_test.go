@@ -48,8 +48,11 @@ func TestValidateExtractArgs(t *testing.T) {
 			{MessageID: "m3", FromUID: "u1"}, // duplicate from_uid
 		},
 	}
-	t1234 := int64(1234567890)
-	t1234Time := time.Unix(t1234, 0).UTC()
+	// Deadline reference point: 2026-05-15 (well within ±5 years of 2026-05-14
+	// "now" used below). UTC midnight is what parseLLMDeadline emits.
+	dlString := "2026-05-15"
+	dlTime := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
 
 	cases := []struct {
 		name           string
@@ -63,11 +66,11 @@ func TestValidateExtractArgs(t *testing.T) {
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1", "m3"},
 				AssigneeUIDs: []string{"u1", "u2"},
-				Deadline:     &t1234,
+				Deadline:     &dlString,
 			},
 			wantSourceMsgs: []string{"m1", "m3"},
 			wantAssignees:  []string{"u1", "u2"},
-			wantDeadline:   &t1234Time,
+			wantDeadline:   &dlTime,
 		},
 		{
 			name: "fabricated source ids dropped",
@@ -153,22 +156,44 @@ func TestValidateExtractArgs(t *testing.T) {
 			wantDeadline:   nil,
 		},
 		{
-			name: "deadline zero treated as nil",
+			name: "deadline empty string treated as nil",
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     int64Ptr(0),
+				Deadline:     strPtr(""),
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
 			wantDeadline:   nil,
 		},
 		{
-			name: "deadline negative treated as nil",
+			name: "deadline whitespace treated as nil",
 			args: extractToolArgs{
 				SourceMsgIDs: []string{"m1"},
 				AssigneeUIDs: []string{"u1"},
-				Deadline:     int64Ptr(-1),
+				Deadline:     strPtr("   "),
+			},
+			wantSourceMsgs: []string{"m1"},
+			wantAssignees:  []string{"u1"},
+			wantDeadline:   nil,
+		},
+		{
+			name: "deadline malformed (non-date) dropped",
+			args: extractToolArgs{
+				SourceMsgIDs: []string{"m1"},
+				AssigneeUIDs: []string{"u1"},
+				Deadline:     strPtr("next Friday"),
+			},
+			wantSourceMsgs: []string{"m1"},
+			wantAssignees:  []string{"u1"},
+			wantDeadline:   nil,
+		},
+		{
+			name: "deadline as RFC3339 (model violated schema) dropped",
+			args: extractToolArgs{
+				SourceMsgIDs: []string{"m1"},
+				AssigneeUIDs: []string{"u1"},
+				Deadline:     strPtr("2026-05-15T18:00:00Z"),
 			},
 			wantSourceMsgs: []string{"m1"},
 			wantAssignees:  []string{"u1"},
@@ -186,7 +211,7 @@ func TestValidateExtractArgs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := validateExtractArgs(tc.args, in)
+			got := validateExtractArgs(tc.args, in, now)
 			if !equalStringSlices(got.SourceMsgs, tc.wantSourceMsgs) {
 				t.Errorf("SourceMsgs: got %v, want %v", got.SourceMsgs, tc.wantSourceMsgs)
 			}
@@ -200,7 +225,6 @@ func TestValidateExtractArgs(t *testing.T) {
 	}
 }
 
-func int64Ptr(v int64) *int64 { return &v }
 
 // TestValidateExtractArgs_LengthCaps covers PR #34:
 // LLM may emit title/description longer than DB column / handler binding
@@ -211,6 +235,7 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 		CreatorUID: "creator",
 		Messages:   []ExtractMessage{{MessageID: "m1", FromUID: "u1"}},
 	}
+	now := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
 
 	t.Run("title exceeding cap is clipped to MaxLLMTitleLen runes", func(t *testing.T) {
 		over := strings.Repeat("中", MaxLLMTitleLen+50)
@@ -219,7 +244,7 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-		}, in)
+		}, in, now)
 		got := []rune(v.Title)
 		if len(got) != MaxLLMTitleLen {
 			t.Errorf("title not clipped: got %d runes, want %d", len(got), MaxLLMTitleLen)
@@ -233,7 +258,7 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-		}, in)
+		}, in, now)
 		if v.Title != short {
 			t.Errorf("short title was modified: %q vs %q", v.Title, short)
 		}
@@ -246,37 +271,49 @@ func TestValidateExtractArgs_LengthCaps(t *testing.T) {
 			Description:  over,
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-		}, in)
+		}, in, now)
 		got := []rune(v.Description)
 		if len(got) != MaxLLMDescriptionLen {
 			t.Errorf("description not clipped: got %d runes, want %d", len(got), MaxLLMDescriptionLen)
 		}
 	})
 
-	t.Run("deadline absurdly far in future is dropped", func(t *testing.T) {
-		// year 9999 unix ≈ 253402300799; well past maxReasonableDeadlineUnix.
-		over := int64(253_402_300_799)
+	t.Run("deadline year too far in future is dropped", func(t *testing.T) {
+		// 2099 is > now.Year() + deadlineYearLookahead (5).
 		v := validateExtractArgs(extractToolArgs{
 			Title:        "ok",
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-			Deadline:     &over,
-		}, in)
+			Deadline:     strPtr("2099-12-31"),
+		}, in, now)
 		if v.Deadline != nil {
-			t.Errorf("absurdly far deadline must be dropped, got %v", v.Deadline)
+			t.Errorf("far-future deadline must be dropped, got %v", v.Deadline)
+		}
+	})
+
+	t.Run("deadline year too far in past is dropped", func(t *testing.T) {
+		// 2020 is < now.Year() - deadlineYearLookback (1).
+		v := validateExtractArgs(extractToolArgs{
+			Title:        "ok",
+			Description:  "ok",
+			SourceMsgIDs: []string{"m1"},
+			AssigneeUIDs: []string{"creator"},
+			Deadline:     strPtr("2020-01-01"),
+		}, in, now)
+		if v.Deadline != nil {
+			t.Errorf("far-past deadline must be dropped, got %v", v.Deadline)
 		}
 	})
 
 	t.Run("deadline within reasonable range kept", func(t *testing.T) {
-		ts := int64(1747332000) // 2025-05-15 reasonable
 		v := validateExtractArgs(extractToolArgs{
 			Title:        "ok",
 			Description:  "ok",
 			SourceMsgIDs: []string{"m1"},
 			AssigneeUIDs: []string{"creator"},
-			Deadline:     &ts,
-		}, in)
+			Deadline:     strPtr("2026-05-15"),
+		}, in, now)
 		if v.Deadline == nil {
 			t.Errorf("reasonable deadline must be kept")
 		}

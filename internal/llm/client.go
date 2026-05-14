@@ -54,11 +54,34 @@ func ForceTool(name string) *ToolChoice {
 }
 
 // ChatRequest mirrors the OpenAI /v1/chat/completions request body.
+//
+// Temperature / MaxTokens are pointers so we can distinguish "not sent" from
+// "explicitly set to zero". Omitting them lets the gateway apply its own
+// defaults; setting them (via CallOption) takes effect on the next call.
 type ChatRequest struct {
-	Model      string      `json:"model"`
-	Messages   []Message   `json:"messages"`
-	Tools      []Tool      `json:"tools,omitempty"`
-	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
+	Model       string      `json:"model"`
+	Messages    []Message   `json:"messages"`
+	Tools       []Tool      `json:"tools,omitempty"`
+	ToolChoice  *ToolChoice `json:"tool_choice,omitempty"`
+	Temperature *float64    `json:"temperature,omitempty"`
+	MaxTokens   *int        `json:"max_tokens,omitempty"`
+}
+
+// CallOption tweaks an outgoing CallTool request. Options are applied in order
+// and may overwrite each other.
+type CallOption func(*ChatRequest)
+
+// WithTemperature sets the sampling temperature for this call. Lower values
+// (0.0–0.3) make extraction-style tasks more deterministic; higher values
+// (≥0.7) introduce variety useful for creative writing.
+func WithTemperature(t float64) CallOption {
+	return func(r *ChatRequest) { r.Temperature = &t }
+}
+
+// WithMaxTokens caps the response token budget. Useful as a defense against a
+// misbehaving model that pads its reply.
+func WithMaxTokens(n int) CallOption {
+	return func(r *ChatRequest) { r.MaxTokens = &n }
 }
 
 // ChatResponse is the narrow subset of OpenAI's response we care about.
@@ -154,16 +177,21 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatRequest) (*ChatResp
 }
 
 // CallTool performs a forced-function-call and returns the raw JSON arguments
-// string emitted by the model for the tool named `toolName`.
-func (c *Client) CallTool(ctx context.Context, systemPrompt, userPrompt string, tool Tool) (string, error) {
-	resp, err := c.ChatCompletion(ctx, ChatRequest{
+// string emitted by the model for the tool named `toolName`. Pass CallOptions
+// (WithTemperature, WithMaxTokens, ...) to override gateway defaults.
+func (c *Client) CallTool(ctx context.Context, systemPrompt, userPrompt string, tool Tool, opts ...CallOption) (string, error) {
+	req := ChatRequest{
 		Messages: []Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userPrompt},
 		},
 		Tools:      []Tool{tool},
 		ToolChoice: ForceTool(tool.Function.Name),
-	})
+	}
+	for _, opt := range opts {
+		opt(&req)
+	}
+	resp, err := c.ChatCompletion(ctx, req)
 	if err != nil {
 		return "", err
 	}
