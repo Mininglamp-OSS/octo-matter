@@ -72,6 +72,12 @@ func (h *ExtractHandler) Create(c *gin.Context) {
 		})
 	}
 
+	// TODO(p2): plumb caller timezone in from request header / space config
+	// / IM client locale. Leaving Timezone unset falls through to the service
+	// default (Asia/Shanghai), which matches the primary product user base
+	// today but will be wrong for users in other regions. Tracked separately
+	// from PR #7 because the source-of-truth (IM header vs space setting vs
+	// JWT claim) is not yet decided.
 	in := service.ExtractInput{
 		SpaceID:     spaceID(c),
 		ChannelType: req.ChannelType,

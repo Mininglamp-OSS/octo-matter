@@ -317,12 +317,19 @@ func validateExtractArgs(args extractToolArgs, in ExtractInput, now time.Time) e
 	}
 }
 
-// parseLLMDeadline turns the model's YYYY-MM-DD string into a UTC midnight
-// *time.Time, with a year-range sanity check against `now`. Returns nil for
-// any of: nil pointer, empty/whitespace, malformed date, parse error, or year
-// outside the configured window. The window is deliberately narrow because
-// the model has no business outputting "0001-01-01" or "2099-12-31" — those
-// signal a hallucination, not a real deadline.
+// parseLLMDeadline turns the model's YYYY-MM-DD string into a midnight
+// *time.Time anchored to `now.Location()`, with a year-range sanity check.
+// Returns nil for any of: nil pointer, empty/whitespace, malformed date,
+// parse error, or year outside the configured window. The window is
+// deliberately narrow because the model has no business outputting
+// "0001-01-01" or "2099-12-31" — those signal a hallucination.
+//
+// Timezone anchor matters: a user in Asia/Shanghai who types "5/15" expects
+// the deadline boundary to land at 2026-05-15 00:00 +08:00, not at UTC
+// midnight (which is 08:00 Shanghai). Using time.ParseInLocation with
+// now.Location() keeps the calendar-day semantics consistent end-to-end —
+// the same date the model sees in the prompt's "当前日期" is the wall-clock
+// date that lands in the database.
 //
 // Note: the prompt also tells the model "若解析出的日期早于当前日期 >30 天，
 // 则用次年" (typical use case: user says "5/15" in November). That rule is
@@ -338,7 +345,7 @@ func parseLLMDeadline(raw *string, now time.Time) *time.Time {
 	if s == "" {
 		return nil
 	}
-	t, err := time.Parse("2006-01-02", s)
+	t, err := time.ParseInLocation("2006-01-02", s, now.Location())
 	if err != nil {
 		return nil
 	}
@@ -478,7 +485,9 @@ func validateMessages(msgs []ExtractMessage) error {
 
 // buildExtractSystemPrompt assembles the system prompt for the extract_matter
 // tool call. The `now` parameter is injected (not read from time.Now()) so the
-// prompt is deterministic under test — production callers pass time.Now().UTC().
+// prompt is deterministic under test — production callers pass
+// `time.Now().In(resolveLocation(in.Timezone))` so the user sees their
+// local calendar day in the "当前日期" line.
 //
 // Sections, in order:
 //  1. Role + framing ("起草事项" not "做总结")

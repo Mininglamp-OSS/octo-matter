@@ -443,6 +443,71 @@ func TestBuildExtractSystemPrompt_HonorsTimezone(t *testing.T) {
 	}
 }
 
+// TestParseLLMDeadline_HonorsTimezone is the regression test for review #7's
+// UTC-midnight blocker: a model emits "2026-05-15" in a non-UTC conversation,
+// and the persisted *time.Time must be midnight in that timezone, not in UTC
+// (which would render as the prior day to a negative-offset user).
+//
+// Concretely, for America/Los_Angeles (UTC-7 during DST, UTC-8 otherwise),
+// using bare time.Parse would store 2026-05-15T00:00:00Z = 2026-05-14T17:00
+// local, so the "May 15" deadline shows up as "May 14" in the user's
+// calendar. ParseInLocation with now.Location() prevents that.
+func TestParseLLMDeadline_HonorsTimezone(t *testing.T) {
+	cases := []struct {
+		name    string
+		tz      string
+		raw     string
+		wantDay int
+		// expected wall-clock hour in target tz (always 0 for date-only inputs)
+		wantHour int
+	}{
+		{
+			name:     "Asia/Shanghai date is local midnight",
+			tz:       "Asia/Shanghai",
+			raw:      "2026-05-15",
+			wantDay:  15,
+			wantHour: 0,
+		},
+		{
+			name:     "America/Los_Angeles date is local midnight, not UTC midnight",
+			tz:       "America/Los_Angeles",
+			raw:      "2026-05-15",
+			wantDay:  15,
+			wantHour: 0,
+		},
+		{
+			name:     "UTC date is UTC midnight",
+			tz:       "UTC",
+			raw:      "2026-05-15",
+			wantDay:  15,
+			wantHour: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			loc := resolveLocation(tc.tz)
+			now := time.Date(2026, 5, 14, 12, 0, 0, 0, loc)
+			got := parseLLMDeadline(&tc.raw, now)
+			if got == nil {
+				t.Fatalf("expected parsed deadline, got nil")
+			}
+			// Inspect the wall-clock representation in the target tz —
+			// .In(loc) is a no-op for already-located times, but it documents
+			// intent: we care about local-tz semantics, not absolute instant.
+			gotLocal := got.In(loc)
+			if gotLocal.Day() != tc.wantDay || gotLocal.Hour() != tc.wantHour {
+				t.Errorf("expected day=%d hour=%d in %s, got day=%d hour=%d (instant=%s)",
+					tc.wantDay, tc.wantHour, tc.tz, gotLocal.Day(), gotLocal.Hour(), got.Format(time.RFC3339))
+			}
+			// Belt-and-braces: location of the parsed deadline must match
+			// now's location. Using bare time.Parse would put it in UTC.
+			if got.Location().String() != loc.String() {
+				t.Errorf("expected deadline location %q, got %q", loc.String(), got.Location().String())
+			}
+		})
+	}
+}
+
 // flexDate wraps a date string in the test-scope flexibleDate type. Empty
 // string yields a nil-raw flexibleDate (matching the "model returned null"
 // case), so call sites can express both "no deadline" and "deadline=X" in
