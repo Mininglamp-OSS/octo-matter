@@ -50,16 +50,6 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.64.5
-          args: --timeout=5m
+  # TODO: Re-enable lint once golangci-lint supports Go 1.25 and the errcheck baseline is resolved.
+  # golangci-lint v1.64.5 was built with Go 1.24 and cannot parse Go 1.25 modules.
+  # Tracked in: https://github.com/Mininglamp-OSS/octo-matter/pull/8
