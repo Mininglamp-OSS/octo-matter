@@ -55,6 +55,12 @@ type ExtractInput struct {
 	CallerUIDs  []string
 	CallerToken string
 	Messages    []ExtractMessage
+	// Timezone is the IANA name (e.g. "Asia/Shanghai") that anchors the
+	// prompt's "当前日期" field and the deadline year-range check. Empty
+	// falls back to defaultExtractTimezone so a user typing "今天/本周五"
+	// resolves in their calendar day, not UTC's. Unknown / unparseable
+	// names also fall back rather than erroring — see resolveLocation.
+	Timezone string
 }
 
 // ExtractResult mirrors the REST response body.
@@ -71,7 +77,7 @@ type ExtractResult struct {
 
 // llmTool is the function-calling wrapper this service sends to the LLM gateway.
 type llmCaller interface {
-	CallTool(ctx context.Context, systemPrompt, userPrompt string, tool llm.Tool) (string, error)
+	CallTool(ctx context.Context, systemPrompt, userPrompt string, tool llm.Tool, opts ...llm.CallOption) (string, error)
 }
 
 // activityStore is the narrow ActivityRepo surface used for best-effort
@@ -92,9 +98,9 @@ func NewExtractService(llmClient llmCaller, matterSvc *MatterService) *ExtractSe
 }
 
 // extractToolArgs mirrors the JSON schema declared for `extract_matter`.
-// Per design-v3.md §3.1, the model returns:
+// The model returns:
 //   - title / description: free text
-//   - deadline: Unix seconds, or null if not inferable
+//   - deadline: YYYY-MM-DD date string, or null if not inferable
 //   - source_msg_ids: subset of input message IDs the matter is grounded in
 //   - assignee_uids: subset of input from_uids identified as responsible
 //
@@ -102,11 +108,46 @@ func NewExtractService(llmClient llmCaller, matterSvc *MatterService) *ExtractSe
 // input set so the model cannot fabricate references; an empty/all-invalid
 // list falls back to safe defaults (all input msgs / [creator]).
 type extractToolArgs struct {
-	Title        string   `json:"title"`
-	Description  string   `json:"description"`
-	Deadline     *int64   `json:"deadline"`
-	SourceMsgIDs []string `json:"source_msg_ids"`
-	AssigneeUIDs []string `json:"assignee_uids"`
+	Title        string       `json:"title"`
+	Description  string       `json:"description"`
+	Deadline     flexibleDate `json:"deadline"`
+	SourceMsgIDs []string     `json:"source_msg_ids"`
+	AssigneeUIDs []string     `json:"assignee_uids"`
+}
+
+// flexibleDate decodes the model's `deadline` field tolerantly: a JSON string
+// is captured as-is for downstream date parsing, while any other JSON shape
+// (number, boolean, object, array) is silently treated as null. This is
+// load-bearing during the int64-seconds → YYYY-MM-DD migration: a model that
+// hasn't picked up the new schema and emits `"deadline": 1234567890` would
+// otherwise blow up the entire `json.Unmarshal(raw, &args)` call and surface
+// as `invalid arguments`, killing an otherwise-usable extraction (title /
+// owners / source_msgs are still good). Failing soft here lets the matter
+// land with `deadline=nil` instead.
+//
+// JSON-null and missing keys both decode to {raw=nil}; the value reaches
+// parseLLMDeadline which already handles nil.
+type flexibleDate struct {
+	raw *string
+}
+
+// UnmarshalJSON accepts string-or-null, drops anything else to null. Note:
+// we deliberately swallow the type-mismatch error rather than propagate it,
+// because the caller already trusts json.RawMessage validity (we are still
+// inside a well-formed JSON object). A genuinely malformed JSON document
+// would have failed earlier at the encompassing Unmarshal call.
+func (d *flexibleDate) UnmarshalJSON(b []byte) error {
+	if len(b) == 0 || string(b) == "null" {
+		d.raw = nil
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		d.raw = &s
+		return nil
+	}
+	d.raw = nil
+	return nil
 }
 
 var extractMatterTool = llm.Tool{
@@ -126,8 +167,9 @@ var extractMatterTool = llm.Tool{
 					"description": "事项描述/目标",
 				},
 				"deadline": map[string]interface{}{
-					"type":        []interface{}{"number", "null"},
-					"description": "Unix 时间戳（秒）。从消息中推断的截止时间。无法推断时返回 null，不要编造。",
+					"type":        []interface{}{"string", "null"},
+					"pattern":     `^\d{4}-\d{2}-\d{2}$`,
+					"description": "截止日期，YYYY-MM-DD 格式（如 2026-05-15）。仅在消息中明确提到时间时返回；无法推断时返回 null，不要编造。",
 				},
 				"source_msg_ids": map[string]interface{}{
 					"type":        "array",
@@ -153,11 +195,49 @@ var extractMatterTool = llm.Tool{
 const (
 	MaxLLMTitleLen       = 500
 	MaxLLMDescriptionLen = 10000
-	// maxReasonableDeadlineUnix bounds an inferred deadline to year 2100;
-	// anything past that is almost certainly a hallucination (and 9999-year
-	// timestamps break some downstream date pickers).
-	maxReasonableDeadlineUnix = int64(4_102_444_800) // 2100-01-01 UTC
+	// deadlineYearLookback / deadlineYearLookahead bound the parsed YYYY-MM-DD
+	// to a sane window around the request time. Anything outside is treated
+	// as a hallucination (e.g., model emits "0001-01-01" or "2099-12-31").
+	// One year back tolerates models that occasionally lag a year behind the
+	// prompt's stated date; five years forward covers any realistic deadline.
+	deadlineYearLookback  = 1
+	deadlineYearLookahead = 5
+
+	// extractTemperature governs sampling for the matter-extract call. Low
+	// temperature suits the task — we want consistent field choices, not
+	// creative writing. Empirically 0.2 keeps title naming stable while still
+	// letting the model vary phrasing across reruns of the same input.
+	extractTemperature = 0.2
+
+	// extractMaxTokens caps the model's response. A complete extract_matter
+	// JSON payload is well under 800 tokens; 2048 leaves headroom for the
+	// occasional long description without rewarding runaway output.
+	extractMaxTokens = 2048
+
+	// defaultExtractTimezone anchors "当前日期" when the caller does not
+	// supply ExtractInput.Timezone. Asia/Shanghai matches the primary
+	// product user base; flipping this is a one-line change if we ever
+	// need to default elsewhere.
+	defaultExtractTimezone = "Asia/Shanghai"
 )
+
+// resolveLocation maps a caller-supplied IANA name to a *time.Location,
+// falling back to defaultExtractTimezone — and then to UTC — when the name
+// is empty or unknown. We deliberately avoid surfacing the error: a stale
+// or typo'd timezone should not block extraction; an "off-by-one-day"
+// prompt is preferable to a 5xx.
+func resolveLocation(tz string) *time.Location {
+	if tz == "" {
+		tz = defaultExtractTimezone
+	}
+	if loc, err := time.LoadLocation(tz); err == nil {
+		return loc
+	}
+	if loc, err := time.LoadLocation(defaultExtractTimezone); err == nil {
+		return loc
+	}
+	return time.UTC
+}
 
 // extractValidated holds the cleaned, server-trusted derivation of the LLM
 // extraction. Each field is sanitized against the input message set so the
@@ -172,8 +252,9 @@ type extractValidated struct {
 
 // validateExtractArgs filters the LLM-emitted fields against the input,
 // applies safe fallbacks (all input msgs / [creator]), and parses the deadline
-// timestamp. Pure function — no I/O — so it is easily table-tested.
-func validateExtractArgs(args extractToolArgs, in ExtractInput) extractValidated {
+// string. Pure function — no I/O, no time.Now() — so it is easily table-tested.
+// `now` anchors the year-range sanity check for the deadline.
+func validateExtractArgs(args extractToolArgs, in ExtractInput, now time.Time) extractValidated {
 	inputMsgIDs := make(map[string]struct{}, len(in.Messages))
 	inputUIDs := make(map[string]struct{}, len(in.Messages)+1)
 	if in.CreatorUID != "" {
@@ -225,11 +306,7 @@ func validateExtractArgs(args extractToolArgs, in ExtractInput) extractValidated
 		assignees = []string{in.CreatorUID}
 	}
 
-	var deadline *time.Time
-	if args.Deadline != nil && *args.Deadline > 0 && *args.Deadline < maxReasonableDeadlineUnix {
-		t := time.Unix(*args.Deadline, 0).UTC()
-		deadline = &t
-	}
+	deadline := parseLLMDeadline(args.Deadline.raw, now)
 
 	return extractValidated{
 		Title:       clipRunes(args.Title, MaxLLMTitleLen),
@@ -238,6 +315,46 @@ func validateExtractArgs(args extractToolArgs, in ExtractInput) extractValidated
 		Assignees:   assignees,
 		Deadline:    deadline,
 	}
+}
+
+// parseLLMDeadline turns the model's YYYY-MM-DD string into a midnight
+// *time.Time anchored to `now.Location()`, with a year-range sanity check.
+// Returns nil for any of: nil pointer, empty/whitespace, malformed date,
+// parse error, or year outside the configured window. The window is
+// deliberately narrow because the model has no business outputting
+// "0001-01-01" or "2099-12-31" — those signal a hallucination.
+//
+// Timezone anchor matters: a user in Asia/Shanghai who types "5/15" expects
+// the deadline boundary to land at 2026-05-15 00:00 +08:00, not at UTC
+// midnight (which is 08:00 Shanghai). Using time.ParseInLocation with
+// now.Location() keeps the calendar-day semantics consistent end-to-end —
+// the same date the model sees in the prompt's "当前日期" is the wall-clock
+// date that lands in the database.
+//
+// Note: the prompt also tells the model "若解析出的日期早于当前日期 >30 天，
+// 则用次年" (typical use case: user says "5/15" in November). That rule is
+// best-effort prompt-level only — this function does NOT roll a 4-months-stale
+// date forward. An overdue deadline can be legitimate (catching up on a missed
+// task), so silently mutating the year would do more harm than good. If we
+// later need to enforce the rule, do it here, not in the model.
+func parseLLMDeadline(raw *string, now time.Time) *time.Time {
+	if raw == nil {
+		return nil
+	}
+	s := strings.TrimSpace(*raw)
+	if s == "" {
+		return nil
+	}
+	t, err := time.ParseInLocation("2006-01-02", s, now.Location())
+	if err != nil {
+		return nil
+	}
+	minYear := now.Year() - deadlineYearLookback
+	maxYear := now.Year() + deadlineYearLookahead
+	if t.Year() < minYear || t.Year() > maxYear {
+		return nil
+	}
+	return &t
 }
 
 // clipRunes returns s truncated to at most max runes (NOT bytes), preserving
@@ -274,10 +391,16 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 		return nil, err
 	}
 
-	systemPrompt := buildExtractSystemPrompt(in)
+	// Anchor "now" to the caller's timezone so the prompt's "当前日期" and
+	// the deadline year-range check both agree with the user's calendar day.
+	now := time.Now().In(resolveLocation(in.Timezone))
+	systemPrompt := buildExtractSystemPrompt(in, now)
 	userPrompt := buildMessagesPrompt(in.Messages)
 
-	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, extractMatterTool)
+	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, extractMatterTool,
+		llm.WithTemperature(extractTemperature),
+		llm.WithMaxTokens(extractMaxTokens),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("llm extract_matter: %w", err)
 	}
@@ -289,7 +412,7 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 		return nil, fmt.Errorf("llm extract_matter: empty title: %w", llm.ErrEmptyToolCall)
 	}
 
-	v := validateExtractArgs(args, in)
+	v := validateExtractArgs(args, in, now)
 
 	chType := in.ChannelType
 	channelIDCopy := in.ChannelID
@@ -360,25 +483,70 @@ func validateMessages(msgs []ExtractMessage) error {
 	return nil
 }
 
-func buildExtractSystemPrompt(in ExtractInput) string {
+// buildExtractSystemPrompt assembles the system prompt for the extract_matter
+// tool call. The `now` parameter is injected (not read from time.Now()) so the
+// prompt is deterministic under test — production callers pass
+// `time.Now().In(resolveLocation(in.Timezone))` so the user sees their
+// local calendar day in the "当前日期" line.
+//
+// Sections, in order:
+//  1. Role + framing ("起草事项" not "做总结")
+//  2. Field-level rules: title naming, description shape, deadline parsing,
+//     source filtering, assignee priority (incl. agent/bot exclusion)
+//  3. Defensive constraints (no fabrication, UID-only, agent ≠ owner)
+//  4. Runtime context: current date (YYYY-MM-DD + weekday), channel, creator,
+//     and the sender list the model must pick assignees from.
+func buildExtractSystemPrompt(in ExtractInput, now time.Time) string {
 	var b strings.Builder
-	b.WriteString("你是事项抽取助手。根据群聊消息提取出一个结构化事项，必须通过 extract_matter 函数返回。\n")
-	b.WriteString("字段约定：\n")
-	b.WriteString("  - title / description：根据消息内容生成。\n")
-	b.WriteString("  - deadline：消息中明确提到截止时间时，返回 Unix 秒时间戳；否则返回 null，不要编造。\n")
-	b.WriteString("  - source_msg_ids：从输入消息的 message_id 中精选最相关的，不要编造或返回空数组。\n")
-	b.WriteString("  - assignee_uids：从输入消息发言人的 from_uid 中识别负责人，不要编造；无法识别时返回空数组（服务端会回退到 creator）。\n")
-	b.WriteString(fmt.Sprintf("当前时间：%s\n", time.Now().UTC().Format(time.RFC3339)))
+	b.WriteString("你是 Octo Matter 的事项起草助手。用户从群聊里多选若干条关键消息，交给你蒸馏出一条新事项的字段。\n")
+	b.WriteString("你的任务不是做总结，而是\"立事项\"：读完消息后判断这件事是什么、目标是什么、谁牵头、什么时候要。\n")
+	b.WriteString("必须通过 extract_matter 函数返回，不要在普通文本里输出结果。\n\n")
+
+	b.WriteString("字段规则：\n")
+	b.WriteString("  - title：短、具体、可检索，≤ 20 汉字，优先动宾结构（如\"董事会 PPT 打磨\"\"Kano 模型推广到所有产研群\"）。\n")
+	b.WriteString("    禁止套话前缀（\"关于…的讨论\"\"针对…的安排\"）、结尾标点、emoji。\n")
+	b.WriteString("  - description：一段话讲清\"要做成什么 + 关键约束/重点\"，50–150 汉字。\n")
+	b.WriteString("    必须保留原话的专有名词、数字、口号（tagline、代号、具体数值）。\n")
+	b.WriteString("    反面例子：\"讨论了 PPT 相关事宜\"（空洞）、\"张三说 A，李四说 B\"（流水账）。\n")
+	b.WriteString("  - deadline：消息中明确提到截止时间时，返回 YYYY-MM-DD 格式的日期字符串（如 \"2026-05-15\"）；解析\"周五前/下周三/月底\"等相对表达时基于下方\"当前日期\"。\n")
+	b.WriteString("    消息里只给月/日时，使用当前日期的年份；若解析出的日期早于当前日期 >30 天，则用次年。\n")
+	b.WriteString("    无任何时间线索时返回 null，不要编造、不要默认填\"一周后\"。\n")
+	b.WriteString("    不要返回 Unix 时间戳、ISO datetime（含 T 和时区）、自然语言（\"下周三\"），必须是 \"YYYY-MM-DD\" 这种 10 字符日期。\n")
+	b.WriteString("  - source_msg_ids：从输入 message_id 中精选最能支撑该事项的若干条，不要编造、不要返回空数组。\n")
+	b.WriteString("    以下消息**一律不得**出现在 source_msg_ids，即使只有这几条也宁可少选：\n")
+	b.WriteString("      · 寒暄、客套（\"早\"\"在吗\"\"打扰一下\"\"辛苦了\"）\n")
+	b.WriteString("      · 单字/单词确认（\"收到\"\"好的\"\"嗯\"\"OK\"\"ok\"\"明白\"\"可以\"\"没问题\"\"行\"\"好\"\"对\"\"是\"）\n")
+	b.WriteString("      · 纯表情 / 纯 emoji（\"👍\"\"✅\"\"😂\"\"哈哈\"\"[表情]\"）\n")
+	b.WriteString("      · 文件预览截图、自动回执、加入/退出群通知\n")
+	b.WriteString("    判断标准：若把这条消息从 timeline 里删掉，事项的 title / description / deadline / assignee 全都不变，则它就是噪声。\n")
+	b.WriteString("  - assignee_uids：从下方\"参与者\"列表的 uid 中识别负责人，不要编造、不要输出表里没有的 uid。\n")
+	b.WriteString("    优先级：(1) 显式认领（\"我来 / 我牵头 / 我负责 / 我接\"）的发言者 > (2) 被指派者（\"@X 你来 / 交给 X\"）> (3) 都没有则返回空数组（服务端回退到 creator）。\n\n")
+
+	b.WriteString("关键约束：\n")
+	b.WriteString("  ❌ 禁止虚构 message_id 或 uid，未出现在输入中的一律不要输出。\n")
+	b.WriteString("  ❌ 禁止 title 出现\"讨论/关于/事宜\"等空泛词或结尾标点 emoji。\n")
+	b.WriteString("  ❌ 禁止 deadline 编造（消息没说截止时间就返回 null）。\n")
+	b.WriteString("  ✅ 输出语言跟随消息：中文消息 → 中文字段；英文消息 → 英文字段。\n\n")
+
+	b.WriteString(fmt.Sprintf("当前日期：%s (%s)\n", now.Format("2006-01-02"), weekdayCN(now.Weekday())))
 	if in.ChannelName != nil && *in.ChannelName != "" {
 		b.WriteString(fmt.Sprintf("频道名称：%s\n", *in.ChannelName))
 	}
 	b.WriteString(fmt.Sprintf("频道 ID：%s\n", in.ChannelID))
 	b.WriteString(fmt.Sprintf("Creator UID：%s\n", in.CreatorUID))
-	b.WriteString("参与者（uid → 姓名）：\n")
+	b.WriteString("参与者（uid → 姓名，assignee_uids 只能来自这个列表）：\n")
 	for _, u := range uniqueSenders(in.Messages) {
 		b.WriteString(fmt.Sprintf("  - %s → %s\n", u.UID, u.Name))
 	}
 	return b.String()
+}
+
+// weekdayCN renders a time.Weekday as the Chinese form ("星期一" .. "星期日"),
+// matching the convention used by smart_create_matter_prompt.md so the model
+// has a stable anchor when parsing relative dates like "本周五".
+func weekdayCN(w time.Weekday) string {
+	names := [...]string{"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
+	return names[w]
 }
 
 func buildMessagesPrompt(msgs []ExtractMessage) string {

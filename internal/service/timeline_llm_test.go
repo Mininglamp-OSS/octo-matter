@@ -22,7 +22,7 @@ type stubLLM struct {
 	gotToolName string
 }
 
-func (s *stubLLM) CallTool(_ context.Context, system, user string, tool llm.Tool) (string, error) {
+func (s *stubLLM) CallTool(_ context.Context, system, user string, tool llm.Tool, _ ...llm.CallOption) (string, error) {
 	s.gotSystem = system
 	s.gotUser = user
 	s.gotToolName = tool.Function.Name

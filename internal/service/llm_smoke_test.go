@@ -79,7 +79,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 			},
 		},
 	}
-	systemPrompt := buildExtractSystemPrompt(in)
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
 
 	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
@@ -93,7 +93,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 		t.Fatalf("could not unmarshal LLM output into extractToolArgs: %v", err)
 	}
 	t.Logf("Parsed: title=%q description=%q deadline=%v source_msg_ids=%v assignee_uids=%v",
-		args.Title, args.Description, args.Deadline, args.SourceMsgIDs, args.AssigneeUIDs)
+		args.Title, args.Description, args.Deadline.raw, args.SourceMsgIDs, args.AssigneeUIDs)
 
 	// Hard requirements:
 	if strings.TrimSpace(args.Title) == "" {
@@ -105,11 +105,10 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 
 	// Soft expectations — log warnings so we can see model behaviour without
 	// failing the whole gate (the validate step covers fallbacks).
-	if args.Deadline == nil {
+	if args.Deadline.raw == nil {
 		t.Logf("WARN: deadline is null — model didn't infer a date despite the explicit 5/15 mention")
 	} else {
-		when := time.Unix(*args.Deadline, 0).UTC()
-		t.Logf("Deadline parsed: %s", when.Format(time.RFC3339))
+		t.Logf("Deadline parsed: %s", *args.Deadline.raw)
 	}
 	if len(args.SourceMsgIDs) == 0 {
 		t.Errorf("source_msg_ids is empty — model did not select supporting message ids")
@@ -119,7 +118,7 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 	}
 
 	// Validate the cleaning pipeline accepts what the real model returned:
-	v := validateExtractArgs(args, in)
+	v := validateExtractArgs(args, in, time.Now().UTC())
 	t.Logf("After validation: assignees=%v source_msgs=%v deadline=%v",
 		v.Assignees, v.SourceMsgs, v.Deadline)
 	if len(v.Assignees) == 0 {
@@ -209,3 +208,177 @@ func TestSmoke_ExtractMatterProgress_AcceptsV3Schema(t *testing.T) {
 }
 
 func strPtrSmoke(s string) *string { return &s }
+
+// TestSmoke_ExtractMatter_BotNotAssignee is an observational smoke test:
+// when a bot says "我来负责" amid human chatter, *does* the model still pick
+// the bot as assignee? The service does NOT promise bot exclusion as an
+// invariant — neither prompt nor server-side validation knows which UID is
+// a bot — so this test only logs the outcome, it never fails the gate.
+// (See PR #7 review: bot-exclusion was descoped because it requires
+// authoritative sender-type metadata we don't yet plumb through.)
+func TestSmoke_ExtractMatter_BotNotAssignee(t *testing.T) {
+	c := smokeClient(t)
+	in := ExtractInput{
+		SpaceID:     "sp-smoke",
+		ChannelType: 2,
+		ChannelID:   "ch-smoke",
+		ChannelName: strPtrSmoke("产品研发-智能事项群"),
+		CreatorUID:  "uid_human_a",
+		Messages: []ExtractMessage{
+			{
+				MessageID: "b_001",
+				FromUID:   "uid_human_a",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-2 * time.Hour).Unix(),
+				Content:   "下周要给董事会做一份 30 分钟的 Octo 介绍 PPT。",
+			},
+			{
+				MessageID: "b_002",
+				FromUID:   "uid_bot_ppt",
+				FromUname: "PPTBot",
+				Timestamp: time.Now().Add(-90 * time.Minute).Unix(),
+				Content:   "[bot] 我来负责出大纲和初稿。",
+			},
+		},
+	}
+
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
+	userPrompt := buildMessagesPrompt(in.Messages)
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	t.Logf("LLM raw arguments:\n%s", raw)
+
+	var args extractToolArgs
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t.Logf("assignees=%v", args.AssigneeUIDs)
+
+	for _, uid := range args.AssigneeUIDs {
+		if uid == "uid_bot_ppt" {
+			t.Logf("OBSERVATION: PPTBot was selected as assignee (model: %v) — service does not enforce exclusion, surfaced for awareness only", args.AssigneeUIDs)
+		}
+	}
+}
+
+// TestSmoke_ExtractMatter_NoDeadlineReturnsNull asserts the prompt rule
+// "no time line in messages → deadline = null, do not fabricate / default to +7d".
+// smart_create's spec suggested a +7-day fallback; we deliberately rejected
+// that. This test catches drift back to the +7d default.
+func TestSmoke_ExtractMatter_NoDeadlineReturnsNull(t *testing.T) {
+	c := smokeClient(t)
+	in := ExtractInput{
+		SpaceID:     "sp-smoke",
+		ChannelType: 2,
+		ChannelID:   "ch-smoke",
+		ChannelName: strPtrSmoke("产研内部群"),
+		CreatorUID:  "uid_human_a",
+		Messages: []ExtractMessage{
+			{
+				MessageID: "n_001",
+				FromUID:   "uid_human_a",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-2 * time.Hour).Unix(),
+				Content:   "所有产研群以后必须用 Kano 模型排 P0/P1/P2，不再拍脑门。",
+			},
+			{
+				MessageID: "n_002",
+				FromUID:   "uid_human_b",
+				FromUname: "吴明辉",
+				Timestamp: time.Now().Add(-90 * time.Minute).Unix(),
+				Content:   "同意，我来推。",
+			},
+		},
+	}
+
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
+	userPrompt := buildMessagesPrompt(in.Messages)
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+	t.Logf("LLM raw arguments:\n%s", raw)
+
+	var args extractToolArgs
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if args.Deadline.raw != nil {
+		t.Errorf("expected deadline=null when no time was mentioned, got %q (model fabricated)", *args.Deadline.raw)
+	}
+}
+
+// TestSmoke_ExtractMatter_TitleQuality asserts the title-naming rules from
+// smart_create:
+//   - ≤ 20 汉字 (we allow ≤ 40 chars as a soft cap because runes vary)
+//   - no banned空泛词 prefix ("关于…", "讨论…", "针对…")
+//   - no trailing punctuation/emoji
+func TestSmoke_ExtractMatter_TitleQuality(t *testing.T) {
+	c := smokeClient(t)
+	in := ExtractInput{
+		SpaceID:     "sp-smoke",
+		ChannelType: 2,
+		ChannelID:   "ch-smoke",
+		ChannelName: strPtrSmoke("Octo 设计群"),
+		CreatorUID:  "uid_wyl",
+		Messages: []ExtractMessage{
+			{
+				MessageID: "t_001",
+				FromUID:   "uid_wyl",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-3 * time.Hour).Unix(),
+				Content:   "5/15 董事会，30 分钟，我想讲清楚 Octo 跟 Linear / 玛蒂卡的差异。",
+			},
+			{
+				MessageID: "t_002",
+				FromUID:   "uid_wyl",
+				FromUname: "王宜林",
+				Timestamp: time.Now().Add(-2 * time.Hour).Unix(),
+				Content:   "核心 tagline 用 \"Agents do, Humans decide\"。",
+			},
+			{
+				MessageID: "t_003",
+				FromUID:   "uid_whm",
+				FromUname: "吴明辉",
+				Timestamp: time.Now().Add(-1 * time.Hour).Unix(),
+				Content:   "GTM 路径单独一段，Coze 接入是关键。",
+			},
+		},
+	}
+	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
+	userPrompt := buildMessagesPrompt(in.Messages)
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	if err != nil {
+		t.Fatalf("CallTool failed: %v", err)
+	}
+
+	var args extractToolArgs
+	if err := json.Unmarshal([]byte(raw), &args); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	t.Logf("title=%q", args.Title)
+
+	title := strings.TrimSpace(args.Title)
+	bannedPrefixes := []string{"关于", "讨论", "针对"}
+	for _, p := range bannedPrefixes {
+		if strings.HasPrefix(title, p) {
+			t.Errorf("title starts with banned prefix %q: %q", p, title)
+		}
+	}
+	bannedSuffixes := []string{"。", "！", "？", ".", "!", "?", "🎉", "✨"}
+	for _, s := range bannedSuffixes {
+		if strings.HasSuffix(title, s) {
+			t.Errorf("title ends with banned punctuation/emoji %q: %q", s, title)
+		}
+	}
+	// Prompt asserts ≤ 20 汉字. Surface 21–30 as a warning (model drift to
+	// watch); fail hard above 30 because that is no longer a recoverable
+	// "slightly over" case but a clear regression.
+	if runeLen := len([]rune(title)); runeLen > 30 {
+		t.Errorf("title too long (%d runes), expected ≤ 20: %q", runeLen, title)
+	} else if runeLen := len([]rune(title)); runeLen > 20 {
+		t.Logf("WARN: title length %d runes exceeds prompt-stated 20 cap (within soft tolerance): %q", runeLen, title)
+	}
+}

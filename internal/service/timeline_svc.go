@@ -457,6 +457,11 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 	systemPrompt := buildTimelineSystemPrompt(matter, assignees, recent, in)
 	userPrompt := buildMessagesPrompt(in.Messages)
 
+	// No explicit temperature pin here — progress extraction tolerates the
+	// gateway default. The extract-matter path pins 0.2 for stable title
+	// naming, but timeline outputs are summary-style strings without a
+	// "right answer" the model needs to converge on. Revisit if A/B data
+	// shows otherwise.
 	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, extractProgressTool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("llm extract_matter_progress: %w", err)

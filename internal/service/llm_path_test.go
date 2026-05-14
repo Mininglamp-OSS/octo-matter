@@ -41,7 +41,7 @@ type stubLLMCaller struct {
 	calls   int
 }
 
-func (s *stubLLMCaller) CallTool(_ context.Context, _, _ string, _ llm.Tool) (string, error) {
+func (s *stubLLMCaller) CallTool(_ context.Context, _, _ string, _ llm.Tool, _ ...llm.CallOption) (string, error) {
 	s.calls++
 	return s.rawArgs, s.err
 }
