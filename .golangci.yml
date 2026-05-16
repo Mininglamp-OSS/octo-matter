@@ -2,6 +2,6 @@ version: "2"
 run:
   timeout: 5m
 linters:
-  default: none
-  enable:
-    - govet
+  settings:
+    errcheck:
+      check-blank: true
