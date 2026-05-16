@@ -1,16 +1,7 @@
-linters:
-  enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-  disable:
-    - scopelint
-linters-settings:
-  errcheck:
-    check-blank: true
+version: "2"
 run:
   timeout: 5m
-
+linters:
+  settings:
+    errcheck:
+      check-blank: true
