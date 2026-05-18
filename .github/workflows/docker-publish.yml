@@ -14,9 +14,12 @@ permissions:
   contents: read
 
 concurrency:
-  # Serialize release publishes per ref so two close-together v* tags don't race
-  # the imagetools merge step. Don't cancel in-flight releases.
-  group: docker-publish-${{ github.ref }}
+  # Serialize ALL publishes to this image so two close-together v* tags can't
+  # race on the shared mutable tags (:latest, :MAJOR, :MAJOR.MINOR) — last
+  # writer wins, and "last finished" is not necessarily "newest version".
+  # A per-ref group would put v1.2.3 and v1.2.4 in different groups and fail
+  # to serialize them. Don't cancel in-flight releases.
+  group: docker-publish-${{ env.IMAGE_NAME }}
   cancel-in-progress: false
 
 env:
@@ -103,8 +106,13 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ${{ env.IMAGE_NAME }}
-          # `latest=auto` (the default) only tags `:latest` on stable semver
-          # tags (e.g. v1.2.3), and skips it on prereleases (v1.2.3-rc1).
+          # `flavor: latest=auto` is the metadata-action default, set explicitly
+          # so the prerelease-skipping behavior is visible without consulting
+          # action docs. With latest=auto + a {{version}} semver tag entry,
+          # `:latest` is published for stable releases (v1.2.3) and skipped
+          # for prereleases (v1.2.3-rc1).
+          flavor: |
+            latest=auto
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
