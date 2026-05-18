@@ -17,9 +17,10 @@ concurrency:
   # Serialize ALL publishes to this image so two close-together v* tags can't
   # race on the shared mutable tags (:latest, :MAJOR, :MAJOR.MINOR) — last
   # writer wins, and "last finished" is not necessarily "newest version".
-  # A per-ref group would put v1.2.3 and v1.2.4 in different groups and fail
-  # to serialize them. Don't cancel in-flight releases.
-  group: docker-publish-${{ env.IMAGE_NAME }}
+  # NOTE: workflow-level concurrency.group only accepts github/inputs/vars
+  # contexts (not env), so the image name is hard-coded here. Keep this group
+  # name in sync with env.IMAGE_NAME below if you ever rename the image.
+  group: docker-publish-mininglamposs-octo-matter
   cancel-in-progress: false
 
 env:
@@ -119,10 +120,27 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
+      - name: Reject reserved tag names on manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          case "$tag" in
+            latest|main|master|"")
+              echo "::error::Refusing to publish reserved/empty tag '$tag' — would clobber an auto-managed tag"
+              exit 1
+              ;;
+          esac
+
       - name: Create manifest list and push
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          set -euo pipefail
+          TAGS=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          if [ -z "$TAGS" ]; then
+            echo "::error::metadata-action produced no tags; refusing to publish manifest"
+            exit 1
+          fi
+          docker buildx imagetools create $TAGS \
             $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
 
       - name: Inspect image
