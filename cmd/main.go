@@ -11,11 +11,13 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
-	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
+	"github.com/Mininglamp-OSS/octo-matter/internal/llm/prompts"
+	"github.com/Mininglamp-OSS/octo-matter/internal/llm/promptstore"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
+	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
@@ -84,11 +86,35 @@ func main() {
 	extractLimiter := middleware.NewRateLimiter(10 * time.Second).Middleware(uidKey)
 	timelineLimiter := middleware.NewRateLimiter(10 * time.Second)
 
+	// Prompt store: Langfuse (when configured) with embed fallback so a
+	// Langfuse outage never blocks extraction. Tool schemas always come
+	// from the embed FS — they are part of the engineering contract and
+	// not editable via Langfuse.
+	embedPrompts := promptstore.NewEmbed(prompts.FS)
+	var extractStore, timelineStore promptstore.Store = embedPrompts, embedPrompts
+	if cfg.LangfuseEnabled() {
+		lf := promptstore.NewLangfuse(
+			cfg.LangfuseHost,
+			cfg.LangfusePublicKey,
+			cfg.LangfuseSecretKey,
+			promptstore.WithLangfuseLabel(cfg.LangfuseLabel),
+			promptstore.WithLangfuseTimeout(cfg.LangfuseTimeout),
+			promptstore.WithLangfuseCacheTTL(cfg.LangfuseCacheTTL),
+			promptstore.WithLangfuseToolSource(embedPrompts),
+		)
+		chained := promptstore.NewFallback(lf, embedPrompts)
+		extractStore, timelineStore = chained, chained
+		log.Printf("prompt store: langfuse host=%s label=%s ttl=%s (embed fallback active)",
+			cfg.LangfuseHost, cfg.LangfuseLabel, cfg.LangfuseCacheTTL)
+	} else {
+		log.Printf("prompt store: embed only (LANGFUSE_HOST/PUBLIC_KEY/SECRET_KEY not set)")
+	}
+
 	// Services
 	matterSvc := service.NewMatterService(matterRepo, assigneeRepo, participantRepo, channelRepo, activityRepo, txMgr, imClient)
 	timelineTx := timelineTxAdapter{mgr: txMgr}
-	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter)
-	extractSvc := service.NewExtractService(llmClient, matterSvc)
+	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter, service.WithTimelinePromptStore(timelineStore))
+	extractSvc := service.NewExtractService(llmClient, matterSvc, service.WithExtractPromptStore(extractStore))
 	activitySvc := service.NewActivityService(matterRepo, matterSvc, activityRepo)
 
 	// Handlers

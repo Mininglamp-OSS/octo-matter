@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 type AppEnv string
@@ -16,13 +17,23 @@ const (
 type Config struct {
 	AppEnv              AppEnv
 	MySQLDSN            string
-	OctoIMURL         string // octoim base URL for auth verify + Space check + internal notify
+	OctoIMURL           string // octoim base URL for auth verify + Space check + internal notify
 	NotifyInternalToken string // shared secret for octoim /v1/internal/notify (X-Internal-Token)
 	ServerPort          string
 	LLMApiURL           string
 	LLMApiKey           string
 	LLMModel            string
 	LLMTimeout          int // seconds
+
+	// Langfuse prompt management (Step 2). All four primary fields must be
+	// set for the Langfuse-backed prompt store to be wired; otherwise the
+	// service falls back to the embedded prompts as before.
+	LangfuseHost      string
+	LangfusePublicKey string
+	LangfuseSecretKey string
+	LangfuseLabel     string        // defaults to "production"
+	LangfuseTimeout   time.Duration // per-request HTTP timeout, default 5s
+	LangfuseCacheTTL  time.Duration // in-memory cache lifetime, default 60s
 }
 
 func Load() *Config {
@@ -37,7 +48,20 @@ func Load() *Config {
 		LLMApiKey:           envOrDefault("LLM_API_KEY", ""),
 		LLMModel:            envOrDefault("LLM_MODEL", "claude-sonnet-4-6"),
 		LLMTimeout:          envIntOrDefault("LLM_TIMEOUT", 30),
+		LangfuseHost:        envOrDefault("LANGFUSE_HOST", ""),
+		LangfusePublicKey:   envOrDefault("LANGFUSE_PUBLIC_KEY", ""),
+		LangfuseSecretKey:   envOrDefault("LANGFUSE_SECRET_KEY", ""),
+		LangfuseLabel:       envOrDefault("LANGFUSE_LABEL", "production"),
+		LangfuseTimeout:     time.Duration(envIntOrDefault("LANGFUSE_TIMEOUT", 5)) * time.Second,
+		LangfuseCacheTTL:    time.Duration(envIntOrDefault("LANGFUSE_CACHE_TTL", 60)) * time.Second,
 	}
+}
+
+// LangfuseEnabled reports whether the three required Langfuse credentials
+// are set. The label, timeout, and cache TTL fall back to defaults and do
+// not gate activation.
+func (c *Config) LangfuseEnabled() bool {
+	return c.LangfuseHost != "" && c.LangfusePublicKey != "" && c.LangfuseSecretKey != ""
 }
 
 func (c *Config) Validate() error {
