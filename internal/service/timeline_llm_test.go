@@ -29,6 +29,8 @@ func (s *stubLLM) CallTool(_ context.Context, system, user string, tool llm.Tool
 	return s.out, s.err
 }
 
+func (s *stubLLM) Model() string { return "stub" }
+
 // trackingChannelRepoLLM records Create calls so tests can assert atomicity.
 type trackingChannelRepoLLM struct {
 	createCalls int
@@ -206,7 +208,7 @@ func TestCreateFromMessages_UserNotChannelMember_NewLink(t *testing.T) {
 	}
 }
 
-// TestCreateFromMessages_BotPathCannotAutoLink covers the 
+// TestCreateFromMessages_BotPathCannotAutoLink covers the
 // channel-link gate: bots may not introduce a new matter_channels row to an
 // existing matter. They must reuse a link a user has already created. A
 // successful happy-path (link already exists) is covered by

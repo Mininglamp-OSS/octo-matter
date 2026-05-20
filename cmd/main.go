@@ -11,11 +11,11 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
-	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
+	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
@@ -64,8 +64,18 @@ func main() {
 	}
 
 	// LLM
-	llmClient := llm.New(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
-	log.Printf("llm gateway=%s model=%s timeout=%ds", cfg.LLMApiURL, cfg.LLMModel, cfg.LLMTimeout)
+	var llmClient service.LLMToolCaller
+	switch cfg.LLMProvider {
+	case "compat":
+		llmClient = llm.New(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
+	case "openai":
+		llmClient = llm.NewOpenAIOfficial(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
+	case "anthropic":
+		llmClient = llm.NewAnthropicOfficial(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
+	default:
+		log.Fatalf("invalid OCTO_LLM_PROVIDER %q (want compat, openai, or anthropic)", cfg.LLMProvider)
+	}
+	log.Printf("llm provider=%s gateway=%s model=%s timeout=%ds", cfg.LLMProvider, cfg.LLMApiURL, cfg.LLMModel, cfg.LLMTimeout)
 	if cfg.LLMApiKey == "" {
 		log.Printf("WARN: LLM_API_KEY not set — extract/timeline will fail if the gateway requires auth")
 	}

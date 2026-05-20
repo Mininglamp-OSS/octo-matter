@@ -16,12 +16,13 @@ const (
 type Config struct {
 	AppEnv              AppEnv
 	MySQLDSN            string
-	OctoIMURL         string // octoim base URL for auth verify + Space check + internal notify
+	OctoIMURL           string // octoim base URL for auth verify + Space check + internal notify
 	NotifyInternalToken string // shared secret for octoim /v1/internal/notify (X-Internal-Token)
 	ServerPort          string
 	LLMApiURL           string
 	LLMApiKey           string
 	LLMModel            string
+	LLMProvider         string
 	LLMTimeout          int // seconds
 }
 
@@ -36,6 +37,7 @@ func Load() *Config {
 		LLMApiURL:           envOrDefault("LLM_API_URL", "https://api.example.com/v1"),
 		LLMApiKey:           envOrDefault("LLM_API_KEY", ""),
 		LLMModel:            envOrDefault("LLM_MODEL", "claude-sonnet-4-6"),
+		LLMProvider:         envOrDefault("OCTO_LLM_PROVIDER", "compat"),
 		LLMTimeout:          envIntOrDefault("LLM_TIMEOUT", 30),
 	}
 }
