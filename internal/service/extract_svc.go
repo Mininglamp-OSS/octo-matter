@@ -500,6 +500,13 @@ type extractPromptData struct {
 // deterministic under test. Production callers pass
 // `time.Now().In(resolveLocation(in.Timezone))` so the "当前日期" line
 // matches the user's calendar day, not UTC's.
+//
+// This helper always reads from the package-level defaultPromptStore and
+// IGNORES any per-service override set via WithExtractPromptStore.
+// Production code must go through ExtractService.CreateFromMessages,
+// which honours the injected store; this helper exists only so test code
+// (anchor tests, golden tests, smoke harness) does not need a full
+// ExtractService instance to render the prompt for an LLM call.
 func buildExtractSystemPrompt(in ExtractInput, now time.Time) string {
 	prompt, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
 	if err != nil {

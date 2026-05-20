@@ -648,6 +648,11 @@ type timelineRecentEntry struct {
 // as buildExtractSystemPrompt: embedded prompts are validated by init() at
 // process start. Production code must use renderTimelineSystemPrompt via
 // createFromMessages, which wraps the error properly.
+//
+// This helper always reads from the package-level defaultPromptStore and
+// IGNORES any per-service override set via WithTimelinePromptStore.
+// Test code that wants to stub the store must call renderTimelineSystemPrompt
+// against the stub directly.
 func buildTimelineSystemPrompt(matter *model.Matter, assignees []*model.MatterAssignee, recent []*model.TimelineEntry, in TimelineInput) string {
 	prompt, err := defaultPromptStore.Get(context.Background(), promptExtractProgress)
 	if err != nil {

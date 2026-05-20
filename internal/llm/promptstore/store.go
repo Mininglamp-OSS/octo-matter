@@ -46,6 +46,16 @@ func (p Prompt) Render(data any) (string, error) {
 	return buf.String(), nil
 }
 
+// Validate parses Body as a text/template without executing it, returning
+// any syntax error. Callers should invoke this at process startup against
+// every known prompt so a malformed template (extra `{{`, undefined
+// function, etc.) fails the process before the first user request. The
+// cost is microseconds; do not cache the result for runtime hot paths.
+func (p Prompt) Validate() error {
+	_, err := template.New(p.Name).Option("missingkey=error").Parse(p.Body)
+	return err
+}
+
 // Store retrieves a Prompt by name. Implementations must return ErrNotFound
 // (wrapped) when the name is unknown.
 type Store interface {

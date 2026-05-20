@@ -47,8 +47,8 @@ func TestEmbedStore_GetReturnsBodyAndTool(t *testing.T) {
 // invocations.
 func TestEmbedStore_VersionStableAcrossCalls(t *testing.T) {
 	fsys := fstest.MapFS{
-		"x.md":           &fstest.MapFile{Data: []byte("body")},
-		"x.tool.json":    &fstest.MapFile{Data: []byte(`{"type":"function","function":{"name":"x","description":"d","parameters":{}}}`)},
+		"x.md":        &fstest.MapFile{Data: []byte("body")},
+		"x.tool.json": &fstest.MapFile{Data: []byte(`{"type":"function","function":{"name":"x","description":"d","parameters":{}}}`)},
 	}
 	store := NewEmbed(fsys)
 	a, err := store.Get(context.Background(), "x")
@@ -192,5 +192,28 @@ func TestPrompt_RenderMissingKeyIsError(t *testing.T) {
 	_, err := p.Render(struct{ Other string }{"x"})
 	if err == nil {
 		t.Fatal("expected error for missing key, got nil")
+	}
+}
+
+// TestPrompt_ValidateCatchesMalformedTemplate proves the startup-time
+// validation surfaces a template syntax error so callers can panic
+// before accepting traffic. The stray `{{` here is the kind of typo an
+// editor might introduce when an author edits the embedded .md file by
+// hand.
+func TestPrompt_ValidateCatchesMalformedTemplate(t *testing.T) {
+	p := Prompt{Name: "bad", Body: "hello {{.Name"}
+	if err := p.Validate(); err == nil {
+		t.Fatal("expected Validate to reject malformed template, got nil")
+	}
+}
+
+// TestPrompt_ValidateAcceptsWellFormedTemplate is the happy-path
+// complement — confirms Validate does not over-reject on legitimate
+// template constructs (range/if with whitespace trimming).
+func TestPrompt_ValidateAcceptsWellFormedTemplate(t *testing.T) {
+	body := "hi {{.Name}}{{if .Show}}: {{.Show}}{{end}}\n{{- range .Items}}\n- {{.}}\n{{- end}}"
+	p := Prompt{Name: "ok", Body: body}
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate rejected a well-formed template: %v", err)
 	}
 }

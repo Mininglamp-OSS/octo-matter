@@ -38,8 +38,16 @@ const (
 func init() {
 	ctx := context.Background()
 	for _, name := range []string{promptExtractMatter, promptExtractProgress} {
-		if _, err := defaultPromptStore.Get(ctx, name); err != nil {
+		p, err := defaultPromptStore.Get(ctx, name)
+		if err != nil {
 			panic("service: default prompt unavailable: " + name + ": " + err.Error())
+		}
+		// Parse-time validation: a malformed template (e.g. stray `{{`
+		// after an editor accident) must surface here, not on the first
+		// user request. The cost is microseconds and runs once per
+		// process.
+		if err := p.Validate(); err != nil {
+			panic("service: default prompt template invalid: " + name + ": " + err.Error())
 		}
 	}
 }
