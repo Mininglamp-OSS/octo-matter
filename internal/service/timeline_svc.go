@@ -10,6 +10,7 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
+	"github.com/Mininglamp-OSS/octo-matter/internal/llm/promptstore"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/google/uuid"
 )
@@ -141,6 +142,15 @@ type TimelineService struct {
 	participant    ParticipantUpserter
 	assignees      assigneeStore
 	limiter        llmLimiter // nil → no rate limit (e.g. tests / single-tenant dev)
+	prompts        promptstore.Store
+}
+
+// TimelineOption configures a TimelineService at construction.
+type TimelineOption func(*TimelineService)
+
+// WithTimelinePromptStore overrides the default embed-backed prompt source.
+func WithTimelinePromptStore(store promptstore.Store) TimelineOption {
+	return func(s *TimelineService) { s.prompts = store }
 }
 
 // NewTimelineService wires the timeline service. limiter may be nil — useful
@@ -159,8 +169,9 @@ func NewTimelineService(
 	participant ParticipantUpserter,
 	assignees assigneeStore,
 	limiter llmLimiter,
+	opts ...TimelineOption,
 ) *TimelineService {
-	return &TimelineService{
+	s := &TimelineService{
 		llm:            llmClient,
 		timelineRepo:   timelineRepo,
 		attachmentRepo: attachmentRepo,
@@ -171,7 +182,12 @@ func NewTimelineService(
 		participant:    participant,
 		assignees:      assignees,
 		limiter:        limiter,
+		prompts:        defaultPromptStore,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // timelineToolArgs mirrors the JSON schema declared for `extract_matter_progress`.
@@ -192,38 +208,9 @@ type timelineToolArgs struct {
 	StatusSuggestion *string  `json:"status_suggestion"`
 }
 
-var extractProgressTool = llm.Tool{
-	Type: "function",
-	Function: llm.ToolFunction{
-		Name:        "extract_matter_progress",
-		Description: "从聊天记录中提取与目标事项相关的进展信息",
-		Parameters: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"content": map[string]interface{}{
-					"type":        "string",
-					"description": "一段话概括与该事项相关的最新进展",
-				},
-				"related_uids": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "本次进展涉及的人员 uid，必须从输入消息的 from_uid 中选取，不要编造。",
-				},
-				"source_msg_ids": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "支撑本次进展的 message_id 列表，必须从输入 msgs 中选取，不要编造。",
-				},
-				"status_suggestion": map[string]interface{}{
-					"type":        []interface{}{"string", "null"},
-					"enum":        []interface{}{"open", "done", nil},
-					"description": "建议的 matter 状态变更，没有建议时返回 null。",
-				},
-			},
-			"required": []string{"content", "related_uids", "source_msg_ids", "status_suggestion"},
-		},
-	},
-}
+// The extract_matter_progress tool schema lives in
+// internal/llm/prompts/extract_progress.tool.json — loaded at runtime via
+// the promptstore, not declared inline here.
 
 // timelineValidated is the cleaned, server-trusted derivation of an
 // extract_matter_progress LLM result.
@@ -454,7 +441,14 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		return nil, nil, err
 	}
 
-	systemPrompt := buildTimelineSystemPrompt(matter, assignees, recent, in)
+	prompt, err := s.prompts.Get(ctx, promptExtractProgress)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load extract_progress prompt: %w", err)
+	}
+	systemPrompt, err := renderTimelineSystemPrompt(prompt, matter, assignees, recent, in)
+	if err != nil {
+		return nil, nil, fmt.Errorf("render extract_progress prompt: %w", err)
+	}
 	userPrompt := buildMessagesPrompt(in.Messages)
 
 	// No explicit temperature pin here — progress extraction tolerates the
@@ -462,7 +456,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 	// naming, but timeline outputs are summary-style strings without a
 	// "right answer" the model needs to converge on. Revisit if A/B data
 	// shows otherwise.
-	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, extractProgressTool)
+	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, prompt.Tool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("llm extract_matter_progress: %w", err)
 	}
@@ -629,45 +623,78 @@ func (s *TimelineService) DeleteEntry(ctx context.Context, matterID, id, spaceID
 	})
 }
 
+// timelinePromptData is the data shape consumed by extract_progress.md.
+// Optional fields use the empty string / nil slice as the "absent" signal
+// so the template's {{if .X}} branches behave identically to the old
+// Go-side conditionals.
+type timelinePromptData struct {
+	Now               string
+	MatterTitle       string
+	MatterDescription string
+	MatterStatus      string
+	Deadline          string
+	Assignees         string
+	ChannelName       string
+	RecentEntries     []timelineRecentEntry
+}
+
+type timelineRecentEntry struct {
+	When string
+	Text string
+}
+
+// buildTimelineSystemPrompt is a test-only helper preserved so the golden
+// tests keep their signature. Panics on template error for the same reason
+// as buildExtractSystemPrompt: embedded prompts are validated by init() at
+// process start. Production code must use renderTimelineSystemPrompt via
+// createFromMessages, which wraps the error properly.
+//
+// This helper always reads from the package-level defaultPromptStore and
+// IGNORES any per-service override set via WithTimelinePromptStore.
+// Test code that wants to stub the store must call renderTimelineSystemPrompt
+// against the stub directly.
 func buildTimelineSystemPrompt(matter *model.Matter, assignees []*model.MatterAssignee, recent []*model.TimelineEntry, in TimelineInput) string {
-	var b strings.Builder
-	b.WriteString("你是事项进展抽取助手。根据群聊消息提炼与目标事项相关的进展，必须通过 extract_matter_progress 函数返回。\n")
-	b.WriteString("字段约定：\n")
-	b.WriteString("  - content：一段话概括最新进展。\n")
-	b.WriteString("  - related_uids：本次进展涉及的人员 uid，必须从输入消息的 from_uid 中选取，不要编造。\n")
-	b.WriteString("  - source_msg_ids：从输入消息的 message_id 中选取支撑此进展的消息，不要编造或返回空数组。\n")
-	b.WriteString("  - status_suggestion：如果消息明显表达了完成（done）或重新打开（open），则返回相应字符串；否则返回 null。\n")
-	b.WriteString(fmt.Sprintf("当前时间：%s\n", time.Now().UTC().Format(time.RFC3339)))
-	b.WriteString("\n【目标事项】\n")
-	b.WriteString(fmt.Sprintf("  标题：%s\n", matter.Title))
-	if matter.Description != nil && *matter.Description != "" {
-		b.WriteString(fmt.Sprintf("  描述：%s\n", *matter.Description))
+	prompt, err := defaultPromptStore.Get(context.Background(), promptExtractProgress)
+	if err != nil {
+		panic("service: extract_progress prompt unavailable: " + err.Error())
 	}
-	b.WriteString(fmt.Sprintf("  当前状态：%s\n", matter.Status))
+	out, err := renderTimelineSystemPrompt(prompt, matter, assignees, recent, in)
+	if err != nil {
+		panic("service: extract_progress prompt render: " + err.Error())
+	}
+	return out
+}
+
+func renderTimelineSystemPrompt(prompt promptstore.Prompt, matter *model.Matter, assignees []*model.MatterAssignee, recent []*model.TimelineEntry, in TimelineInput) (string, error) {
+	data := timelinePromptData{
+		Now:          time.Now().UTC().Format(time.RFC3339),
+		MatterTitle:  matter.Title,
+		MatterStatus: string(matter.Status),
+	}
+	if matter.Description != nil && *matter.Description != "" {
+		data.MatterDescription = *matter.Description
+	}
 	if matter.Deadline != nil {
-		b.WriteString(fmt.Sprintf("  截止时间：%s\n", matter.Deadline.UTC().Format(time.RFC3339)))
+		data.Deadline = matter.Deadline.UTC().Format(time.RFC3339)
 	}
 	if len(assignees) > 0 {
-		b.WriteString("  负责人 UID：")
-		for i, a := range assignees {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(a.UserID)
+		ids := make([]string, 0, len(assignees))
+		for _, a := range assignees {
+			ids = append(ids, a.UserID)
 		}
-		b.WriteString("\n")
+		data.Assignees = strings.Join(ids, ", ")
 	}
 	if in.ChannelName != nil && *in.ChannelName != "" {
-		b.WriteString(fmt.Sprintf("  频道：%s\n", *in.ChannelName))
+		data.ChannelName = *in.ChannelName
 	}
-	if len(recent) > 0 {
-		b.WriteString("\n【已有进展（最近 3 条）】\n")
-		for _, e := range recent {
-			if e.Content != nil {
-				b.WriteString(fmt.Sprintf("  - [%s] %s\n", e.CreatedAt.UTC().Format(time.RFC3339), *e.Content))
-			}
+	for _, e := range recent {
+		if e.Content == nil {
+			continue
 		}
+		data.RecentEntries = append(data.RecentEntries, timelineRecentEntry{
+			When: e.CreatedAt.UTC().Format(time.RFC3339),
+			Text: *e.Content,
+		})
 	}
-	b.WriteString("\n请基于以下新消息，提取本次新增的进展，避免重复已有进展。\n")
-	return b.String()
+	return prompt.Render(data)
 }

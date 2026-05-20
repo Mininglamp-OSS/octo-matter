@@ -1,0 +1,36 @@
+{
+  "type": "function",
+  "function": {
+    "name": "extract_matter",
+    "description": "从聊天记录中提取事项信息",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "事项标题，简洁明确，不超过100字"
+        },
+        "description": {
+          "type": "string",
+          "description": "事项描述/目标"
+        },
+        "deadline": {
+          "type": ["string", "null"],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "截止日期，YYYY-MM-DD 格式（如 2026-05-15）。仅在消息中明确提到时间时返回；无法推断时返回 null，不要编造。"
+        },
+        "source_msg_ids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "与事项直接相关的 message_id 列表，必须从输入 msgs 中选取，不要编造。"
+        },
+        "assignee_uids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "推断的负责人 uid 列表，必须来自输入消息的 from_uid，不要编造。无法识别时返回空数组。"
+        }
+      },
+      "required": ["title", "description", "deadline", "source_msg_ids", "assignee_uids"]
+    }
+  }
+}

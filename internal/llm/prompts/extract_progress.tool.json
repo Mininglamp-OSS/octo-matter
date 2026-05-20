@@ -1,0 +1,32 @@
+{
+  "type": "function",
+  "function": {
+    "name": "extract_matter_progress",
+    "description": "从聊天记录中提取与目标事项相关的进展信息",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "string",
+          "description": "一段话概括与该事项相关的最新进展"
+        },
+        "related_uids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "本次进展涉及的人员 uid，必须从输入消息的 from_uid 中选取，不要编造。"
+        },
+        "source_msg_ids": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "支撑本次进展的 message_id 列表，必须从输入 msgs 中选取，不要编造。"
+        },
+        "status_suggestion": {
+          "type": ["string", "null"],
+          "enum": ["open", "done", null],
+          "description": "建议的 matter 状态变更，没有建议时返回 null。"
+        }
+      },
+      "required": ["content", "related_uids", "source_msg_ids", "status_suggestion"]
+    }
+  }
+}
