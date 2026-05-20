@@ -82,7 +82,11 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
 
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		t.Fatalf("load extract_matter prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -166,7 +170,11 @@ func TestSmoke_ExtractMatterProgress_AcceptsV3Schema(t *testing.T) {
 	sp.WriteString("  - status_suggestion：如果消息明显表达了完成（done）或重新打开（open），则返回相应字符串；否则返回 null。\n")
 	sp.WriteString("【目标事项】\n  标题：Octo 智能事项 Demo 视频\n  当前状态：open\n")
 
-	raw, err := c.CallTool(context.Background(), sp.String(), buildMessagesPrompt(msgs), extractProgressTool)
+	progressPrompt, err := defaultPromptStore.Get(context.Background(), promptExtractProgress)
+	if err != nil {
+		t.Fatalf("load extract_progress prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), sp.String(), buildMessagesPrompt(msgs), progressPrompt.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -244,7 +252,9 @@ func TestSmoke_ExtractMatter_BotNotAssignee(t *testing.T) {
 
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil { t.Fatalf("load extract_matter prompt: %v", err) }
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -295,7 +305,9 @@ func TestSmoke_ExtractMatter_NoDeadlineReturnsNull(t *testing.T) {
 
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil { t.Fatalf("load extract_matter prompt: %v", err) }
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -349,7 +361,9 @@ func TestSmoke_ExtractMatter_TitleQuality(t *testing.T) {
 	}
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil { t.Fatalf("load extract_matter prompt: %v", err) }
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}

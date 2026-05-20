@@ -9,6 +9,7 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
+	"github.com/Mininglamp-OSS/octo-matter/internal/llm/promptstore"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
@@ -91,14 +92,32 @@ type activityStore interface {
 type ExtractService struct {
 	llm       llmCaller
 	matterSvc *MatterService
+	prompts   promptstore.Store
 }
 
-func NewExtractService(llmClient llmCaller, matterSvc *MatterService) *ExtractService {
-	return &ExtractService{llm: llmClient, matterSvc: matterSvc}
+// ExtractOption configures an ExtractService at construction. The functional
+// options pattern lets us add Langfuse / multi-store wiring later without
+// breaking the existing two-arg constructor.
+type ExtractOption func(*ExtractService)
+
+// WithExtractPromptStore overrides the default embed-backed prompt source.
+// Used by cmd/main.go to plug in a Langfuse-with-embed-fallback chain, and
+// by tests that want to stub prompt content.
+func WithExtractPromptStore(store promptstore.Store) ExtractOption {
+	return func(s *ExtractService) { s.prompts = store }
 }
 
-// extractToolArgs mirrors the JSON schema declared for `extract_matter`.
-// The model returns:
+func NewExtractService(llmClient llmCaller, matterSvc *MatterService, opts ...ExtractOption) *ExtractService {
+	s := &ExtractService{llm: llmClient, matterSvc: matterSvc, prompts: defaultPromptStore}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
+}
+
+// extractToolArgs mirrors the JSON schema declared for `extract_matter`
+// (defined in internal/llm/prompts/extract_matter.tool.json). The model
+// returns:
 //   - title / description: free text
 //   - deadline: YYYY-MM-DD date string, or null if not inferable
 //   - source_msg_ids: subset of input message IDs the matter is grounded in
@@ -150,42 +169,9 @@ func (d *flexibleDate) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-var extractMatterTool = llm.Tool{
-	Type: "function",
-	Function: llm.ToolFunction{
-		Name:        "extract_matter",
-		Description: "从聊天记录中提取事项信息",
-		Parameters: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"title": map[string]interface{}{
-					"type":        "string",
-					"description": "事项标题，简洁明确，不超过100字",
-				},
-				"description": map[string]interface{}{
-					"type":        "string",
-					"description": "事项描述/目标",
-				},
-				"deadline": map[string]interface{}{
-					"type":        []interface{}{"string", "null"},
-					"pattern":     `^\d{4}-\d{2}-\d{2}$`,
-					"description": "截止日期，YYYY-MM-DD 格式（如 2026-05-15）。仅在消息中明确提到时间时返回；无法推断时返回 null，不要编造。",
-				},
-				"source_msg_ids": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "与事项直接相关的 message_id 列表，必须从输入 msgs 中选取，不要编造。",
-				},
-				"assignee_uids": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "推断的负责人 uid 列表，必须来自输入消息的 from_uid，不要编造。无法识别时返回空数组。",
-				},
-			},
-			"required": []string{"title", "description", "deadline", "source_msg_ids", "assignee_uids"},
-		},
-	},
-}
+// The extract_matter tool schema lives in
+// internal/llm/prompts/extract_matter.tool.json — loaded at runtime via
+// the promptstore, not declared inline here.
 
 // LLM output safety limits. Title and description are clipped (not rejected)
 // to keep the request fail-soft; the LLM prompt already says "<=100字" for
@@ -394,10 +380,18 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 	// Anchor "now" to the caller's timezone so the prompt's "当前日期" and
 	// the deadline year-range check both agree with the user's calendar day.
 	now := time.Now().In(resolveLocation(in.Timezone))
-	systemPrompt := buildExtractSystemPrompt(in, now)
+
+	prompt, err := s.prompts.Get(ctx, promptExtractMatter)
+	if err != nil {
+		return nil, fmt.Errorf("load extract_matter prompt: %w", err)
+	}
+	systemPrompt, err := renderExtractSystemPrompt(prompt, in, now)
+	if err != nil {
+		return nil, fmt.Errorf("render extract_matter prompt: %w", err)
+	}
 	userPrompt := buildMessagesPrompt(in.Messages)
 
-	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, extractMatterTool,
+	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, prompt.Tool,
 		llm.WithTemperature(extractTemperature),
 		llm.WithMaxTokens(extractMaxTokens),
 	)
@@ -483,62 +477,53 @@ func validateMessages(msgs []ExtractMessage) error {
 	return nil
 }
 
-// buildExtractSystemPrompt assembles the system prompt for the extract_matter
-// tool call. The `now` parameter is injected (not read from time.Now()) so the
-// prompt is deterministic under test — production callers pass
-// `time.Now().In(resolveLocation(in.Timezone))` so the user sees their
-// local calendar day in the "当前日期" line.
+// extractPromptData is the data shape consumed by extract_matter.md.
+// Mirror any field rename here in the template, or Render will fail loudly
+// (missingkey=error).
+type extractPromptData struct {
+	CurrentDate string
+	Weekday     string
+	ChannelName string
+	ChannelID   string
+	CreatorUID  string
+	Senders     []senderInfo
+}
+
+// buildExtractSystemPrompt is a thin wrapper over renderExtractSystemPrompt
+// for callers (tests, smoke harness) that don't want to handle the error
+// branch. The prompt is embedded at build time and validated by init() at
+// process start, so a render error here is a programmer mistake — we panic
+// rather than propagate. Production code uses renderExtractSystemPrompt
+// directly via CreateFromMessages and wraps the error properly.
 //
-// Sections, in order:
-//  1. Role + framing ("起草事项" not "做总结")
-//  2. Field-level rules: title naming, description shape, deadline parsing,
-//     source filtering, assignee priority (incl. agent/bot exclusion)
-//  3. Defensive constraints (no fabrication, UID-only, agent ≠ owner)
-//  4. Runtime context: current date (YYYY-MM-DD + weekday), channel, creator,
-//     and the sender list the model must pick assignees from.
+// `now` is injected (not pulled from time.Now()) so the prompt is
+// deterministic under test. Production callers pass
+// `time.Now().In(resolveLocation(in.Timezone))` so the "当前日期" line
+// matches the user's calendar day, not UTC's.
 func buildExtractSystemPrompt(in ExtractInput, now time.Time) string {
-	var b strings.Builder
-	b.WriteString("你是 Octo Matter 的事项起草助手。用户从群聊里多选若干条关键消息，交给你蒸馏出一条新事项的字段。\n")
-	b.WriteString("你的任务不是做总结，而是\"立事项\"：读完消息后判断这件事是什么、目标是什么、谁牵头、什么时候要。\n")
-	b.WriteString("必须通过 extract_matter 函数返回，不要在普通文本里输出结果。\n\n")
-
-	b.WriteString("字段规则：\n")
-	b.WriteString("  - title：短、具体、可检索，≤ 20 汉字，优先动宾结构（如\"董事会 PPT 打磨\"\"Kano 模型推广到所有产研群\"）。\n")
-	b.WriteString("    禁止套话前缀（\"关于…的讨论\"\"针对…的安排\"）、结尾标点、emoji。\n")
-	b.WriteString("  - description：一段话讲清\"要做成什么 + 关键约束/重点\"，50–150 汉字。\n")
-	b.WriteString("    必须保留原话的专有名词、数字、口号（tagline、代号、具体数值）。\n")
-	b.WriteString("    反面例子：\"讨论了 PPT 相关事宜\"（空洞）、\"张三说 A，李四说 B\"（流水账）。\n")
-	b.WriteString("  - deadline：消息中明确提到截止时间时，返回 YYYY-MM-DD 格式的日期字符串（如 \"2026-05-15\"）；解析\"周五前/下周三/月底\"等相对表达时基于下方\"当前日期\"。\n")
-	b.WriteString("    消息里只给月/日时，使用当前日期的年份；若解析出的日期早于当前日期 >30 天，则用次年。\n")
-	b.WriteString("    无任何时间线索时返回 null，不要编造、不要默认填\"一周后\"。\n")
-	b.WriteString("    不要返回 Unix 时间戳、ISO datetime（含 T 和时区）、自然语言（\"下周三\"），必须是 \"YYYY-MM-DD\" 这种 10 字符日期。\n")
-	b.WriteString("  - source_msg_ids：从输入 message_id 中精选最能支撑该事项的若干条，不要编造、不要返回空数组。\n")
-	b.WriteString("    以下消息**一律不得**出现在 source_msg_ids，即使只有这几条也宁可少选：\n")
-	b.WriteString("      · 寒暄、客套（\"早\"\"在吗\"\"打扰一下\"\"辛苦了\"）\n")
-	b.WriteString("      · 单字/单词确认（\"收到\"\"好的\"\"嗯\"\"OK\"\"ok\"\"明白\"\"可以\"\"没问题\"\"行\"\"好\"\"对\"\"是\"）\n")
-	b.WriteString("      · 纯表情 / 纯 emoji（\"👍\"\"✅\"\"😂\"\"哈哈\"\"[表情]\"）\n")
-	b.WriteString("      · 文件预览截图、自动回执、加入/退出群通知\n")
-	b.WriteString("    判断标准：若把这条消息从 timeline 里删掉，事项的 title / description / deadline / assignee 全都不变，则它就是噪声。\n")
-	b.WriteString("  - assignee_uids：从下方\"参与者\"列表的 uid 中识别负责人，不要编造、不要输出表里没有的 uid。\n")
-	b.WriteString("    优先级：(1) 显式认领（\"我来 / 我牵头 / 我负责 / 我接\"）的发言者 > (2) 被指派者（\"@X 你来 / 交给 X\"）> (3) 都没有则返回空数组（服务端回退到 creator）。\n\n")
-
-	b.WriteString("关键约束：\n")
-	b.WriteString("  ❌ 禁止虚构 message_id 或 uid，未出现在输入中的一律不要输出。\n")
-	b.WriteString("  ❌ 禁止 title 出现\"讨论/关于/事宜\"等空泛词或结尾标点 emoji。\n")
-	b.WriteString("  ❌ 禁止 deadline 编造（消息没说截止时间就返回 null）。\n")
-	b.WriteString("  ✅ 输出语言跟随消息：中文消息 → 中文字段；英文消息 → 英文字段。\n\n")
-
-	b.WriteString(fmt.Sprintf("当前日期：%s (%s)\n", now.Format("2006-01-02"), weekdayCN(now.Weekday())))
-	if in.ChannelName != nil && *in.ChannelName != "" {
-		b.WriteString(fmt.Sprintf("频道名称：%s\n", *in.ChannelName))
+	prompt, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		panic("service: extract_matter prompt unavailable: " + err.Error())
 	}
-	b.WriteString(fmt.Sprintf("频道 ID：%s\n", in.ChannelID))
-	b.WriteString(fmt.Sprintf("Creator UID：%s\n", in.CreatorUID))
-	b.WriteString("参与者（uid → 姓名，assignee_uids 只能来自这个列表）：\n")
-	for _, u := range uniqueSenders(in.Messages) {
-		b.WriteString(fmt.Sprintf("  - %s → %s\n", u.UID, u.Name))
+	out, err := renderExtractSystemPrompt(prompt, in, now)
+	if err != nil {
+		panic("service: extract_matter prompt render: " + err.Error())
 	}
-	return b.String()
+	return out
+}
+
+func renderExtractSystemPrompt(prompt promptstore.Prompt, in ExtractInput, now time.Time) (string, error) {
+	data := extractPromptData{
+		CurrentDate: now.Format("2006-01-02"),
+		Weekday:     weekdayCN(now.Weekday()),
+		ChannelID:   in.ChannelID,
+		CreatorUID:  in.CreatorUID,
+		Senders:     uniqueSenders(in.Messages),
+	}
+	if in.ChannelName != nil {
+		data.ChannelName = *in.ChannelName
+	}
+	return prompt.Render(data)
 }
 
 // weekdayCN renders a time.Weekday as the Chinese form ("星期一" .. "星期日"),

@@ -163,7 +163,11 @@ func TestCompare_LegacyVsSmart(t *testing.T) {
 
 func runOne(t *testing.T, c *llm.Client, sys, usr string, opts ...llm.CallOption) (extractToolArgs, error) {
 	t.Helper()
-	raw, err := c.CallTool(context.Background(), sys, usr, extractMatterTool, opts...)
+	prompt, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		return extractToolArgs{}, fmt.Errorf("load extract_matter tool: %w", err)
+	}
+	raw, err := c.CallTool(context.Background(), sys, usr, prompt.Tool, opts...)
 	if err != nil {
 		return extractToolArgs{}, err
 	}
