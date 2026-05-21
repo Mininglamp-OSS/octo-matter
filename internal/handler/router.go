@@ -34,6 +34,7 @@ func SetupRouter(
 	matterH *MatterHandler,
 	timelineH *TimelineHandler,
 	activityH *ActivityHandler,
+	outputsH *OutputsHandler,
 	extractH *ExtractHandler,
 	extractLimiter gin.HandlerFunc,
 	authMW gin.HandlerFunc,
@@ -91,6 +92,10 @@ func SetupRouter(
 		matters.DELETE("/:id/timeline/:entry_id", timelineH.Delete)
 
 		matters.GET("/:id/activities", activityH.List)
+
+		if outputsH != nil {
+			matters.GET("/:id/outputs", outputsH.List)
+		}
 	}
 
 	return r

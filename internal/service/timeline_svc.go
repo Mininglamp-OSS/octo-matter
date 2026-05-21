@@ -37,6 +37,10 @@ type TimelineAttachmentStore interface {
 	CreateMany(ctx context.Context, atts []*model.TimelineAttachment) error
 	ListByEntryIDs(ctx context.Context, ids []string) (map[string][]model.TimelineAttachment, error)
 	DeleteByEntryID(ctx context.Context, entryID string) error
+	// FindByMatterAndFileURL returns apperr.ErrNotFound when no row matches.
+	// Used to skip re-inserting an attachment already linked to the matter
+	// via an earlier timeline entry — keeps the outputs view one-row-per-file.
+	FindByMatterAndFileURL(ctx context.Context, matterID, fileURL string) (*model.TimelineAttachment, error)
 }
 
 // ParticipantUpserter is the single-method interface for upserting a participant
@@ -357,11 +361,17 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 			atts := make([]*model.TimelineAttachment, 0, len(in.Attachments))
 			for _, a := range in.Attachments {
 				atts = append(atts, &model.TimelineAttachment{
-					EntryID:  entry.ID,
-					FileURL:  a.FileURL,
-					FileName: a.FileName,
-					FileSize: a.FileSize,
-					MimeType: a.MimeType,
+					EntryID:   entry.ID,
+					MatterID:  in.MatterID,
+					FileURL:   a.FileURL,
+					FileName:  a.FileName,
+					FileSize:  a.FileSize,
+					MimeType:  a.MimeType,
+					SenderUID: in.ActorUID,
+					// SenderUname / SentAt deliberately left zero — the
+					// direct path lacks a per-attachment sender name and
+					// CreateMany defaults SentAt to insert time, which
+					// matches the legacy semantics for this path.
 				})
 			}
 			if err := as.CreateMany(ctx, atts); err != nil {
@@ -381,6 +391,65 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 		entry.Attachments = []model.TimelineAttachment{}
 	}
 	return entry, nil
+}
+
+// buildLLMAttachments flattens file attachments carried by messages that the
+// LLM chose to cite. Pure function — easily table-tested. Output rows have
+// EntryID, MatterID, sender fields, SentAt, and Description populated; the
+// repo fills ID / CreatedAt at insert time. Caps at MaxAttachmentsPerEntry
+// to keep one LLM call from creating an unbounded number of file rows when
+// a long chat contains many uploads.
+func buildLLMAttachments(entryID string, in TimelineInput, v timelineValidated) []*model.TimelineAttachment {
+	if len(in.Messages) == 0 {
+		return nil
+	}
+	cited := make(map[string]struct{}, len(v.SourceMsgs))
+	for _, id := range v.SourceMsgs {
+		cited[id] = struct{}{}
+	}
+	desc := clipRunes(v.Content, 500)
+	var descPtr *string
+	if desc != "" {
+		descPtr = &desc
+	}
+	seen := make(map[string]struct{})
+	out := make([]*model.TimelineAttachment, 0)
+	for _, m := range in.Messages {
+		if len(cited) > 0 {
+			if _, ok := cited[m.MessageID]; !ok {
+				continue
+			}
+		}
+		for _, a := range m.Attachments {
+			url := strings.TrimSpace(a.FileURL)
+			if url == "" {
+				continue
+			}
+			if _, dup := seen[url]; dup {
+				continue
+			}
+			seen[url] = struct{}{}
+			var name *string
+			if a.FileName != "" {
+				n := a.FileName
+				name = &n
+			}
+			out = append(out, &model.TimelineAttachment{
+				EntryID:     entryID,
+				MatterID:    in.MatterID,
+				FileURL:     url,
+				FileName:    name,
+				Description: descPtr,
+				SenderUID:   m.FromUID,
+				SenderUname: m.FromUname,
+				SentAt:      time.Unix(m.Timestamp, 0).UTC(),
+			})
+			if len(out) >= MaxAttachmentsPerEntry {
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInput) (*model.TimelineEntry, *TimelineLLMResult, error) {
@@ -483,7 +552,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		RelatedUIDs:     model.JSONStringSlice(v.RelatedUIDs),
 	}
 
-	if err := s.tx.Do(ctx, func(ts TimelineStore, _ TimelineAttachmentStore, ps ParticipantUpserter, cs TimelineMatterChannelStore) error {
+	if err := s.tx.Do(ctx, func(ts TimelineStore, as TimelineAttachmentStore, ps ParticipantUpserter, cs TimelineMatterChannelStore) error {
 		// Resolve / auto-link the channel inside the same tx so an entry-write
 		// failure does not leave an orphan channel link.
 		mc, ferr := cs.FindByMatterAndChannelID(ctx, in.MatterID, in.ChannelID)
@@ -519,6 +588,28 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		entry.ChannelID = &mc.ID
 		if err := ts.Create(ctx, entry); err != nil {
 			return err
+		}
+		// Persist file attachments carried by the source messages so the
+		// matter outputs view can show them. Dedup against existing rows on
+		// the same matter — a forwarded file should not produce a second
+		// entry in the outputs list.
+		if atts := buildLLMAttachments(entry.ID, in, v); len(atts) > 0 {
+			toInsert := make([]*model.TimelineAttachment, 0, len(atts))
+			for _, a := range atts {
+				existing, ferr := as.FindByMatterAndFileURL(ctx, in.MatterID, a.FileURL)
+				if ferr != nil && !errors.Is(ferr, apperr.ErrNotFound) {
+					return ferr
+				}
+				if existing != nil {
+					continue
+				}
+				toInsert = append(toInsert, a)
+			}
+			if len(toInsert) > 0 {
+				if err := as.CreateMany(ctx, toInsert); err != nil {
+					return err
+				}
+			}
 		}
 		return ps.Upsert(ctx, in.MatterID, in.ParticipantUID)
 	}); err != nil {
