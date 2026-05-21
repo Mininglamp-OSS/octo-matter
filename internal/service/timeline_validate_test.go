@@ -188,6 +188,30 @@ func TestValidateTimelineArgs_ContentCap(t *testing.T) {
 		}
 	})
 
+	t.Run("HasExplicitCitations set when LLM cites a valid msg", func(t *testing.T) {
+		v := validateTimelineArgs(timelineToolArgs{
+			SourceMsgIDs: []string{"m1"},
+		}, in)
+		if !v.HasExplicitCitations {
+			t.Errorf("HasExplicitCitations should be true when a valid msg id is cited")
+		}
+	})
+
+	t.Run("HasExplicitCitations cleared on empty / all-invalid citations", func(t *testing.T) {
+		// Empty.
+		v := validateTimelineArgs(timelineToolArgs{SourceMsgIDs: nil}, in)
+		if v.HasExplicitCitations {
+			t.Errorf("HasExplicitCitations must be false when LLM cited nothing — attachment privacy depends on it")
+		}
+		// All invalid → filtered to empty → fallback to all msgs, but the
+		// flag MUST stay false. buildLLMAttachments relies on this to fail
+		// closed.
+		v = validateTimelineArgs(timelineToolArgs{SourceMsgIDs: []string{"fake1", "fake2"}}, in)
+		if v.HasExplicitCitations {
+			t.Errorf("HasExplicitCitations must be false when every citation was filtered out")
+		}
+	})
+
 	t.Run("within-cap content untouched", func(t *testing.T) {
 		short := strings.Repeat("a", 100)
 		v := validateTimelineArgs(timelineToolArgs{

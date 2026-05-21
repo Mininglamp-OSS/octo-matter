@@ -361,6 +361,19 @@ func (f *fakeTimelineAttachmentRepo) DeleteByEntryID(_ context.Context, timeline
 	return nil
 }
 
+// FindByMatterAndFileURL is the test stub for the LLM-path attachment dedup.
+// Walks the in-memory map; order does not matter for behavior under test.
+func (f *fakeTimelineAttachmentRepo) FindByMatterAndFileURL(_ context.Context, matterID, fileURL string) (*model.TimelineAttachment, error) {
+	for _, atts := range f.byEntryID {
+		for _, a := range atts {
+			if a.MatterID == matterID && a.FileURL == fileURL {
+				return a, nil
+			}
+		}
+	}
+	return nil, apperr.ErrNotFound
+}
+
 // --- Tests ---------------------------------------------------------------
 
 func TestMatterService_GetMatter_CrossSpaceReturnsNotFound(t *testing.T) {

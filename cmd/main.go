@@ -100,12 +100,14 @@ func main() {
 	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter)
 	extractSvc := service.NewExtractService(llmClient, matterSvc)
 	activitySvc := service.NewActivityService(matterRepo, matterSvc, activityRepo)
+	outputsSvc := service.NewOutputsService(matterRepo, matterSvc, timelineAttachmentRepo)
 
 	// Handlers
 	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker)
 	extractH := handler.NewExtractHandler(extractSvc)
 	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker)
 	activityH := handler.NewActivityHandler(activitySvc)
+	outputsH := handler.NewOutputsHandler(outputsSvc)
 
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
@@ -115,7 +117,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(matterH, timelineH, activityH, extractH, extractLimiter, authMW, spaceMW, readiness)
+	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, authMW, spaceMW, readiness)
 
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
