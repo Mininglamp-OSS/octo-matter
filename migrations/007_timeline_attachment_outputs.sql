@@ -18,9 +18,13 @@ UPDATE matter_timeline_attachments a
 
 -- Outputs list is keyed by (matter_id, sent_at DESC, id) — index supports
 -- both the cursor walk and the per-file_url GROUP BY MIN(id) dedup query.
+-- file_url is a utf8mb4 varchar(1024) → up to 4096 bytes, which busts the
+-- 3072-byte InnoDB key limit when prefixed with matter_id. A 190-char prefix
+-- (=760 bytes) is long enough to narrow candidates for dedup; the GROUP BY
+-- still groups on the full column so correctness is unaffected.
 ALTER TABLE matter_timeline_attachments
   ADD INDEX idx_attachments_matter_sent (matter_id, sent_at, id),
-  ADD INDEX idx_attachments_matter_file (matter_id, file_url);
+  ADD INDEX idx_attachments_matter_file (matter_id, file_url(190));
 
 -- +migrate Down
 ALTER TABLE matter_timeline_attachments
