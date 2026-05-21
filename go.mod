@@ -3,10 +3,10 @@ module github.com/Mininglamp-OSS/octo-matter
 go 1.25.0
 
 require (
-	github.com/DATA-DOG/go-sqlmock v1.5.0
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/anthropics/anthropic-sdk-go v1.44.1
 	github.com/gin-gonic/gin v1.12.0
-	github.com/go-sql-driver/mysql v1.9.3
+	github.com/go-sql-driver/mysql v1.10.0
 	github.com/gocraft/dbr/v2 v2.7.7
 	github.com/google/uuid v1.6.0
 	github.com/openai/openai-go v1.12.0
@@ -14,7 +14,7 @@ require (
 )
 
 require (
-	filippo.io/edwards25519 v1.1.0 // indirect
+	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
