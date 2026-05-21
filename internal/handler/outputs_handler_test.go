@@ -112,9 +112,13 @@ func TestOutputsHandler_List_HasMore_NextCursorPresent(t *testing.T) {
 		t.Fatalf("got %d", w.Code)
 	}
 	var body map[string]json.RawMessage
-	json.Unmarshal(w.Body.Bytes(), &body)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("parse body: %v", err)
+	}
 	var pg map[string]interface{}
-	json.Unmarshal(body["pagination"], &pg)
+	if err := json.Unmarshal(body["pagination"], &pg); err != nil {
+		t.Fatalf("parse pagination: %v", err)
+	}
 	if pg["has_more"] != true {
 		t.Errorf("expected has_more=true")
 	}

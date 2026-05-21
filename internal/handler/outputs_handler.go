@@ -50,8 +50,8 @@ func (h *OutputsHandler) List(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
 		return
 	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	if limit <= 0 || limit > 200 {
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if err != nil || limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	var cursor *string
