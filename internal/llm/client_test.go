@@ -62,13 +62,19 @@ func TestCallTool_AppliesOptions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var got wire
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				body, _ := io.ReadAll(r.Body)
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read request: %v", err)
+				}
 				if err := json.Unmarshal(body, &got); err != nil {
 					t.Fatalf("unmarshal request: %v", err)
 				}
 				// Minimal valid tool-call response.
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"t","arguments":"{}"}}]}}]}`))
+				resp := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"t","arguments":"{}"}}]}}]}`
+				if _, err := w.Write([]byte(resp)); err != nil {
+					t.Fatalf("write response: %v", err)
+				}
 			}))
 			defer srv.Close()
 
@@ -95,10 +101,16 @@ func TestCallTool_AppliesOptions(t *testing.T) {
 func TestCallTool_OmittedFieldsAbsentFromJSON(t *testing.T) {
 	var raw string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read request: %v", err)
+		}
 		raw = string(b)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"t","arguments":"{}"}}]}}]}`))
+		resp := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"x","type":"function","function":{"name":"t","arguments":"{}"}}]}}]}`
+		if _, err := w.Write([]byte(resp)); err != nil {
+			t.Fatalf("write response: %v", err)
+		}
 	}))
 	defer srv.Close()
 

@@ -76,11 +76,6 @@ type ExtractResult struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// llmTool is the function-calling wrapper this service sends to the LLM gateway.
-type llmCaller interface {
-	CallTool(ctx context.Context, systemPrompt, userPrompt string, tool llm.Tool, opts ...llm.CallOption) (string, error)
-}
-
 // activityStore is the narrow ActivityRepo surface used for best-effort
 // activity recording.
 type activityStore interface {
@@ -90,7 +85,7 @@ type activityStore interface {
 // ExtractService orchestrates an LLM-backed matter extraction from selected
 // chat messages. The resulting matter is persisted via MatterService.
 type ExtractService struct {
-	llm       llmCaller
+	llm       LLMToolCaller
 	matterSvc *MatterService
 	prompts   promptstore.Store
 }
@@ -107,7 +102,7 @@ func WithExtractPromptStore(store promptstore.Store) ExtractOption {
 	return func(s *ExtractService) { s.prompts = store }
 }
 
-func NewExtractService(llmClient llmCaller, matterSvc *MatterService, opts ...ExtractOption) *ExtractService {
+func NewExtractService(llmClient LLMToolCaller, matterSvc *MatterService, opts ...ExtractOption) *ExtractService {
 	s := &ExtractService{llm: llmClient, matterSvc: matterSvc, prompts: defaultPromptStore}
 	for _, opt := range opts {
 		opt(s)
@@ -394,6 +389,7 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, prompt.Tool,
 		llm.WithTemperature(extractTemperature),
 		llm.WithMaxTokens(extractMaxTokens),
+		llm.WithSystemPromptCache(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("llm extract_matter: %w", err)

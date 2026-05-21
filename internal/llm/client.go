@@ -65,6 +65,10 @@ type ChatRequest struct {
 	ToolChoice  *ToolChoice `json:"tool_choice,omitempty"`
 	Temperature *float64    `json:"temperature,omitempty"`
 	MaxTokens   *int        `json:"max_tokens,omitempty"`
+	// CacheSystemPrompt is provider-specific metadata consumed by the official
+	// Anthropic SDK provider. It is intentionally omitted from the compat wire
+	// format so existing OpenAI-compatible gateways keep byte-equivalent requests.
+	CacheSystemPrompt bool `json:"-"`
 }
 
 // CallOption tweaks an outgoing CallTool request. Options are applied in order
@@ -82,6 +86,13 @@ func WithTemperature(t float64) CallOption {
 // misbehaving model that pads its reply.
 func WithMaxTokens(n int) CallOption {
 	return func(r *ChatRequest) { r.MaxTokens = &n }
+}
+
+// WithSystemPromptCache asks providers that support explicit prompt caching to
+// mark the system prompt cacheable for this call. Providers without that feature
+// ignore it.
+func WithSystemPromptCache() CallOption {
+	return func(r *ChatRequest) { r.CacheSystemPrompt = true }
 }
 
 // ChatResponse is the narrow subset of OpenAI's response we care about.

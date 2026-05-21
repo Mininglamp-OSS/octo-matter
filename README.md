@@ -49,12 +49,19 @@ go build -o octo-matter ./cmd
 
 # configure via env vars (see internal/config/config.go for the full list)
 export LLM_API_URL=https://api.example.com/v1
+export OCTO_LLM_PROVIDER=compat # compat, openai, or anthropic
 export MYSQL_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
 
 ./octo-matter
 ```
 
 Minimal external dependencies — MySQL + an LLM endpoint
+
+LLM providers:
+
+- `compat` (default): OpenAI-compatible `/v1/chat/completions`; set `LLM_API_URL` to the gateway's `/v1` base.
+- `openai`: OpenAI official Go SDK; set `LLM_API_URL=https://api.openai.com/v1`.
+- `anthropic`: Anthropic official Go SDK; set `LLM_API_URL=https://api.anthropic.com` (a trailing `/v1` is tolerated).
 
 ## 📦 Modules / Architecture
 
@@ -67,7 +74,7 @@ Top-level packages under this module:
 | `internal/handler/` | HTTP handlers (matter, timeline, activity, extract) |
 | `internal/service/` | Business logic (access control, LLM extraction, timeline) |
 | `internal/repository/` | MySQL repositories for matters, assignees, channels, timelines |
-| `internal/llm/` | LLM client — OpenAI-compatible `/v1/chat/completions` |
+| `internal/llm/` | LLM clients — OpenAI-compatible gateway plus official OpenAI / Anthropic SDK providers |
 | `internal/notification/` | Notifier interface + OCTO-IM implementation |
 | `internal/apperr/` | Typed application errors |
 | `internal/model/` | Shared data models |

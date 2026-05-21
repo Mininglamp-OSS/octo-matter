@@ -132,7 +132,7 @@ type channelLinkVerifier interface {
 
 // TimelineService creates, lists, and deletes matter timeline entries.
 type TimelineService struct {
-	llm            llmCaller
+	llm            LLMToolCaller
 	timelineRepo   TimelineStore
 	attachmentRepo TimelineAttachmentStore
 	matterRepo     matterScopeChecker
@@ -159,7 +159,7 @@ func WithTimelinePromptStore(store promptstore.Store) TimelineOption {
 // guards LLM cost across all callers. linkVerifier may be nil only in tests
 // that do not exercise channel auto-link.
 func NewTimelineService(
-	llmClient llmCaller,
+	llmClient LLMToolCaller,
 	timelineRepo TimelineStore,
 	attachmentRepo TimelineAttachmentStore,
 	matterRepo matterScopeChecker,
@@ -456,7 +456,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 	// naming, but timeline outputs are summary-style strings without a
 	// "right answer" the model needs to converge on. Revisit if A/B data
 	// shows otherwise.
-	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, prompt.Tool)
+	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, prompt.Tool, llm.WithSystemPromptCache())
 	if err != nil {
 		return nil, nil, fmt.Errorf("llm extract_matter_progress: %w", err)
 	}
