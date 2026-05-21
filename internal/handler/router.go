@@ -92,10 +92,7 @@ func SetupRouter(
 		matters.DELETE("/:id/timeline/:entry_id", timelineH.Delete)
 
 		matters.GET("/:id/activities", activityH.List)
-
-		if outputsH != nil {
-			matters.GET("/:id/outputs", outputsH.List)
-		}
+		matters.GET("/:id/outputs", outputsH.List)
 	}
 
 	return r

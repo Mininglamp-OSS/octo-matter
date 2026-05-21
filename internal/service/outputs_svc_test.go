@@ -86,7 +86,7 @@ func TestBuildLLMAttachments_OnlyCitedMessages(t *testing.T) {
 			},
 		},
 	}
-	v := timelineValidated{Content: "summary", SourceMsgs: []string{"msg-2"}}
+	v := timelineValidated{Content: "summary", SourceMsgs: []string{"msg-2"}, HasExplicitCitations: true}
 
 	got := buildLLMAttachments("entry-1", in, v)
 	if len(got) != 1 {
@@ -108,7 +108,14 @@ func TestBuildLLMAttachments_OnlyCitedMessages(t *testing.T) {
 	}
 }
 
-func TestBuildLLMAttachments_AllMessagesWhenNoCitations(t *testing.T) {
+// TestBuildLLMAttachments_FailsClosedWithoutExplicitCitations is the
+// privacy regression guard for #35 reviewer feedback. Prior to the fix,
+// validateTimelineArgs fell back to all input msg IDs when the LLM
+// returned no valid source_msg_ids, and buildLLMAttachments treated that
+// fallback as "no citations → keep everything" — which would leak every
+// attachment in the batch. Now the function MUST fail closed when
+// HasExplicitCitations is false.
+func TestBuildLLMAttachments_FailsClosedWithoutExplicitCitations(t *testing.T) {
 	in := TimelineInput{
 		MatterID: "m1",
 		Messages: []ExtractMessage{
@@ -122,11 +129,17 @@ func TestBuildLLMAttachments_AllMessagesWhenNoCitations(t *testing.T) {
 			},
 		},
 	}
-	v := timelineValidated{Content: "s"} // empty SourceMsgs
+	// HasExplicitCitations=false even though SourceMsgs is populated — the
+	// validator's all-messages fallback. Must NOT leak attachments.
+	v := timelineValidated{
+		Content:              "s",
+		SourceMsgs:           []string{"msg-1", "msg-2"},
+		HasExplicitCitations: false,
+	}
 
 	got := buildLLMAttachments("e", in, v)
-	if len(got) != 2 {
-		t.Fatalf("expected both attachments when no citations, got %d", len(got))
+	if len(got) != 0 {
+		t.Fatalf("expected fail-closed (no attachments persisted), got %d", len(got))
 	}
 }
 
@@ -138,7 +151,7 @@ func TestBuildLLMAttachments_DedupByFileURL(t *testing.T) {
 			{MessageID: "msg-2", FromUID: "u2", Timestamp: 2, Attachments: []ExtractMessageAttachment{{FileURL: "https://x/a"}}},
 		},
 	}
-	v := timelineValidated{Content: "s", SourceMsgs: []string{"msg-1", "msg-2"}}
+	v := timelineValidated{Content: "s", SourceMsgs: []string{"msg-1", "msg-2"}, HasExplicitCitations: true}
 
 	got := buildLLMAttachments("e", in, v)
 	if len(got) != 1 {
@@ -159,7 +172,7 @@ func TestBuildLLMAttachments_HardCapAtMaxPerEntry(t *testing.T) {
 		MatterID: "m1",
 		Messages: []ExtractMessage{{MessageID: "msg-1", FromUID: "u1", Attachments: atts}},
 	}
-	v := timelineValidated{Content: "s"}
+	v := timelineValidated{Content: "s", SourceMsgs: []string{"msg-1"}, HasExplicitCitations: true}
 
 	got := buildLLMAttachments("e", in, v)
 	if len(got) != MaxAttachmentsPerEntry {
@@ -174,7 +187,7 @@ func TestBuildLLMAttachments_SkipsEmptyURL(t *testing.T) {
 			{FileURL: ""}, {FileURL: "   "}, {FileURL: "https://x/a"},
 		}}},
 	}
-	got := buildLLMAttachments("e", in, timelineValidated{Content: "s"})
+	got := buildLLMAttachments("e", in, timelineValidated{Content: "s", SourceMsgs: []string{"msg-1"}, HasExplicitCitations: true})
 	if len(got) != 1 || got[0].FileURL != "https://x/a" {
 		t.Fatalf("expected only the non-empty URL to be kept, got %+v", got)
 	}

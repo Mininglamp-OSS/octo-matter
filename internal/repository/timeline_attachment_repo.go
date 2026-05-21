@@ -11,6 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
+// escapeLikePattern is defined in matter_repo.go and shared across the repo
+// package — it escapes the LIKE meta-characters %, _, and \ so they match
+// literally. Pair the result with `ESCAPE '\\'` in the SQL.
+
 type TimelineAttachmentRepo struct {
 	runner dbr.SessionRunner
 }
@@ -81,6 +85,14 @@ func (r *TimelineAttachmentRepo) DeleteByEntryID(ctx context.Context, entryID st
 // a file that's already attached to the matter via an earlier timeline entry —
 // keeping the outputs view one-row-per-file without a hard DB constraint.
 // Returns apperr.ErrNotFound when no such row exists.
+//
+// NOTE: this is a best-effort soft dedup. Two concurrent CreateEntry calls
+// for the same (matter_id, file_url) can both observe ErrNotFound and both
+// insert — there is no UNIQUE index on the pair (the file_url column is too
+// long to index unprefixed, see migration 007). The authoritative dedup
+// happens at read time in ListOutputs via the (sent_at, id) anti-join, so
+// duplicate rows do not surface to clients; the soft check just keeps the
+// table from accumulating obvious repeats on the happy path.
 func (r *TimelineAttachmentRepo) FindByMatterAndFileURL(ctx context.Context, matterID, fileURL string) (*model.TimelineAttachment, error) {
 	var a model.TimelineAttachment
 	err := r.runner.Select("*").
@@ -98,14 +110,6 @@ func (r *TimelineAttachmentRepo) FindByMatterAndFileURL(ctx context.Context, mat
 		return nil, err
 	}
 	return &a, nil
-}
-
-// OutputsCursor is the cursor encoding for the matter outputs list. Ordered by
-// (sent_at DESC, id DESC) — sent_at is the IM message time (not the row
-// insert time), so the timeline reflects the user's mental order.
-type OutputsCursor struct {
-	SentAt time.Time
-	ID     string
 }
 
 // OutputsFilter narrows the matter outputs query. Q is matched (case
@@ -156,12 +160,12 @@ func (r *TimelineAttachmentRepo) ListOutputs(ctx context.Context, f OutputsFilte
 		))
 
 	if f.Q != "" {
-		like := "%" + f.Q + "%"
+		like := "%" + escapeLikePattern(f.Q) + "%"
 		q = q.Where(
 			dbr.Or(
-				dbr.Expr("a.file_name LIKE ?", like),
-				dbr.Expr("a.description LIKE ?", like),
-				dbr.Expr("a.sender_uname LIKE ?", like),
+				dbr.Expr(`a.file_name LIKE ? ESCAPE '\\'`, like),
+				dbr.Expr(`a.description LIKE ? ESCAPE '\\'`, like),
+				dbr.Expr(`a.sender_uname LIKE ? ESCAPE '\\'`, like),
 			),
 		)
 	}

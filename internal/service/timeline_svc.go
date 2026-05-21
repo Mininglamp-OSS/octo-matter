@@ -218,11 +218,19 @@ type timelineToolArgs struct {
 
 // timelineValidated is the cleaned, server-trusted derivation of an
 // extract_matter_progress LLM result.
+//
+// HasExplicitCitations distinguishes "LLM cited messages and SourceMsgs is
+// the filtered subset" from "LLM cited nothing valid and SourceMsgs falls
+// back to all input message IDs". The fallback is fine for the timeline
+// entry's source_msgs (it's a UX hint, not a security boundary), but the
+// attachment persistence path MUST fail closed — otherwise an LLM that
+// omits source_msg_ids would leak every file in the batch onto the matter.
 type timelineValidated struct {
-	Content          string
-	SourceMsgs       []string
-	RelatedUIDs      []string
-	StatusSuggestion *string // "open" / "done" / nil
+	Content              string
+	SourceMsgs           []string
+	HasExplicitCitations bool
+	RelatedUIDs          []string
+	StatusSuggestion     *string // "open" / "done" / nil
 }
 
 // validateTimelineArgs filters the LLM-emitted lists against the input
@@ -257,7 +265,8 @@ func validateTimelineArgs(args timelineToolArgs, msgs []ExtractMessage) timeline
 		seenMsg[id] = struct{}{}
 		sourceMsgs = append(sourceMsgs, id)
 	}
-	if len(sourceMsgs) == 0 {
+	hasExplicitCitations := len(sourceMsgs) > 0
+	if !hasExplicitCitations {
 		sourceMsgs = make([]string, 0, len(msgs))
 		for _, m := range msgs {
 			sourceMsgs = append(sourceMsgs, m.MessageID)
@@ -293,10 +302,11 @@ func validateTimelineArgs(args timelineToolArgs, msgs []ExtractMessage) timeline
 	}
 
 	return timelineValidated{
-		Content:          clipRunes(args.Content, MaxContentLength),
-		SourceMsgs:       sourceMsgs,
-		RelatedUIDs:      related,
-		StatusSuggestion: status,
+		Content:              clipRunes(args.Content, MaxContentLength),
+		SourceMsgs:           sourceMsgs,
+		HasExplicitCitations: hasExplicitCitations,
+		RelatedUIDs:          related,
+		StatusSuggestion:     status,
 	}
 }
 
@@ -394,13 +404,27 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 }
 
 // buildLLMAttachments flattens file attachments carried by messages that the
-// LLM chose to cite. Pure function — easily table-tested. Output rows have
-// EntryID, MatterID, sender fields, SentAt, and Description populated; the
-// repo fills ID / CreatedAt at insert time. Caps at MaxAttachmentsPerEntry
-// to keep one LLM call from creating an unbounded number of file rows when
-// a long chat contains many uploads.
+// LLM EXPLICITLY cited. Fails closed: when the LLM returned no valid
+// source_msg_ids, no attachments are persisted — otherwise an LLM that
+// omits citations would leak every file in the batch onto the matter
+// (the timeline entry's source_msgs falls back to all input msg IDs as a
+// UX convenience, but that's not a privacy boundary; attachment persistence
+// must be).
+//
+// Pure function — easily table-tested. Output rows have EntryID, MatterID,
+// sender fields, SentAt, and Description populated; the repo fills ID /
+// CreatedAt at insert time. Caps at MaxAttachmentsPerEntry to keep one LLM
+// call from creating an unbounded number of file rows when a long chat
+// contains many uploads.
 func buildLLMAttachments(entryID string, in TimelineInput, v timelineValidated) []*model.TimelineAttachment {
 	if len(in.Messages) == 0 {
+		return nil
+	}
+	// Fail closed when the LLM did not produce explicit citations. v.SourceMsgs
+	// at this point would be the all-messages fallback, which is correct for
+	// the timeline entry's source_msgs metadata but wrong as an attachment
+	// gate.
+	if !v.HasExplicitCitations {
 		return nil
 	}
 	cited := make(map[string]struct{}, len(v.SourceMsgs))
@@ -415,10 +439,8 @@ func buildLLMAttachments(entryID string, in TimelineInput, v timelineValidated) 
 	seen := make(map[string]struct{})
 	out := make([]*model.TimelineAttachment, 0)
 	for _, m := range in.Messages {
-		if len(cited) > 0 {
-			if _, ok := cited[m.MessageID]; !ok {
-				continue
-			}
+		if _, ok := cited[m.MessageID]; !ok {
+			continue
 		}
 		for _, a := range m.Attachments {
 			url := strings.TrimSpace(a.FileURL)

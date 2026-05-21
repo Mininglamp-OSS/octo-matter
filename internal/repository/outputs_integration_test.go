@@ -426,6 +426,67 @@ func TestOutputs_Integration_QFilterAndPagination(t *testing.T) {
 	}
 }
 
+// TestOutputs_Integration_QEscapesLikeMetacharacters guards that LIKE
+// meta-characters in q (% _ \) match literally instead of acting as
+// wildcards — otherwise a search for "report_2024" would also match
+// "report-2024", "report.2024", "report 2024", etc. PR #35 reviewer find.
+func TestOutputs_Integration_QEscapesLikeMetacharacters(t *testing.T) {
+	d := dsn(t)
+	cleanup := setupDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	matterID, chLink := seedMatterAndChannel(t, ctx, d)
+	entry := insertTimelineEntry(t, ctx, d, matterID, chLink)
+
+	conn, sess, err := NewSession(d)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close()
+	repo := NewTimelineAttachmentRepo(sess)
+
+	rows := []*model.TimelineAttachment{
+		newAtt(entry, matterID, "https://x/under.pdf", "report_2024.pdf", "Alice", 1779000000),
+		newAtt(entry, matterID, "https://x/dash.pdf", "report-2024.pdf", "Bob", 1779000100),
+		newAtt(entry, matterID, "https://x/pct.pdf", "100%-done.pdf", "Carol", 1779000200),
+	}
+	for _, r := range rows {
+		if err := repo.CreateMany(ctx, []*model.TimelineAttachment{r}); err != nil {
+			t.Fatalf("CreateMany: %v", err)
+		}
+	}
+
+	// q="_" must NOT act as the LIKE single-char wildcard — should match
+	// the literal underscore in "report_2024.pdf" only.
+	items, _, err := repo.ListOutputs(ctx, OutputsFilter{MatterID: matterID, Q: "_", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListOutputs q=_: %v", err)
+	}
+	if len(items) != 1 || items[0].FileName == nil || *items[0].FileName != "report_2024.pdf" {
+		t.Fatalf(`q="_" should match only the underscore literal, got %d rows: %+v`, len(items), items)
+	}
+
+	// q="%" must NOT act as the LIKE any-string wildcard — should match
+	// only "100%-done.pdf".
+	items, _, err = repo.ListOutputs(ctx, OutputsFilter{MatterID: matterID, Q: "%", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListOutputs q=%%: %v", err)
+	}
+	if len(items) != 1 || items[0].FileName == nil || *items[0].FileName != "100%-done.pdf" {
+		t.Fatalf(`q="%%" should match only the percent literal, got %d rows: %+v`, len(items), items)
+	}
+
+	// Sanity: a plain non-meta substring still works.
+	items, _, err = repo.ListOutputs(ctx, OutputsFilter{MatterID: matterID, Q: "report", Limit: 50})
+	if err != nil {
+		t.Fatalf("ListOutputs q=report: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf(`q="report" expected 2 rows, got %d`, len(items))
+	}
+}
+
 func newAtt(entryID, matterID, url, name, sender string, ts int64) *model.TimelineAttachment {
 	n := name
 	return &model.TimelineAttachment{

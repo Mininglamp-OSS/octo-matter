@@ -303,6 +303,88 @@ func TestOutputs_ServiceIT_DedupAcrossEntries(t *testing.T) {
 	}
 }
 
+// TestOutputs_ServiceIT_EmptyCitationsFailClosed is the regression guard for
+// PR #35 reviewer feedback: when the LLM returns no source_msg_ids at all,
+// the validator's all-messages fallback would previously cause every
+// attachment in the batch to be persisted. After the fix, the attachment
+// gate fails closed and no rows are written.
+func TestOutputs_ServiceIT_EmptyCitationsFailClosed(t *testing.T) {
+	w, cleanup := setupServiceIT(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	channelExtID := "ch-empty-cite-" + uuid.New().String()[:8]
+	matterID := w.seedMatter(t, ctx, channelExtID, "ch")
+
+	// LLM returns content but NO source_msg_ids. Timeline entry still
+	// writes (the entry-level fallback kicks in), but attachments must NOT
+	// leak.
+	w.llm.out = `{"content":"missing citations"}`
+	in := TimelineInput{
+		MatterID: matterID, SpaceID: "sp-it",
+		ActorUID: "u1", ParticipantUID: "u1", CallerUIDs: []string{"u1"},
+		CallerToken: "user-tok", ChannelType: 2, ChannelID: channelExtID,
+		Messages: []ExtractMessage{
+			{
+				MessageID: "m1", FromUID: "u1", Timestamp: 1779000000,
+				Attachments: []ExtractMessageAttachment{{FileURL: "https://x/a.pdf"}},
+			},
+			{
+				MessageID: "m2", FromUID: "u1", Timestamp: 1779000010,
+				Attachments: []ExtractMessageAttachment{{FileURL: "https://x/b.pdf"}},
+			},
+		},
+	}
+	if _, _, err := w.timelineSvc.CreateEntry(ctx, in); err != nil {
+		t.Fatalf("CreateEntry: %v", err)
+	}
+
+	items, _, err := w.outputsSvc.ListOutputs(ctx, matterID, "sp-it", []string{"u1"}, "", nil, 50)
+	if err != nil {
+		t.Fatalf("ListOutputs: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("fail-closed: expected 0 attachments when LLM emitted no source_msg_ids, got %d", len(items))
+	}
+}
+
+// TestOutputs_ServiceIT_AllInvalidCitationsFailClosed covers the related
+// failure mode: LLM emits source_msg_ids that all fail input-set filtering.
+// Same privacy guarantee applies.
+func TestOutputs_ServiceIT_AllInvalidCitationsFailClosed(t *testing.T) {
+	w, cleanup := setupServiceIT(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	channelExtID := "ch-bad-cite-" + uuid.New().String()[:8]
+	matterID := w.seedMatter(t, ctx, channelExtID, "ch")
+
+	// Every cited id is fabricated — filter drops them all, validator falls
+	// back to all input msgs for the timeline entry, but attachments must
+	// still fail closed.
+	w.llm.out = `{"content":"hallucinated citations","source_msg_ids":["does-not-exist-1","does-not-exist-2"]}`
+	in := TimelineInput{
+		MatterID: matterID, SpaceID: "sp-it",
+		ActorUID: "u1", ParticipantUID: "u1", CallerUIDs: []string{"u1"},
+		CallerToken: "user-tok", ChannelType: 2, ChannelID: channelExtID,
+		Messages: []ExtractMessage{{
+			MessageID: "m1", FromUID: "u1", Timestamp: 1779000000,
+			Attachments: []ExtractMessageAttachment{{FileURL: "https://x/secret.pdf"}},
+		}},
+	}
+	if _, _, err := w.timelineSvc.CreateEntry(ctx, in); err != nil {
+		t.Fatalf("CreateEntry: %v", err)
+	}
+
+	items, _, err := w.outputsSvc.ListOutputs(ctx, matterID, "sp-it", []string{"u1"}, "", nil, 50)
+	if err != nil {
+		t.Fatalf("ListOutputs: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("fail-closed: expected 0 attachments under all-invalid citations, got %d", len(items))
+	}
+}
+
 // TestOutputs_ServiceIT_UncitedMessagesDoNotLeakAttachments asserts the
 // privacy property: a file in a message the LLM did NOT cite must not be
 // stored on the matter. Otherwise an unrelated upload in the same chat
