@@ -4,6 +4,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +13,39 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/google/uuid"
 )
+
+// wipeAllTables drops every table in the current DB with FK checks disabled,
+// so renamed-from-legacy tables don't block the reset. Duplicated in the
+// service-package IT — test packages can't share helpers across boundaries
+// without exporting them, and exporting would leak into production code.
+func wipeAllTables(db *sql.DB) error {
+	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS=0"); err != nil {
+		return err
+	}
+	rows, err := db.Query("SHOW TABLES")
+	if err != nil {
+		return err
+	}
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		tables = append(tables, name)
+	}
+	rows.Close()
+	for _, t := range tables {
+		if _, err := db.Exec("DROP TABLE IF EXISTS `" + t + "`"); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec("SET FOREIGN_KEY_CHECKS=1"); err != nil {
+		return err
+	}
+	return nil
+}
 
 // Integration tests for the matter outputs view + the LLM-path attachment
 // persistence. Skipped unless MATTER_OUTPUTS_IT_DSN is set; gate with the
@@ -34,15 +68,6 @@ func dsn(t *testing.T) string {
 	return d
 }
 
-// resetSchema drops every table the migrations would create so each integration
-// test starts from a clean slate. Idempotent.
-func resetSchema(t *testing.T, sess interface {
-	InsertBySql(string, ...interface{})
-}) {
-	// Implemented via raw SQL below — this helper signature is unused, kept
-	// to make the intent obvious if we add more.
-}
-
 func setupDB(t *testing.T) (cleanup func()) {
 	t.Helper()
 	d := dsn(t)
@@ -50,24 +75,12 @@ func setupDB(t *testing.T) (cleanup func()) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	// Wipe and re-apply migrations so the test owns the schema.
-	tables := []string{
-		"matter_timeline_attachments",
-		"matter_timelines",
-		"matter_activities",
-		"matter_channels",
-		"matter_assignees",
-		"matter_participants",
-		"matters",
-		"matter_digests",
-		"gorp_migrations",
-	}
-	for _, tbl := range tables {
-		if _, err := conn.DB.Exec("DROP TABLE IF EXISTS " + tbl); err != nil {
-			t.Fatalf("drop %s: %v", tbl, err)
-		}
+	if err := wipeAllTables(conn.DB); err != nil {
+		conn.Close()
+		t.Fatalf("wipe schema: %v", err)
 	}
 	if _, err := RunMigrations(conn); err != nil {
+		conn.Close()
 		t.Fatalf("migrate: %v", err)
 	}
 	return func() { conn.Close() }
