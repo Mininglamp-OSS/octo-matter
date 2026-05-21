@@ -8,12 +8,15 @@ ALTER TABLE matter_timeline_attachments
   ADD COLUMN sender_uname VARCHAR(128) NOT NULL DEFAULT '' AFTER sender_uid,
   ADD COLUMN sent_at      DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) AFTER sender_uname;
 
--- Backfill matter_id + sent_at from the owning timeline entry so legacy
--- direct-path attachments are visible in the outputs view.
+-- Backfill matter_id + sender_uid + sent_at from the owning timeline entry
+-- so legacy direct-path attachments are visible in the outputs view with a
+-- correct sender. The direct path lacks a per-attachment sender name, so
+-- sender_uname stays empty — clients render sender_uid as the fallback.
 UPDATE matter_timeline_attachments a
   JOIN matter_timelines t ON t.id = a.entry_id
-   SET a.matter_id = t.matter_id,
-       a.sent_at   = t.created_at
+   SET a.matter_id  = t.matter_id,
+       a.sender_uid = t.user_id,
+       a.sent_at    = t.created_at
  WHERE a.matter_id = '';
 
 -- Outputs list is keyed by (matter_id, sent_at DESC, id) — index supports

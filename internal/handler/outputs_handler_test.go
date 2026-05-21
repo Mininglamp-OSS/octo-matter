@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
@@ -118,6 +120,28 @@ func TestOutputsHandler_List_HasMore_NextCursorPresent(t *testing.T) {
 	}
 	if pg["next_cursor"] == nil || pg["next_cursor"] == "" {
 		t.Errorf("expected next_cursor when hasMore=true")
+	}
+}
+
+// TestOutputsHandler_List_QClippedByRuneNotByte guards the q clip is rune-
+// aware. A long Chinese q sliced by bytes would land between bytes of a
+// multibyte rune and MySQL would reject it with utf8mb4 error 1366. Pick
+// an input that exceeds outputsMaxQLen runes — 200 hanzi chars = 600 bytes
+// — and verify the result is still valid UTF-8.
+func TestOutputsHandler_List_QClippedByRuneNotByte(t *testing.T) {
+	svc := &stubOutputsSvc{}
+	r := newOutputsTestRouter(svc)
+	q := strings.Repeat("中", 200) // 200 runes, 600 bytes
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/v1/matters/55555555-5555-5555-5555-555555555555/outputs?q="+q, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d", w.Code)
+	}
+	if utf8.RuneCountInString(svc.gotQ) != outputsMaxQLen {
+		t.Errorf("expected %d runes, got %d (q=%q)", outputsMaxQLen, utf8.RuneCountInString(svc.gotQ), svc.gotQ)
+	}
+	if !utf8.ValidString(svc.gotQ) {
+		t.Errorf("q is not valid UTF-8 — byte-truncation regression: %q", svc.gotQ)
 	}
 }
 

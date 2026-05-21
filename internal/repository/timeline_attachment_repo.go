@@ -118,21 +118,22 @@ type OutputsFilter struct {
 }
 
 // ListOutputs returns deduplicated attachments for a matter. Dedup is by
-// file_url: the earliest row (MIN(id) over the matter's rows for that file)
-// wins so the displayed description / sender / channel reflect the original
-// upload, not a later forward. JOINs matter_channels to pull the source
-// channel name.
+// file_url: the row with the earliest (sent_at, id) per (matter_id, file_url)
+// wins so the displayed description / sender / channel reflect the ORIGINAL
+// upload, not a later forward. id is included only as a deterministic
+// tiebreaker for same-second uploads — UUIDs do not encode order, so
+// MIN(id) alone would pick an arbitrary row. JOINs matter_channels to
+// pull the source channel name.
 func (r *TimelineAttachmentRepo) ListOutputs(ctx context.Context, f OutputsFilter) ([]*model.MatterOutput, bool, error) {
 	if f.Limit <= 0 {
 		f.Limit = 50
 	}
 
-	// Subquery: pick canonical row per (matter_id, file_url).
-	canonical := dbr.Select("MIN(id) AS id").
-		From("matter_timeline_attachments").
-		Where("matter_id = ?", f.MatterID).
-		GroupBy("file_url")
-
+	// Anti-join: keep rows for which no other row exists with the same
+	// (matter_id, file_url) at an earlier (sent_at, id). This is the
+	// per-group "first row by ordering" pattern that does not rely on id
+	// being monotonic — UUIDs are random, so MIN(id) GROUP BY file_url
+	// picks arbitrary rows.
 	q := r.runner.Select(
 		"a.id", "a.entry_id", "a.matter_id",
 		"a.file_url", "a.file_name", "a.file_size", "a.mime_type",
@@ -145,7 +146,14 @@ func (r *TimelineAttachmentRepo) ListOutputs(ctx context.Context, f OutputsFilte
 		LeftJoin(dbr.I("matter_timelines").As("t"), "t.id = a.entry_id").
 		LeftJoin(dbr.I("matter_channels").As("mc"), "mc.id = t.channel_id").
 		Where("a.matter_id = ?", f.MatterID).
-		Where(dbr.Expr("a.id IN ?", canonical))
+		Where(dbr.Expr(
+			`NOT EXISTS (
+				SELECT 1 FROM matter_timeline_attachments b
+				 WHERE b.matter_id = a.matter_id
+				   AND b.file_url  = a.file_url
+				   AND (b.sent_at < a.sent_at OR (b.sent_at = a.sent_at AND b.id < a.id))
+			)`,
+		))
 
 	if f.Q != "" {
 		like := "%" + f.Q + "%"

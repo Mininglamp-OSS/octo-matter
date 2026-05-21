@@ -212,6 +212,80 @@ func TestOutputs_Integration_PersistAndList(t *testing.T) {
 	}
 }
 
+// TestOutputs_Integration_DedupPicksEarliestSentAt is the regression guard
+// for the original-upload-wins property. Insert order is inverse to sent_at
+// order, and UUIDs are random, so a MIN(id)-based dedup would pick the
+// wrong row roughly 50% of the time. With the (sent_at, id) anti-join
+// dedup, the earliest sent_at always wins.
+func TestOutputs_Integration_DedupPicksEarliestSentAt(t *testing.T) {
+	d := dsn(t)
+	cleanup := setupDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	matterID, chLink := seedMatterAndChannel(t, ctx, d)
+
+	conn, sess, err := NewSession(d)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer conn.Close()
+	repo := NewTimelineAttachmentRepo(sess)
+
+	url := "https://cdn.example/canonical.pdf"
+
+	// Run the scenario multiple times. UUIDs are random — a single pass
+	// could pass by luck under a broken MIN(id) dedup. 5 iterations make
+	// the false-pass probability < 4%.
+	for i := 0; i < 5; i++ {
+		// Each iteration is its own pair of timeline entries.
+		laterEntry := insertTimelineEntry(t, ctx, d, matterID, chLink)
+		earlierEntry := insertTimelineEntry(t, ctx, d, matterID, chLink)
+
+		// IMPORTANT: insert the LATER-sent_at row FIRST. Under a broken
+		// MIN(id) dedup, the winner is whichever UUID sorts smaller —
+		// random per iteration. Under the correct (sent_at, id) dedup,
+		// the row with the earlier sent_at always wins.
+		if err := repo.CreateMany(ctx, []*model.TimelineAttachment{{
+			EntryID:     laterEntry,
+			MatterID:    matterID,
+			FileURL:     url,
+			SenderUID:   "u_forwarder",
+			SenderUname: "Forwarder",
+			SentAt:      time.Unix(2000000000+int64(i), 0).UTC(),
+		}}); err != nil {
+			t.Fatalf("insert later: %v", err)
+		}
+		if err := repo.CreateMany(ctx, []*model.TimelineAttachment{{
+			EntryID:     earlierEntry,
+			MatterID:    matterID,
+			FileURL:     url,
+			SenderUID:   "u_original",
+			SenderUname: "Original",
+			SentAt:      time.Unix(1000000000+int64(i), 0).UTC(),
+		}}); err != nil {
+			t.Fatalf("insert earlier: %v", err)
+		}
+
+		items, _, err := repo.ListOutputs(ctx, OutputsFilter{MatterID: matterID, Limit: 50})
+		if err != nil {
+			t.Fatalf("ListOutputs iter %d: %v", i, err)
+		}
+		if len(items) != 1 {
+			t.Fatalf("iter %d: expected dedup to 1 row, got %d", i, len(items))
+		}
+		if items[0].SenderUID != "u_original" {
+			t.Fatalf("iter %d: earliest sent_at must win the dedup, got sender=%s", i, items[0].SenderUID)
+		}
+
+		// Wipe the attachments table between iterations so each round is
+		// isolated. Keeping the same matter/channel avoids re-seeding.
+		if _, err := conn.DB.ExecContext(ctx, "DELETE FROM matter_timeline_attachments WHERE matter_id = ?", matterID); err != nil {
+			t.Fatalf("cleanup iter %d: %v", i, err)
+		}
+	}
+}
+
 func TestOutputs_Integration_DedupsByFileURL(t *testing.T) {
 	d := dsn(t)
 	cleanup := setupDB(t)

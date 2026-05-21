@@ -58,9 +58,12 @@ func (h *OutputsHandler) List(c *gin.Context) {
 	if cur := c.Query("cursor"); cur != "" {
 		cursor = &cur
 	}
+	// Clip by rune count, not byte count — a UTF-8 byte slice can split
+	// mid-rune and produce invalid utf8mb4 that MySQL rejects with 1366,
+	// turning a bounded query into a 500.
 	q := strings.TrimSpace(c.Query("q"))
-	if len(q) > outputsMaxQLen {
-		q = q[:outputsMaxQLen]
+	if r := []rune(q); len(r) > outputsMaxQLen {
+		q = string(r[:outputsMaxQLen])
 	}
 
 	items, hasMore, err := h.svc.ListOutputs(
