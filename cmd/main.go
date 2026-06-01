@@ -11,12 +11,13 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
-	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
+	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
+	"github.com/Mininglamp-OSS/octo-matter/internal/runtime"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -92,10 +93,12 @@ func main() {
 	activitySvc := service.NewActivityService(matterRepo, matterSvc, activityRepo)
 
 	// Handlers
-	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker)
+	rtClient := runtime.NewClient(cfg.OctoServerURL, cfg.NotifyInternalToken, cfg.SelfBaseURL)
+	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, rtClient)
 	extractH := handler.NewExtractHandler(extractSvc)
 	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker)
 	activityH := handler.NewActivityHandler(activitySvc)
+	internalH := handler.NewInternalHandler(timelineSvc)
 
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
@@ -105,7 +108,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(matterH, timelineH, activityH, extractH, extractLimiter, authMW, spaceMW, readiness)
+	r := handler.SetupRouter(matterH, timelineH, activityH, extractH, extractLimiter, internalH, authMW, spaceMW, readiness)
 
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}

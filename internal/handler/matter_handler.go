@@ -2,12 +2,15 @@ package handler
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
+	"github.com/Mininglamp-OSS/octo-matter/internal/runtime"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -16,13 +19,14 @@ type MatterHandler struct {
 	svc      *service.MatterService
 	notifier notification.Notifier
 	worker   *notification.Worker
+	runtime  *runtime.Client // optional: nil disables bot-task dispatch
 }
 
-func NewMatterHandler(svc *service.MatterService, notifier notification.Notifier, worker *notification.Worker) *MatterHandler {
+func NewMatterHandler(svc *service.MatterService, notifier notification.Notifier, worker *notification.Worker, rtClient *runtime.Client) *MatterHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &MatterHandler{svc: svc, notifier: notifier, worker: worker}
+	return &MatterHandler{svc: svc, notifier: notifier, worker: worker, runtime: rtClient}
 }
 
 // createMatterSourceMsgRef accepts the client's existing payload shape — the
@@ -128,6 +132,10 @@ func (h *MatterHandler) Create(c *gin.Context) {
 	h.worker.Submit(func() {
 		h.notifier.NotifyMatterCreated(matter, actorName, req.AssigneeIDs)
 	})
+	// Bot assignee dispatch: fire one bot_task per bot-suffixed assignee.
+	// Bots get separate dispatches because they each run independently on
+	// their own openclaw agent.
+	h.dispatchBotAssignees(c, matter, req.AssigneeIDs)
 	created(c, detail)
 }
 
@@ -314,6 +322,18 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 			h.notifier.NotifyAssigneeAdded(matter, actorName, assigneeUID)
 		}
 	})
+	// Bot dispatch: if a bot was just added as assignee, kick the runtime so
+	// the bot starts working on the matter immediately. Mirrors the same
+	// fire-and-forget pattern used in Create.
+	if runtime.IsBotUID(assigneeUID) && h.runtime != nil {
+		h.worker.Submit(func() {
+			matter, err := h.svc.GetMatterForNotification(context.Background(), matterID, space)
+			if err != nil || matter == nil {
+				return
+			}
+			dispatchOneBotAssignee(h.runtime, matter, assigneeUID)
+		})
+	}
 	ok(c, nil)
 }
 
@@ -389,4 +409,53 @@ func (h *MatterHandler) UnlinkChannel(c *gin.Context) {
 		return
 	}
 	ok(c, nil)
+}
+
+// dispatchBotAssignees walks the assignee list and fires one bot-task per
+// bot-suffixed uid. Each dispatch is fire-and-forget (worker pool) — a
+// dispatch failure surfaces as a log line, never blocks the caller.
+func (h *MatterHandler) dispatchBotAssignees(c *gin.Context, matter *model.Matter, assigneeIDs []string) {
+	if h.runtime == nil {
+		return
+	}
+	m := *matter // shallow copy: handler returns before goroutine reads
+	for _, aid := range assigneeIDs {
+		if !runtime.IsBotUID(aid) {
+			continue
+		}
+		assignee := aid
+		h.worker.Submit(func() {
+			dispatchOneBotAssignee(h.runtime, &m, assignee)
+		})
+	}
+}
+
+func dispatchOneBotAssignee(rt *runtime.Client, matter *model.Matter, botUID string) {
+	desc := ""
+	if matter.Description != nil {
+		desc = *matter.Description
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	id, err := rt.EnqueueBotTask(ctx, runtime.BotTaskReq{
+		MatterID:     matter.ID,
+		SpaceID:      matter.SpaceID,
+		BotUID:       botUID,
+		RequesterUID: matter.CreatorID,
+		Title:        matter.Title,
+		Description:  desc,
+	})
+	if err != nil {
+		logBotDispatchErr(matter.ID, botUID, err)
+		return
+	}
+	logBotDispatchOK(matter.ID, botUID, id)
+}
+
+func logBotDispatchErr(matterID, botUID string, err error) {
+	log.Printf("[bot-dispatch] matter=%s bot=%s ERROR: %v", matterID, botUID, err)
+}
+
+func logBotDispatchOK(matterID, botUID string, taskID int64) {
+	log.Printf("[bot-dispatch] matter=%s bot=%s queued task_id=%d", matterID, botUID, taskID)
 }

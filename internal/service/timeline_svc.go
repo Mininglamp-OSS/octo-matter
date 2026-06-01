@@ -396,6 +396,52 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 	return entry, nil
 }
 
+// CreateInternalEntry is the bot-writeback path used by /v1/internal/matters/
+// :id/timeline. It bypasses the access check because the internal endpoint is
+// gated on a shared X-Internal-Token (only trusted services like octo-server's
+// bot_task ack handler call it), and the actor is whatever uid the trusted
+// caller specifies (typically the bot uid that ran the task). Still verifies
+// matter existence in the given space — a wrong space_id is a programming
+// error from the caller, not silent-write territory.
+func (s *TimelineService) CreateInternalEntry(ctx context.Context, matterID, spaceID, actorUID, content string) (*model.TimelineEntry, error) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil, apperr.ValidationError("content required", "content")
+	}
+	if len(content) > MaxContentLength {
+		return nil, apperr.ValidationError("content too long", "content")
+	}
+	if strings.TrimSpace(actorUID) == "" {
+		return nil, apperr.ValidationError("actor_uid required", "actor_uid")
+	}
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	if matter == nil {
+		return nil, apperr.MatterNotFound()
+	}
+	contentPtr := content
+	entry := &model.TimelineEntry{
+		MatterID: matterID,
+		UserID:   actorUID,
+		Content:  &contentPtr,
+	}
+	err = s.tx.Do(ctx, func(ts TimelineStore, _ TimelineAttachmentStore, ps ParticipantUpserter, _ TimelineMatterChannelStore) error {
+		if err := ts.Create(ctx, entry); err != nil {
+			return err
+		}
+		return ps.Upsert(ctx, matterID, actorUID)
+	})
+	if err != nil {
+		return nil, err
+	}
+	if entry.Attachments == nil {
+		entry.Attachments = []model.TimelineAttachment{}
+	}
+	return entry, nil
+}
+
 func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInput) (*model.TimelineEntry, *TimelineLLMResult, error) {
 	if err := validateMessages(in.Messages); err != nil {
 		return nil, nil, err

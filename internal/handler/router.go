@@ -36,6 +36,7 @@ func SetupRouter(
 	activityH *ActivityHandler,
 	extractH *ExtractHandler,
 	extractLimiter gin.HandlerFunc,
+	internalH *InternalHandler,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
 	ready ReadinessCheck,
@@ -91,6 +92,15 @@ func SetupRouter(
 		matters.DELETE("/:id/timeline/:entry_id", timelineH.Delete)
 
 		matters.GET("/:id/activities", activityH.List)
+	}
+
+	// Internal API (X-Internal-Token auth, NO session auth, NO space middleware).
+	// Used by octo-server's bot_task ack handler to write bot replies back to
+	// matter timelines. Kept outside /api/v1 group so the session middleware
+	// chain doesn't apply.
+	if internalH != nil {
+		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), internalH.AuthMiddleware())
+		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
 	}
 
 	return r
