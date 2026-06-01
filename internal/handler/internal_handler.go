@@ -15,15 +15,17 @@ import (
 // notify. Unauthenticated callers get 401.
 type InternalHandler struct {
 	timelineSvc *service.TimelineService
+	matterSvc   *service.MatterService
 	token       string
 }
 
 // NewInternalHandler wires the internal handler. token is read from env at
 // construction time so the middleware closure can capture it. Empty token =
 // reject all requests (fail closed; matches modules/notify on the server side).
-func NewInternalHandler(timelineSvc *service.TimelineService) *InternalHandler {
+func NewInternalHandler(timelineSvc *service.TimelineService, matterSvc *service.MatterService) *InternalHandler {
 	return &InternalHandler{
 		timelineSvc: timelineSvc,
+		matterSvc:   matterSvc,
 		token:       os.Getenv("NOTIFY_INTERNAL_TOKEN"),
 	}
 }
@@ -74,4 +76,33 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 		return
 	}
 	created(c, entry)
+}
+
+// internalActivityReq is the POST body for /v1/internal/matters/:id/activities.
+// detail is opaque JSON the caller controls; we passthrough to recordActivity
+// which marshals it. Trusted caller is expected to follow the documented
+// shape per action kind (see service/matter_svc.go ActionAgent* constants).
+type internalActivityReq struct {
+	ActorUID string         `json:"actor_uid" binding:"required,max=64"`
+	Action   string         `json:"action" binding:"required,max=64"`
+	Detail   map[string]any `json:"detail"`
+}
+
+// WriteActivity handles POST /api/v1/internal/matters/:id/activities. Used
+// by octo-server's ackBotTask handler to record agent_task_completed /
+// agent_task_failed against the matter, so the activity feed reflects what
+// the runtime did. Returns 204 on success — caller doesn't need the row back.
+func (h *InternalHandler) WriteActivity(c *gin.Context) {
+	matterID := c.Param("id")
+	if !validUUID(matterID) {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		return
+	}
+	var req internalActivityReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		bindJSONErr(c, err)
+		return
+	}
+	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, req.ActorUID, req.Action, req.Detail)
+	c.Status(http.StatusNoContent)
 }

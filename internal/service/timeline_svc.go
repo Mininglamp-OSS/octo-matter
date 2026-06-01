@@ -403,6 +403,78 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 	return entry, nil
 }
 
+// BuildContinuationPrompt composes the prompt for a runtime task dispatched
+// by a @mention. The agent should be able to pick up where the conversation
+// left off, so we feed it:
+//   - matter title + description (orientation)
+//   - botUID (so the agent knows "this is me")
+//   - timeline history oldest-first (last 30 entries — bounded for openclaw
+//     context size; longer matters truncate the oldest middle ground)
+// Each timeline entry is rendered as "[actor_uid]: content" — opaque uids
+// rather than display names because the matter service doesn't resolve names
+// (octoim does), and the agent treats them as conversation participants
+// regardless.
+//
+// Returns (prompt, matter.title, err). Matter title is also returned so the
+// caller doesn't need a separate matterRepo lookup.
+func (s *TimelineService) BuildContinuationPrompt(ctx context.Context, matterID, spaceID, botUID string) (string, string, error) {
+	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
+	if err != nil {
+		return "", "", err
+	}
+	if matter == nil {
+		return "", "", apperr.MatterNotFound()
+	}
+	const historyLimit = 30
+	entries, err := s.timelineRepo.ListRecentByMatter(ctx, matterID, historyLimit)
+	if err != nil {
+		// Don't fail dispatch on history fetch — proceed with empty history.
+		entries = nil
+	}
+
+	var b strings.Builder
+	b.WriteString("You are agent `")
+	b.WriteString(botUID)
+	b.WriteString("` working on the following matter.\n\n")
+	b.WriteString("# Matter\n\n")
+	b.WriteString("## Title\n")
+	b.WriteString(matter.Title)
+	b.WriteString("\n\n")
+	if matter.Description != nil && strings.TrimSpace(*matter.Description) != "" {
+		b.WriteString("## Goal\n")
+		b.WriteString(*matter.Description)
+		b.WriteString("\n\n")
+	}
+
+	// ListRecentByMatter returns newest first; reverse for chronological order.
+	if len(entries) > 0 {
+		b.WriteString("# Conversation so far (oldest first)\n\n")
+		for i := len(entries) - 1; i >= 0; i-- {
+			e := entries[i]
+			if e.Content == nil || strings.TrimSpace(*e.Content) == "" {
+				continue
+			}
+			role := "user"
+			if e.UserID == botUID {
+				role = "you (agent)"
+			}
+			b.WriteString("- **")
+			b.WriteString(role)
+			b.WriteString("** (")
+			b.WriteString(e.UserID)
+			b.WriteString("): ")
+			b.WriteString(*e.Content)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("# Your task now\n\n")
+	b.WriteString("Reply to the latest user message. Keep your response focused and actionable.")
+
+	return b.String(), matter.Title, nil
+}
+
 // CreateInternalEntry is the bot-writeback path used by /v1/internal/matters/
 // :id/timeline. It bypasses the access check because the internal endpoint is
 // gated on a shared X-Internal-Token (only trusted services like octo-server's

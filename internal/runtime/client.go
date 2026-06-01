@@ -62,6 +62,10 @@ func NewClient(serverURL, internalToken, selfBaseURL string) *Client {
 // BotTaskReq mirrors octo-server's createBotTaskReq. SelfBaseURL is the
 // matter-service callback URL the server will use to POST the bot's reply
 // back to /api/v1/internal/matters/:id/timeline.
+//
+// Prompt is optional — when non-empty it overrides the server-side default
+// (which composes prompt from Title + Description). Used by mention
+// dispatch to feed the agent the full conversation history.
 type BotTaskReq struct {
 	MatterID      string `json:"matter_id"`
 	MatterBaseURL string `json:"matter_base_url"`
@@ -70,6 +74,7 @@ type BotTaskReq struct {
 	RequesterUID  string `json:"requester_uid"`
 	Title         string `json:"title"`
 	Description   string `json:"description"`
+	Prompt        string `json:"prompt,omitempty"`
 }
 
 // EnqueueBotTask POSTs to /v1/internal/bot-tasks. Returns the server-assigned

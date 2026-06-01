@@ -103,6 +103,7 @@ func SetupRouter(
 	if internalH != nil {
 		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), internalH.AuthMiddleware())
 		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
+		internal.POST("/matters/:id/activities", internalH.WriteActivity)
 	}
 
 	return r

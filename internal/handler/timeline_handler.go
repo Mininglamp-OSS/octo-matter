@@ -3,14 +3,19 @@ package handler
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
+	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
+	rtclient "github.com/Mininglamp-OSS/octo-matter/internal/runtime"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
+	"github.com/Mininglamp-OSS/octo-matter/internal/util/mention"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,6 +24,7 @@ type TimelineHandler struct {
 	matterSvc *service.MatterService
 	notifier  notification.Notifier
 	worker    *notification.Worker
+	runtime   *rtclient.Client // PoC3c: @mention dispatch; nil disables it
 }
 
 // NewTimelineHandler wires the timeline handler. Note: the LLM rate limiter
@@ -29,11 +35,12 @@ func NewTimelineHandler(
 	matterSvc *service.MatterService,
 	notifier notification.Notifier,
 	worker *notification.Worker,
+	runtime *rtclient.Client,
 ) *TimelineHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &TimelineHandler{svc: svc, matterSvc: matterSvc, notifier: notifier, worker: worker}
+	return &TimelineHandler{svc: svc, matterSvc: matterSvc, notifier: notifier, worker: worker, runtime: runtime}
 }
 
 type attachmentInput struct {
@@ -131,11 +138,62 @@ func (h *TimelineHandler) Create(c *gin.Context) {
 	}
 
 	h.notifyEntryAdded(c, matterID, spaceID(c), entry.UserID, actorNameFor(c, entry.UserID))
+	// PoC3c: if this comment @-mentions one or more agents (kind=agent),
+	// fire a dispatch per agent with a continuation prompt that includes
+	// the matter context + full timeline so far + this new comment.
+	h.dispatchMentionedAgents(c, matterID, spaceID(c), entry)
 	if llmResult != nil {
 		created(c, llmResult)
 		return
 	}
 	created(c, entry)
+}
+
+// dispatchMentionedAgents extracts agent mentions from the newly-created
+// timeline entry and queues a runtime task per mention. Fire-and-forget,
+// best-effort — a dispatch failure is logged, not surfaced to the comment
+// author (the comment itself was persisted successfully).
+func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid string, entry *model.TimelineEntry) {
+	if h.runtime == nil || entry == nil || entry.Content == nil {
+		return
+	}
+	agentBotUIDs := mention.AgentIDs(mention.Parse(*entry.Content))
+	if len(agentBotUIDs) == 0 {
+		return
+	}
+	// Snapshot fields needed for the goroutine. Span context is unsafe
+	// past handler return; use background ctx with our own timeout.
+	requesterUID := uid(c)
+	for _, botUID := range agentBotUIDs {
+		bot := botUID
+		h.worker.Submit(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			prompt, matterTitle, err := h.svc.BuildContinuationPrompt(ctx, matterID, sid, bot)
+			if err != nil {
+				log.Printf("[mention-dispatch] build prompt failed matter=%s bot=%s: %v", matterID, bot, err)
+				return
+			}
+			id, err := h.runtime.EnqueueBotTask(ctx, rtclient.BotTaskReq{
+				MatterID:     matterID,
+				SpaceID:      sid,
+				BotUID:       bot,
+				RequesterUID: requesterUID,
+				Title:        matterTitle,
+				Description:  "", // prompt carries everything; description not needed
+				Prompt:       prompt,
+			})
+			if err != nil {
+				log.Printf("[mention-dispatch] enqueue failed matter=%s bot=%s: %v", matterID, bot, err)
+				h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentTaskFailed,
+					map[string]any{"bot_uid": bot, "task_id": int64(0), "error": "mention dispatch: " + err.Error()})
+				return
+			}
+			log.Printf("[mention-dispatch] matter=%s bot=%s queued task_id=%d (from comment)", matterID, bot, id)
+			h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentDispatched,
+				map[string]any{"bot_uid": bot, "task_id": id, "trigger": "mention"})
+		})
+	}
 }
 
 func (h *TimelineHandler) List(c *gin.Context) {

@@ -331,7 +331,7 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 			if err != nil || matter == nil {
 				return
 			}
-			dispatchOneBotAssignee(h.runtime, matter, assigneeUID)
+			dispatchOneBotAssignee(h.svc, h.runtime, matter, assigneeUID)
 		})
 	}
 	ok(c, nil)
@@ -425,12 +425,12 @@ func (h *MatterHandler) dispatchBotAssignees(c *gin.Context, matter *model.Matte
 		}
 		assignee := aid
 		h.worker.Submit(func() {
-			dispatchOneBotAssignee(h.runtime, &m, assignee)
+			dispatchOneBotAssignee(h.svc, h.runtime, &m, assignee)
 		})
 	}
 }
 
-func dispatchOneBotAssignee(rt *runtime.Client, matter *model.Matter, botUID string) {
+func dispatchOneBotAssignee(svc *service.MatterService, rt *runtime.Client, matter *model.Matter, botUID string) {
 	desc := ""
 	if matter.Description != nil {
 		desc = *matter.Description
@@ -447,9 +447,17 @@ func dispatchOneBotAssignee(rt *runtime.Client, matter *model.Matter, botUID str
 	})
 	if err != nil {
 		logBotDispatchErr(matter.ID, botUID, err)
+		// Surface dispatch failure as an activity so the user sees something in
+		// the timeline instead of silence (the matter is created but the bot
+		// never started). actor_id = bot_uid: the activity reads as the bot's
+		// own status, mirroring how agent_task_failed will look.
+		svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentTaskFailed,
+			map[string]any{"bot_uid": botUID, "task_id": int64(0), "error": "dispatch: " + err.Error()})
 		return
 	}
 	logBotDispatchOK(matter.ID, botUID, id)
+	svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentDispatched,
+		map[string]any{"bot_uid": botUID, "task_id": id})
 }
 
 func logBotDispatchErr(matterID, botUID string, err error) {

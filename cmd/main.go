@@ -107,9 +107,9 @@ func main() {
 	rtClient := runtime.NewClient(cfg.OctoServerURL, cfg.NotifyInternalToken, cfg.SelfBaseURL)
 	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, rtClient)
 	extractH := handler.NewExtractHandler(extractSvc)
-	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker)
+	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker, rtClient)
 	activityH := handler.NewActivityHandler(activitySvc)
-	internalH := handler.NewInternalHandler(timelineSvc)
+	internalH := handler.NewInternalHandler(timelineSvc, matterSvc)
 	outputsH := handler.NewOutputsHandler(outputsSvc)
 
 	// Auth

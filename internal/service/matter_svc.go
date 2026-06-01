@@ -96,6 +96,27 @@ func recordActivity(ctx context.Context, store activityStore, matterID, actorID,
 	}
 }
 
+// Activity actions for agent / bot-task lifecycle. Kept here next to the
+// existing matter mutation actions (created, status_changed, assignee_added,
+// …) so the full action vocabulary lives in one place. detail JSON shape:
+//
+//	agent_dispatched:      {"bot_uid": string, "agent_id": string, "task_id": int64}
+//	agent_task_completed:  {"bot_uid": string, "task_id": int64, "bytes": int}
+//	agent_task_failed:     {"bot_uid": string, "task_id": int64, "error": string}
+const (
+	ActionAgentDispatched     = "agent_dispatched"
+	ActionAgentTaskCompleted  = "agent_task_completed"
+	ActionAgentTaskFailed     = "agent_task_failed"
+)
+
+// RecordAgentActivity is the public entrypoint for code outside MatterService
+// (handlers, the internal POST endpoint) to append an agent_* activity to a
+// matter. Same best-effort semantics as recordActivity: failures are logged,
+// not returned. action should be one of ActionAgent* constants.
+func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, actorID, action string, detail interface{}) {
+	recordActivity(ctx, s.activity, matterID, actorID, action, detail)
+}
+
 // CreateMatterWithAssignees creates the matter, auto-links its source channel
 // (GAP #13) and inserts all initial assignees in a single transaction.
 func (s *MatterService) CreateMatterWithAssignees(ctx context.Context, matter *model.Matter, assigneeIDs []string) (*MatterDetail, error) {
