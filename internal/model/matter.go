@@ -41,3 +41,12 @@ type Matter struct {
 	UpdatedAt    time.Time       `db:"updated_at" json:"updated_at"`
 	DeletedAt    *time.Time      `db:"deleted_at" json:"deleted_at,omitempty"`
 }
+
+// MatterMeta is the minimal projection of a matter row used by services
+// that need just the human-readable identifier (title + seq_no), without
+// the rest of the model. Lives in `model` so both service and repository
+// can reference it without circular import.
+type MatterMeta struct {
+	Title string
+	SeqNo int
+}

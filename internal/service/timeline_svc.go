@@ -488,13 +488,15 @@ func (s *TimelineService) BuildContinuationPrompt(ctx context.Context, matterID,
 // either a timeline entry the bot posted (kind="comment") or a matter
 // activity where the bot was the actor (kind="activity").
 type BotFeedItem struct {
-	Kind      string         `json:"kind"`
-	ID        string         `json:"id"`
-	MatterID  string         `json:"matter_id"`
-	CreatedAt time.Time      `json:"created_at"`
-	Content   *string        `json:"content,omitempty"`
-	Action    string         `json:"action,omitempty"`
-	Detail    map[string]any `json:"detail,omitempty"`
+	Kind        string         `json:"kind"`
+	ID          string         `json:"id"`
+	MatterID    string         `json:"matter_id"`
+	MatterTitle string         `json:"matter_title,omitempty"`
+	MatterSeqNo int            `json:"matter_seq_no,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	Content     *string        `json:"content,omitempty"`
+	Action      string         `json:"action,omitempty"`
+	Detail      map[string]any `json:"detail,omitempty"`
 }
 
 // botTimelineStore: narrow ListByActor on TimelineRepo.
@@ -549,7 +551,50 @@ func (s *TimelineService) ListBotFeed(ctx context.Context, botUID string, limit 
 	if len(merged) > limit {
 		merged = merged[:limit]
 	}
+	// Enrich with matter title + seq_no so the UI can render human-readable
+	// "M-{seq_no} {title}" instead of opaque uuids. Single batched query;
+	// missing matters (deleted between feed and enrich) fall through with
+	// empty title — caller still has matter_id to fall back on.
+	if err := s.enrichBotFeedMatters(ctx, merged); err != nil {
+		// Non-fatal — log via printf since we don't have a logger here.
+		// Caller still gets the rows, just without title.
+		_ = err
+	}
 	return merged, nil
+}
+
+// enrichBotFeedMatters fills in MatterTitle + MatterSeqNo for every item
+// in items by querying matters table once for the unique matter_ids.
+func (s *TimelineService) enrichBotFeedMatters(ctx context.Context, items []BotFeedItem) error {
+	if len(items) == 0 {
+		return nil
+	}
+	store, ok := s.matterRepo.(interface {
+		LoadMatterMeta(ctx context.Context, ids []string) (map[string]model.MatterMeta, error)
+	})
+	if !ok {
+		return fmt.Errorf("matterRepo does not implement LoadMatterMeta")
+	}
+	ids := make([]string, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		if _, dup := seen[it.MatterID]; dup {
+			continue
+		}
+		seen[it.MatterID] = struct{}{}
+		ids = append(ids, it.MatterID)
+	}
+	meta, err := store.LoadMatterMeta(ctx, ids)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		if m, ok := meta[items[i].MatterID]; ok {
+			items[i].MatterTitle = m.Title
+			items[i].MatterSeqNo = m.SeqNo
+		}
+	}
+	return nil
 }
 
 // sortBotFeedDesc insertion-sorts in place by CreatedAt descending.

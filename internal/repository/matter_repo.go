@@ -318,3 +318,39 @@ func (r *MatterRepo) HasAccess(ctx context.Context, matterID string, callerUIDs 
 	}
 	return true, nil
 }
+
+// LoadMatterMeta (PoC4) returns a map of id → {title, seq_no} for the
+// given matter ids. Used by bot feed to enrich rows with human-readable
+// matter identifiers ("M-21 ttt") instead of opaque uuids. Skips
+// archived/missing matters silently — caller still has the matter_id.
+//
+// Uses model.MatterMeta (named struct) so the type assertion in
+// TimelineService matches by interface identity.
+func (r *MatterRepo) LoadMatterMeta(ctx context.Context, ids []string) (map[string]model.MatterMeta, error) {
+	out := make(map[string]model.MatterMeta, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	type row struct {
+		ID    string `db:"id"`
+		Title string `db:"title"`
+		SeqNo int    `db:"seq_no"`
+	}
+	var rows []row
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	placeholders := strings.Repeat("?,", len(ids))
+	placeholders = placeholders[:len(placeholders)-1]
+	_, err := r.runner.SelectBySql(
+		"SELECT id, title, seq_no FROM matters WHERE id IN ("+placeholders+")", args...,
+	).LoadContext(ctx, &rows)
+	if err != nil {
+		return nil, err
+	}
+	for _, x := range rows {
+		out[x.ID] = model.MatterMeta{Title: x.Title, SeqNo: x.SeqNo}
+	}
+	return out, nil
+}
