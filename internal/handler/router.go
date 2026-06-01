@@ -104,6 +104,7 @@ func SetupRouter(
 		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), internalH.AuthMiddleware())
 		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
 		internal.POST("/matters/:id/activities", internalH.WriteActivity)
+		internal.GET("/bots/:bot_uid/feed", internalH.BotFeed)
 	}
 
 	return r

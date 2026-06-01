@@ -98,7 +98,7 @@ func main() {
 	// Services
 	matterSvc := service.NewMatterService(matterRepo, assigneeRepo, participantRepo, channelRepo, activityRepo, txMgr, imClient)
 	timelineTx := timelineTxAdapter{mgr: txMgr}
-	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter)
+	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter, service.WithBotFeedActivityStore(activityRepo))
 	extractSvc := service.NewExtractService(llmClient, matterSvc)
 	activitySvc := service.NewActivityService(matterRepo, matterSvc, activityRepo)
 	outputsSvc := service.NewOutputsService(matterRepo, matterSvc, timelineAttachmentRepo)

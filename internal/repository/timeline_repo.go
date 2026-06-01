@@ -123,3 +123,24 @@ func (r *TimelineRepo) ListByMatter(ctx context.Context, matterID, sourceChannel
 	}
 	return entries, hasMore, nil
 }
+
+// ListTimelinesByActor (PoC4) returns up to limit timeline entries authored by
+// actorUID (matter_timelines.user_id = actorUID), newest first. Used by the
+// bot feed proxied through octo-server's bot detail page.
+func (r *TimelineRepo) ListTimelinesByActor(ctx context.Context, actorUID string, limit int) ([]*model.TimelineEntry, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	entries := make([]*model.TimelineEntry, 0, limit)
+	_, err := r.runner.Select("*").
+		From("matter_timelines").
+		Where("user_id = ?", actorUID).
+		OrderDir("created_at", false).
+		OrderDir("id", false).
+		Limit(uint64(limit)).
+		LoadContext(ctx, &entries)
+	if err != nil {
+		return nil, err
+	}
+	return entries, nil
+}

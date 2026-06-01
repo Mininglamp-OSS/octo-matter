@@ -147,6 +147,7 @@ type TimelineService struct {
 	assignees      assigneeStore
 	limiter        llmLimiter // nil → no rate limit (e.g. tests / single-tenant dev)
 	prompts        promptstore.Store
+	activityForBot any // PoC4 bot feed — *repository.ActivityRepo (satisfies botActivityStore)
 }
 
 // TimelineOption configures a TimelineService at construction.
@@ -155,6 +156,12 @@ type TimelineOption func(*TimelineService)
 // WithTimelinePromptStore overrides the default embed-backed prompt source.
 func WithTimelinePromptStore(store promptstore.Store) TimelineOption {
 	return func(s *TimelineService) { s.prompts = store }
+}
+
+// WithBotFeedActivityStore wires the activity repo for PoC4 bot feed.
+// Optional — bot feed returns an error if the store isn't wired.
+func WithBotFeedActivityStore(store any) TimelineOption {
+	return func(s *TimelineService) { s.activityForBot = store }
 }
 
 // NewTimelineService wires the timeline service. limiter may be nil — useful
@@ -473,6 +480,88 @@ func (s *TimelineService) BuildContinuationPrompt(ctx context.Context, matterID,
 	b.WriteString("Reply to the latest user message. Keep your response focused and actionable.")
 
 	return b.String(), matter.Title, nil
+}
+
+// ─── PoC4 bot feed ─────────────────────────────────────────────
+
+// BotFeedItem is one row in a bot's cross-matter activity feed —
+// either a timeline entry the bot posted (kind="comment") or a matter
+// activity where the bot was the actor (kind="activity").
+type BotFeedItem struct {
+	Kind      string         `json:"kind"`
+	ID        string         `json:"id"`
+	MatterID  string         `json:"matter_id"`
+	CreatedAt time.Time      `json:"created_at"`
+	Content   *string        `json:"content,omitempty"`
+	Action    string         `json:"action,omitempty"`
+	Detail    map[string]any `json:"detail,omitempty"`
+}
+
+// botTimelineStore: narrow ListByActor on TimelineRepo.
+type botTimelineStore interface {
+	ListTimelinesByActor(ctx context.Context, actorUID string, limit int) ([]*model.TimelineEntry, error)
+}
+
+// botActivityStore: narrow ListByActor on ActivityRepo.
+type botActivityStore interface {
+	ListActivitiesByActor(ctx context.Context, actorUID string, limit int) ([]*model.MatterActivity, error)
+}
+
+// ListBotFeed merges a bot's outgoing comments + activities, newest first.
+func (s *TimelineService) ListBotFeed(ctx context.Context, botUID string, limit int) ([]BotFeedItem, error) {
+	if strings.TrimSpace(botUID) == "" {
+		return nil, apperr.ValidationError("bot_uid required", "bot_uid")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	tStore, okT := s.timelineRepo.(botTimelineStore)
+	aStore, okA := s.activityForBot.(botActivityStore)
+	if !okT || !okA {
+		return nil, fmt.Errorf("repos do not implement bot feed stores (timeline=%v activity=%v)", okT, okA)
+	}
+	timelines, err := tStore.ListTimelinesByActor(ctx, botUID, limit)
+	if err != nil {
+		return nil, err
+	}
+	activities, err := aStore.ListActivitiesByActor(ctx, botUID, limit)
+	if err != nil {
+		return nil, err
+	}
+	merged := make([]BotFeedItem, 0, len(timelines)+len(activities))
+	for _, t := range timelines {
+		merged = append(merged, BotFeedItem{
+			Kind: "comment", ID: t.ID, MatterID: t.MatterID,
+			CreatedAt: t.CreatedAt, Content: t.Content,
+		})
+	}
+	for _, a := range activities {
+		var detail map[string]any
+		if len(a.Detail) > 0 {
+			_ = json.Unmarshal(a.Detail, &detail)
+		}
+		merged = append(merged, BotFeedItem{
+			Kind: "activity", ID: a.ID, MatterID: a.MatterID,
+			CreatedAt: a.CreatedAt, Action: a.Action, Detail: detail,
+		})
+	}
+	sortBotFeedDesc(merged)
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged, nil
+}
+
+// sortBotFeedDesc insertion-sorts in place by CreatedAt descending.
+// Insertion sort is fine: limit caps len at 200 (typically 50).
+func sortBotFeedDesc(items []BotFeedItem) {
+	for i := 1; i < len(items); i++ {
+		j := i
+		for j > 0 && items[j].CreatedAt.After(items[j-1].CreatedAt) {
+			items[j], items[j-1] = items[j-1], items[j]
+			j--
+		}
+	}
 }
 
 // CreateInternalEntry is the bot-writeback path used by /v1/internal/matters/

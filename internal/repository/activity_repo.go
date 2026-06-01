@@ -91,3 +91,23 @@ func (r *ActivityRepo) ListByMatter(ctx context.Context, matterID string, cursor
 	}
 	return items, hasMore, nil
 }
+
+// ListActivitiesByActor (PoC4) returns up to limit activity rows where
+// actor_id matches, newest first. Used by the bot feed.
+func (r *ActivityRepo) ListActivitiesByActor(ctx context.Context, actorUID string, limit int) ([]*model.MatterActivity, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	out := make([]*model.MatterActivity, 0, limit)
+	_, err := r.runner.Select("*").
+		From("matter_activities").
+		Where("actor_id = ?", actorUID).
+		OrderDir("created_at", false).
+		OrderDir("id", false).
+		Limit(uint64(limit)).
+		LoadContext(ctx, &out)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}

@@ -4,6 +4,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
@@ -105,4 +107,24 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 	}
 	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, req.ActorUID, req.Action, req.Detail)
 	c.Status(http.StatusNoContent)
+}
+
+// BotFeed handles GET /api/v1/internal/bots/:bot_uid/feed?limit=50.
+// Returns merged timeline+activity rows where the bot is author/actor.
+// PoC4: trusted internal-only endpoint (X-Internal-Token); no per-space
+// gating because the caller (octo-server bot detail handler) has already
+// verified the bot's owner.
+func (h *InternalHandler) BotFeed(c *gin.Context) {
+	botUID := c.Param("bot_uid")
+	if strings.TrimSpace(botUID) == "" {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid required", nil)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	items, err := h.timelineSvc.ListBotFeed(c.Request.Context(), botUID, limit)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	ok(c, items)
 }
