@@ -48,12 +48,19 @@ go build -o octo-matter ./cmd
 
 # 配置通过环境变量（完整列表见 internal/config/config.go）
 export LLM_API_URL=https://api.example.com/v1
+export OCTO_LLM_PROVIDER=compat # compat、openai 或 anthropic
 export MYSQL_DSN='user:pass@tcp(127.0.0.1:3306)/matter?parseTime=true'
 
 ./octo-matter
 ```
 
 Minimal external dependencies — MySQL + an LLM endpoint
+
+LLM provider:
+
+- `compat`（默认）：OpenAI 兼容的 `/v1/chat/completions`；`LLM_API_URL` 填 gateway 的 `/v1` base。
+- `openai`：OpenAI 官方 Go SDK；`LLM_API_URL=https://api.openai.com/v1`。
+- `anthropic`：Anthropic 官方 Go SDK；`LLM_API_URL=https://api.anthropic.com`（末尾带 `/v1` 也会兼容）。
 
 ## 📦 模块与架构
 
@@ -66,7 +73,7 @@ Minimal external dependencies — MySQL + an LLM endpoint
 | `internal/handler/` | HTTP handler（matter / timeline / activity / extract） |
 | `internal/service/` | 业务逻辑（访问控制 / LLM 抽取 / timeline） |
 | `internal/repository/` | MySQL 仓储（matter / assignee / channel / timeline） |
-| `internal/llm/` | LLM 客户端 —— OpenAI 兼容的 `/v1/chat/completions` |
+| `internal/llm/` | LLM 客户端 —— OpenAI 兼容 gateway，以及 OpenAI / Anthropic 官方 SDK provider |
 | `internal/notification/` | Notifier 接口 + OCTO-IM 实现 |
 | `internal/apperr/` | 类型化应用错误 |
 | `internal/model/` | 共享数据模型 |

@@ -46,6 +46,8 @@ func (s *stubLLMCaller) CallTool(_ context.Context, _, _ string, _ llm.Tool, _ .
 	return s.rawArgs, s.err
 }
 
+func (s *stubLLMCaller) Model() string { return "stub" }
+
 // spyLimiter records Allow calls and returns canned results.
 type spyLimiter struct {
 	allow bool
@@ -80,9 +82,9 @@ func TestTimelineService_LimiterAfterAccess(t *testing.T) {
 			limiter,
 		)
 		_, _, err := svc.CreateEntry(context.Background(), TimelineInput{
-			MatterID:       "t1", SpaceID: "sp1",
+			MatterID: "t1", SpaceID: "sp1",
 			ActorUID: "u1", ParticipantUID: "u1",
-			CallerUIDs: []string{"u1"},
+			CallerUIDs:  []string{"u1"},
 			ChannelType: 1, ChannelID: "ch-1",
 			Messages: []ExtractMessage{{MessageID: "m1", FromUID: "u1", Content: "hi"}},
 		})
@@ -110,9 +112,9 @@ func TestTimelineService_LimiterAfterAccess(t *testing.T) {
 			limiter,
 		)
 		_, _, err := svc.CreateEntry(context.Background(), TimelineInput{
-			MatterID:       "t1", SpaceID: "sp1",
+			MatterID: "t1", SpaceID: "sp1",
 			ActorUID: "u1", ParticipantUID: "u1",
-			CallerUIDs: []string{"u1"},
+			CallerUIDs:  []string{"u1"},
 			ChannelType: 1, ChannelID: "ch-1",
 			Messages: []ExtractMessage{{MessageID: "m1", FromUID: "u1", Content: "hi"}},
 		})
@@ -146,9 +148,9 @@ func TestTimelineService_LimiterAfterAccess(t *testing.T) {
 			limiter,
 		)
 		_, _, _ = svc.CreateEntry(context.Background(), TimelineInput{
-			MatterID:       "t1", SpaceID: "sp1",
+			MatterID: "t1", SpaceID: "sp1",
 			ActorUID: "u1", ParticipantUID: "u1",
-			CallerUIDs: []string{"u1"},
+			CallerUIDs:  []string{"u1"},
 			ChannelType: 1, ChannelID: "ch-1",
 			Messages: []ExtractMessage{{MessageID: "m1", FromUID: "u1", Content: "hi"}},
 		})
@@ -172,9 +174,9 @@ func TestTimelineService_LimiterAfterAccess(t *testing.T) {
 			nil,
 		)
 		_, _, _ = svc.CreateEntry(context.Background(), TimelineInput{
-			MatterID:       "t1", SpaceID: "sp1",
+			MatterID: "t1", SpaceID: "sp1",
 			ActorUID: "u1", ParticipantUID: "u1",
-			CallerUIDs: []string{"u1"},
+			CallerUIDs:  []string{"u1"},
 			ChannelType: 1, ChannelID: "ch-1",
 			Messages: []ExtractMessage{{MessageID: "m1", FromUID: "u1", Content: "hi"}},
 		})

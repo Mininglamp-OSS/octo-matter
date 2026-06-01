@@ -65,8 +65,18 @@ func main() {
 	}
 
 	// LLM
-	llmClient := llm.New(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
-	log.Printf("llm gateway=%s model=%s timeout=%ds", cfg.LLMApiURL, cfg.LLMModel, cfg.LLMTimeout)
+	var llmClient service.LLMToolCaller
+	switch cfg.LLMProvider {
+	case "compat":
+		llmClient = llm.New(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
+	case "openai":
+		llmClient = llm.NewOpenAIOfficial(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
+	case "anthropic":
+		llmClient = llm.NewAnthropicOfficial(cfg.LLMApiURL, cfg.LLMApiKey, cfg.LLMModel, time.Duration(cfg.LLMTimeout)*time.Second)
+	default:
+		log.Fatalf("invalid OCTO_LLM_PROVIDER %q (want compat, openai, or anthropic)", cfg.LLMProvider)
+	}
+	log.Printf("llm provider=%s gateway=%s model=%s timeout=%ds", cfg.LLMProvider, cfg.LLMApiURL, cfg.LLMModel, cfg.LLMTimeout)
 	if cfg.LLMApiKey == "" {
 		log.Printf("WARN: LLM_API_KEY not set — extract/timeline will fail if the gateway requires auth")
 	}
@@ -91,6 +101,7 @@ func main() {
 	timelineSvc := service.NewTimelineService(llmClient, timelineRepo, timelineAttachmentRepo, matterRepo, matterSvc, matterSvc, timelineTx, participantRepo, assigneeRepo, timelineLimiter)
 	extractSvc := service.NewExtractService(llmClient, matterSvc)
 	activitySvc := service.NewActivityService(matterRepo, matterSvc, activityRepo)
+	outputsSvc := service.NewOutputsService(matterRepo, matterSvc, timelineAttachmentRepo)
 
 	// Handlers
 	rtClient := runtime.NewClient(cfg.OctoServerURL, cfg.NotifyInternalToken, cfg.SelfBaseURL)
@@ -99,6 +110,7 @@ func main() {
 	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker)
 	activityH := handler.NewActivityHandler(activitySvc)
 	internalH := handler.NewInternalHandler(timelineSvc)
+	outputsH := handler.NewOutputsHandler(outputsSvc)
 
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
@@ -108,7 +120,7 @@ func main() {
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(matterH, timelineH, activityH, extractH, extractLimiter, internalH, authMW, spaceMW, readiness)
+	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, internalH, authMW, spaceMW, readiness)
 
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}

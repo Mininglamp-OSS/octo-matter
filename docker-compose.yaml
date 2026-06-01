@@ -1,3 +1,13 @@
+# ⚠ DEV ONLY — for local matter-service development.
+#
+# Production OOTB: see Mininglamp-OSS/octo-deployment, which provisions
+# matter as part of the full OCTO stack with rotated secrets, a
+# dedicated MinIO app credential, rate-limited nginx vhost, and the
+# shared NOTIFY_INTERNAL_TOKEN that octo-server expects.
+#
+# This file uses hardcoded `matter:matter` / `root:root` insecure
+# passwords, mounts the host's :3306 directly, and runs without TLS or
+# preflight token checks. NOT suitable beyond a developer laptop.
 services:
   matter-service:
     build: .

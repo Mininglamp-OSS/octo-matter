@@ -10,6 +10,7 @@ import (
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
+	"github.com/Mininglamp-OSS/octo-matter/internal/llm/promptstore"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/google/uuid"
 )
@@ -36,6 +37,10 @@ type TimelineAttachmentStore interface {
 	CreateMany(ctx context.Context, atts []*model.TimelineAttachment) error
 	ListByEntryIDs(ctx context.Context, ids []string) (map[string][]model.TimelineAttachment, error)
 	DeleteByEntryID(ctx context.Context, entryID string) error
+	// FindByMatterAndFileURL returns apperr.ErrNotFound when no row matches.
+	// Used to skip re-inserting an attachment already linked to the matter
+	// via an earlier timeline entry — keeps the outputs view one-row-per-file.
+	FindByMatterAndFileURL(ctx context.Context, matterID, fileURL string) (*model.TimelineAttachment, error)
 }
 
 // ParticipantUpserter is the single-method interface for upserting a participant
@@ -131,7 +136,7 @@ type channelLinkVerifier interface {
 
 // TimelineService creates, lists, and deletes matter timeline entries.
 type TimelineService struct {
-	llm            llmCaller
+	llm            LLMToolCaller
 	timelineRepo   TimelineStore
 	attachmentRepo TimelineAttachmentStore
 	matterRepo     matterScopeChecker
@@ -141,6 +146,15 @@ type TimelineService struct {
 	participant    ParticipantUpserter
 	assignees      assigneeStore
 	limiter        llmLimiter // nil → no rate limit (e.g. tests / single-tenant dev)
+	prompts        promptstore.Store
+}
+
+// TimelineOption configures a TimelineService at construction.
+type TimelineOption func(*TimelineService)
+
+// WithTimelinePromptStore overrides the default embed-backed prompt source.
+func WithTimelinePromptStore(store promptstore.Store) TimelineOption {
+	return func(s *TimelineService) { s.prompts = store }
 }
 
 // NewTimelineService wires the timeline service. limiter may be nil — useful
@@ -149,7 +163,7 @@ type TimelineService struct {
 // guards LLM cost across all callers. linkVerifier may be nil only in tests
 // that do not exercise channel auto-link.
 func NewTimelineService(
-	llmClient llmCaller,
+	llmClient LLMToolCaller,
 	timelineRepo TimelineStore,
 	attachmentRepo TimelineAttachmentStore,
 	matterRepo matterScopeChecker,
@@ -159,8 +173,9 @@ func NewTimelineService(
 	participant ParticipantUpserter,
 	assignees assigneeStore,
 	limiter llmLimiter,
+	opts ...TimelineOption,
 ) *TimelineService {
-	return &TimelineService{
+	s := &TimelineService{
 		llm:            llmClient,
 		timelineRepo:   timelineRepo,
 		attachmentRepo: attachmentRepo,
@@ -171,7 +186,12 @@ func NewTimelineService(
 		participant:    participant,
 		assignees:      assignees,
 		limiter:        limiter,
+		prompts:        defaultPromptStore,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // timelineToolArgs mirrors the JSON schema declared for `extract_matter_progress`.
@@ -192,46 +212,25 @@ type timelineToolArgs struct {
 	StatusSuggestion *string  `json:"status_suggestion"`
 }
 
-var extractProgressTool = llm.Tool{
-	Type: "function",
-	Function: llm.ToolFunction{
-		Name:        "extract_matter_progress",
-		Description: "从聊天记录中提取与目标事项相关的进展信息",
-		Parameters: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"content": map[string]interface{}{
-					"type":        "string",
-					"description": "一段话概括与该事项相关的最新进展",
-				},
-				"related_uids": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "本次进展涉及的人员 uid，必须从输入消息的 from_uid 中选取，不要编造。",
-				},
-				"source_msg_ids": map[string]interface{}{
-					"type":        "array",
-					"items":       map[string]interface{}{"type": "string"},
-					"description": "支撑本次进展的 message_id 列表，必须从输入 msgs 中选取，不要编造。",
-				},
-				"status_suggestion": map[string]interface{}{
-					"type":        []interface{}{"string", "null"},
-					"enum":        []interface{}{"open", "done", nil},
-					"description": "建议的 matter 状态变更，没有建议时返回 null。",
-				},
-			},
-			"required": []string{"content", "related_uids", "source_msg_ids", "status_suggestion"},
-		},
-	},
-}
+// The extract_matter_progress tool schema lives in
+// internal/llm/prompts/extract_progress.tool.json — loaded at runtime via
+// the promptstore, not declared inline here.
 
 // timelineValidated is the cleaned, server-trusted derivation of an
 // extract_matter_progress LLM result.
+//
+// HasExplicitCitations distinguishes "LLM cited messages and SourceMsgs is
+// the filtered subset" from "LLM cited nothing valid and SourceMsgs falls
+// back to all input message IDs". The fallback is fine for the timeline
+// entry's source_msgs (it's a UX hint, not a security boundary), but the
+// attachment persistence path MUST fail closed — otherwise an LLM that
+// omits source_msg_ids would leak every file in the batch onto the matter.
 type timelineValidated struct {
-	Content          string
-	SourceMsgs       []string
-	RelatedUIDs      []string
-	StatusSuggestion *string // "open" / "done" / nil
+	Content              string
+	SourceMsgs           []string
+	HasExplicitCitations bool
+	RelatedUIDs          []string
+	StatusSuggestion     *string // "open" / "done" / nil
 }
 
 // validateTimelineArgs filters the LLM-emitted lists against the input
@@ -266,7 +265,8 @@ func validateTimelineArgs(args timelineToolArgs, msgs []ExtractMessage) timeline
 		seenMsg[id] = struct{}{}
 		sourceMsgs = append(sourceMsgs, id)
 	}
-	if len(sourceMsgs) == 0 {
+	hasExplicitCitations := len(sourceMsgs) > 0
+	if !hasExplicitCitations {
 		sourceMsgs = make([]string, 0, len(msgs))
 		for _, m := range msgs {
 			sourceMsgs = append(sourceMsgs, m.MessageID)
@@ -302,10 +302,11 @@ func validateTimelineArgs(args timelineToolArgs, msgs []ExtractMessage) timeline
 	}
 
 	return timelineValidated{
-		Content:          clipRunes(args.Content, MaxContentLength),
-		SourceMsgs:       sourceMsgs,
-		RelatedUIDs:      related,
-		StatusSuggestion: status,
+		Content:              clipRunes(args.Content, MaxContentLength),
+		SourceMsgs:           sourceMsgs,
+		HasExplicitCitations: hasExplicitCitations,
+		RelatedUIDs:          related,
+		StatusSuggestion:     status,
 	}
 }
 
@@ -370,11 +371,17 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 			atts := make([]*model.TimelineAttachment, 0, len(in.Attachments))
 			for _, a := range in.Attachments {
 				atts = append(atts, &model.TimelineAttachment{
-					EntryID:  entry.ID,
-					FileURL:  a.FileURL,
-					FileName: a.FileName,
-					FileSize: a.FileSize,
-					MimeType: a.MimeType,
+					EntryID:   entry.ID,
+					MatterID:  in.MatterID,
+					FileURL:   a.FileURL,
+					FileName:  a.FileName,
+					FileSize:  a.FileSize,
+					MimeType:  a.MimeType,
+					SenderUID: in.ActorUID,
+					// SenderUname / SentAt deliberately left zero — the
+					// direct path lacks a per-attachment sender name and
+					// CreateMany defaults SentAt to insert time, which
+					// matches the legacy semantics for this path.
 				})
 			}
 			if err := as.CreateMany(ctx, atts); err != nil {
@@ -442,6 +449,77 @@ func (s *TimelineService) CreateInternalEntry(ctx context.Context, matterID, spa
 	return entry, nil
 }
 
+// buildLLMAttachments flattens file attachments carried by messages that the
+// LLM EXPLICITLY cited. Fails closed: when the LLM returned no valid
+// source_msg_ids, no attachments are persisted — otherwise an LLM that
+// omits citations would leak every file in the batch onto the matter
+// (the timeline entry's source_msgs falls back to all input msg IDs as a
+// UX convenience, but that's not a privacy boundary; attachment persistence
+// must be).
+//
+// Pure function — easily table-tested. Output rows have EntryID, MatterID,
+// sender fields, SentAt, and Description populated; the repo fills ID /
+// CreatedAt at insert time. Caps at MaxAttachmentsPerEntry to keep one LLM
+// call from creating an unbounded number of file rows when a long chat
+// contains many uploads.
+func buildLLMAttachments(entryID string, in TimelineInput, v timelineValidated) []*model.TimelineAttachment {
+	if len(in.Messages) == 0 {
+		return nil
+	}
+	// Fail closed when the LLM did not produce explicit citations. v.SourceMsgs
+	// at this point would be the all-messages fallback, which is correct for
+	// the timeline entry's source_msgs metadata but wrong as an attachment
+	// gate.
+	if !v.HasExplicitCitations {
+		return nil
+	}
+	cited := make(map[string]struct{}, len(v.SourceMsgs))
+	for _, id := range v.SourceMsgs {
+		cited[id] = struct{}{}
+	}
+	desc := clipRunes(v.Content, 500)
+	var descPtr *string
+	if desc != "" {
+		descPtr = &desc
+	}
+	seen := make(map[string]struct{})
+	out := make([]*model.TimelineAttachment, 0)
+	for _, m := range in.Messages {
+		if _, ok := cited[m.MessageID]; !ok {
+			continue
+		}
+		for _, a := range m.Attachments {
+			url := strings.TrimSpace(a.FileURL)
+			if url == "" {
+				continue
+			}
+			if _, dup := seen[url]; dup {
+				continue
+			}
+			seen[url] = struct{}{}
+			var name *string
+			if a.FileName != "" {
+				n := a.FileName
+				name = &n
+			}
+			out = append(out, &model.TimelineAttachment{
+				EntryID:     entryID,
+				MatterID:    in.MatterID,
+				FileURL:     url,
+				FileName:    name,
+				Description: descPtr,
+				SenderUID:   m.FromUID,
+				SenderUname: m.FromUname,
+				SentAt:      time.Unix(m.Timestamp, 0).UTC(),
+			})
+			if len(out) >= MaxAttachmentsPerEntry {
+				return out
+			}
+		}
+	}
+	return out
+}
+
 func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInput) (*model.TimelineEntry, *TimelineLLMResult, error) {
 	if err := validateMessages(in.Messages); err != nil {
 		return nil, nil, err
@@ -500,7 +578,14 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		return nil, nil, err
 	}
 
-	systemPrompt := buildTimelineSystemPrompt(matter, assignees, recent, in)
+	prompt, err := s.prompts.Get(ctx, promptExtractProgress)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load extract_progress prompt: %w", err)
+	}
+	systemPrompt, err := renderTimelineSystemPrompt(prompt, matter, assignees, recent, in)
+	if err != nil {
+		return nil, nil, fmt.Errorf("render extract_progress prompt: %w", err)
+	}
 	userPrompt := buildMessagesPrompt(in.Messages)
 
 	// No explicit temperature pin here — progress extraction tolerates the
@@ -508,7 +593,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 	// naming, but timeline outputs are summary-style strings without a
 	// "right answer" the model needs to converge on. Revisit if A/B data
 	// shows otherwise.
-	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, extractProgressTool)
+	raw, err := s.llm.CallTool(ctx, systemPrompt, userPrompt, prompt.Tool, llm.WithSystemPromptCache())
 	if err != nil {
 		return nil, nil, fmt.Errorf("llm extract_matter_progress: %w", err)
 	}
@@ -535,7 +620,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		RelatedUIDs:     model.JSONStringSlice(v.RelatedUIDs),
 	}
 
-	if err := s.tx.Do(ctx, func(ts TimelineStore, _ TimelineAttachmentStore, ps ParticipantUpserter, cs TimelineMatterChannelStore) error {
+	if err := s.tx.Do(ctx, func(ts TimelineStore, as TimelineAttachmentStore, ps ParticipantUpserter, cs TimelineMatterChannelStore) error {
 		// Resolve / auto-link the channel inside the same tx so an entry-write
 		// failure does not leave an orphan channel link.
 		mc, ferr := cs.FindByMatterAndChannelID(ctx, in.MatterID, in.ChannelID)
@@ -571,6 +656,28 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		entry.ChannelID = &mc.ID
 		if err := ts.Create(ctx, entry); err != nil {
 			return err
+		}
+		// Persist file attachments carried by the source messages so the
+		// matter outputs view can show them. Dedup against existing rows on
+		// the same matter — a forwarded file should not produce a second
+		// entry in the outputs list.
+		if atts := buildLLMAttachments(entry.ID, in, v); len(atts) > 0 {
+			toInsert := make([]*model.TimelineAttachment, 0, len(atts))
+			for _, a := range atts {
+				existing, ferr := as.FindByMatterAndFileURL(ctx, in.MatterID, a.FileURL)
+				if ferr != nil && !errors.Is(ferr, apperr.ErrNotFound) {
+					return ferr
+				}
+				if existing != nil {
+					continue
+				}
+				toInsert = append(toInsert, a)
+			}
+			if len(toInsert) > 0 {
+				if err := as.CreateMany(ctx, toInsert); err != nil {
+					return err
+				}
+			}
 		}
 		return ps.Upsert(ctx, in.MatterID, in.ParticipantUID)
 	}); err != nil {
@@ -675,45 +782,78 @@ func (s *TimelineService) DeleteEntry(ctx context.Context, matterID, id, spaceID
 	})
 }
 
+// timelinePromptData is the data shape consumed by extract_progress.md.
+// Optional fields use the empty string / nil slice as the "absent" signal
+// so the template's {{if .X}} branches behave identically to the old
+// Go-side conditionals.
+type timelinePromptData struct {
+	Now               string
+	MatterTitle       string
+	MatterDescription string
+	MatterStatus      string
+	Deadline          string
+	Assignees         string
+	ChannelName       string
+	RecentEntries     []timelineRecentEntry
+}
+
+type timelineRecentEntry struct {
+	When string
+	Text string
+}
+
+// buildTimelineSystemPrompt is a test-only helper preserved so the golden
+// tests keep their signature. Panics on template error for the same reason
+// as buildExtractSystemPrompt: embedded prompts are validated by init() at
+// process start. Production code must use renderTimelineSystemPrompt via
+// createFromMessages, which wraps the error properly.
+//
+// This helper always reads from the package-level defaultPromptStore and
+// IGNORES any per-service override set via WithTimelinePromptStore.
+// Test code that wants to stub the store must call renderTimelineSystemPrompt
+// against the stub directly.
 func buildTimelineSystemPrompt(matter *model.Matter, assignees []*model.MatterAssignee, recent []*model.TimelineEntry, in TimelineInput) string {
-	var b strings.Builder
-	b.WriteString("你是事项进展抽取助手。根据群聊消息提炼与目标事项相关的进展，必须通过 extract_matter_progress 函数返回。\n")
-	b.WriteString("字段约定：\n")
-	b.WriteString("  - content：一段话概括最新进展。\n")
-	b.WriteString("  - related_uids：本次进展涉及的人员 uid，必须从输入消息的 from_uid 中选取，不要编造。\n")
-	b.WriteString("  - source_msg_ids：从输入消息的 message_id 中选取支撑此进展的消息，不要编造或返回空数组。\n")
-	b.WriteString("  - status_suggestion：如果消息明显表达了完成（done）或重新打开（open），则返回相应字符串；否则返回 null。\n")
-	b.WriteString(fmt.Sprintf("当前时间：%s\n", time.Now().UTC().Format(time.RFC3339)))
-	b.WriteString("\n【目标事项】\n")
-	b.WriteString(fmt.Sprintf("  标题：%s\n", matter.Title))
-	if matter.Description != nil && *matter.Description != "" {
-		b.WriteString(fmt.Sprintf("  描述：%s\n", *matter.Description))
+	prompt, err := defaultPromptStore.Get(context.Background(), promptExtractProgress)
+	if err != nil {
+		panic("service: extract_progress prompt unavailable: " + err.Error())
 	}
-	b.WriteString(fmt.Sprintf("  当前状态：%s\n", matter.Status))
+	out, err := renderTimelineSystemPrompt(prompt, matter, assignees, recent, in)
+	if err != nil {
+		panic("service: extract_progress prompt render: " + err.Error())
+	}
+	return out
+}
+
+func renderTimelineSystemPrompt(prompt promptstore.Prompt, matter *model.Matter, assignees []*model.MatterAssignee, recent []*model.TimelineEntry, in TimelineInput) (string, error) {
+	data := timelinePromptData{
+		Now:          time.Now().UTC().Format(time.RFC3339),
+		MatterTitle:  matter.Title,
+		MatterStatus: string(matter.Status),
+	}
+	if matter.Description != nil && *matter.Description != "" {
+		data.MatterDescription = *matter.Description
+	}
 	if matter.Deadline != nil {
-		b.WriteString(fmt.Sprintf("  截止时间：%s\n", matter.Deadline.UTC().Format(time.RFC3339)))
+		data.Deadline = matter.Deadline.UTC().Format(time.RFC3339)
 	}
 	if len(assignees) > 0 {
-		b.WriteString("  负责人 UID：")
-		for i, a := range assignees {
-			if i > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(a.UserID)
+		ids := make([]string, 0, len(assignees))
+		for _, a := range assignees {
+			ids = append(ids, a.UserID)
 		}
-		b.WriteString("\n")
+		data.Assignees = strings.Join(ids, ", ")
 	}
 	if in.ChannelName != nil && *in.ChannelName != "" {
-		b.WriteString(fmt.Sprintf("  频道：%s\n", *in.ChannelName))
+		data.ChannelName = *in.ChannelName
 	}
-	if len(recent) > 0 {
-		b.WriteString("\n【已有进展（最近 3 条）】\n")
-		for _, e := range recent {
-			if e.Content != nil {
-				b.WriteString(fmt.Sprintf("  - [%s] %s\n", e.CreatedAt.UTC().Format(time.RFC3339), *e.Content))
-			}
+	for _, e := range recent {
+		if e.Content == nil {
+			continue
 		}
+		data.RecentEntries = append(data.RecentEntries, timelineRecentEntry{
+			When: e.CreatedAt.UTC().Format(time.RFC3339),
+			Text: *e.Content,
+		})
 	}
-	b.WriteString("\n请基于以下新消息，提取本次新增的进展，避免重复已有进展。\n")
-	return b.String()
+	return prompt.Render(data)
 }

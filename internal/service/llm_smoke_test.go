@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
+	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
 // LLM smoke tests run against a real OpenAI-compatible gateway. They are
@@ -82,7 +83,11 @@ func TestSmoke_ExtractMatter_AcceptsV3Schema(t *testing.T) {
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
 
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		t.Fatalf("load extract_matter prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -155,18 +160,23 @@ func TestSmoke_ExtractMatterProgress_AcceptsV3Schema(t *testing.T) {
 		},
 	}
 
-	// Build a synthetic system prompt similar to buildTimelineSystemPrompt
-	// but minimal — the tool schema is what we want to test.
-	sp := strings.Builder{}
-	sp.WriteString("你是事项进展抽取助手。根据群聊消息提炼与目标事项相关的进展，必须通过 extract_matter_progress 函数返回。\n")
-	sp.WriteString("字段约定：\n")
-	sp.WriteString("  - content：一段话概括最新进展。\n")
-	sp.WriteString("  - related_uids：本次进展涉及的人员 uid，必须从输入消息的 from_uid 中选取，不要编造。\n")
-	sp.WriteString("  - source_msg_ids：从输入消息的 message_id 中选取支撑此进展的消息，不要编造或返回空数组。\n")
-	sp.WriteString("  - status_suggestion：如果消息明显表达了完成（done）或重新打开（open），则返回相应字符串；否则返回 null。\n")
-	sp.WriteString("【目标事项】\n  标题：Octo 智能事项 Demo 视频\n  当前状态：open\n")
-
-	raw, err := c.CallTool(context.Background(), sp.String(), buildMessagesPrompt(msgs), extractProgressTool)
+	// Render the live system prompt through the embedded extract_progress.md
+	// template so this smoke test exercises the exact prompt the server
+	// sends in production. A minimal Matter fixture is enough — the tool
+	// schema and field policy are what we want the gateway to accept.
+	matter := &model.Matter{
+		Title:  "Octo 智能事项 Demo 视频",
+		Status: model.MatterStatusOpen,
+	}
+	progressPrompt, err := defaultPromptStore.Get(context.Background(), promptExtractProgress)
+	if err != nil {
+		t.Fatalf("load extract_progress prompt: %v", err)
+	}
+	systemPrompt, err := renderTimelineSystemPrompt(progressPrompt, matter, nil, nil, TimelineInput{})
+	if err != nil {
+		t.Fatalf("render extract_progress prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), systemPrompt, buildMessagesPrompt(msgs), progressPrompt.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -244,7 +254,11 @@ func TestSmoke_ExtractMatter_BotNotAssignee(t *testing.T) {
 
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		t.Fatalf("load extract_matter prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -295,7 +309,11 @@ func TestSmoke_ExtractMatter_NoDeadlineReturnsNull(t *testing.T) {
 
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		t.Fatalf("load extract_matter prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}
@@ -349,7 +367,11 @@ func TestSmoke_ExtractMatter_TitleQuality(t *testing.T) {
 	}
 	systemPrompt := buildExtractSystemPrompt(in, time.Now().UTC())
 	userPrompt := buildMessagesPrompt(in.Messages)
-	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, extractMatterTool)
+	tool, err := defaultPromptStore.Get(context.Background(), promptExtractMatter)
+	if err != nil {
+		t.Fatalf("load extract_matter prompt: %v", err)
+	}
+	raw, err := c.CallTool(context.Background(), systemPrompt, userPrompt, tool.Tool)
 	if err != nil {
 		t.Fatalf("CallTool failed: %v", err)
 	}

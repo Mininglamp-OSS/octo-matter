@@ -34,6 +34,7 @@ func SetupRouter(
 	matterH *MatterHandler,
 	timelineH *TimelineHandler,
 	activityH *ActivityHandler,
+	outputsH *OutputsHandler,
 	extractH *ExtractHandler,
 	extractLimiter gin.HandlerFunc,
 	internalH *InternalHandler,
@@ -92,6 +93,7 @@ func SetupRouter(
 		matters.DELETE("/:id/timeline/:entry_id", timelineH.Delete)
 
 		matters.GET("/:id/activities", activityH.List)
+		matters.GET("/:id/outputs", outputsH.List)
 	}
 
 	// Internal API (X-Internal-Token auth, NO session auth, NO space middleware).
