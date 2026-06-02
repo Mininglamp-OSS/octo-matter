@@ -103,6 +103,7 @@ func (h *TimelineHandler) Create(c *gin.Context) {
 			FromUname:   m.FromUname,
 			Timestamp:   m.Timestamp,
 			Content:     m.Content,
+			ContentType: m.ContentType,
 			Attachments: msgAtts,
 		})
 	}
