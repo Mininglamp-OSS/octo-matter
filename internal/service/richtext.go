@@ -71,6 +71,11 @@ func buildRichTextPlain(blocks []richTextBlock) string {
 //
 // 识别规则：必须是 JSON object 且至少含 content 或 plain 字段之一。
 //
+// 解析优先级（plain 优先契约）：plain → block 数组 → legacy 字符串 content →
+// 兜底占位。顶层非空 plain 是 server 权威文本，必须在尝试解析（并可能失败于）
+// 任何 content 形态之前先返回 —— content 形态不可信（对象 / 标量 / 坏数据）绝不
+// 能盖过已存在的 plain，否则会丢字塌陷到兜底占位。
+//
 // 信任边界：本函数走「已落库消息的展示/抽取路径」，与 octo-lib
 // GetRichTextDisplayText 一致地信任 server 生成的 plain；入站写入校验不在本函数
 // 职责内（那条路径在 octo-server 上）。
@@ -92,33 +97,36 @@ func richTextDisplayText(payload string) (string, bool) {
 		return "", false
 	}
 
-	var blocks []richTextBlock
-	if hasContent {
-		if err := json.Unmarshal(raw.Content, &blocks); err != nil {
-			// content 不是 block 数组：回退兼容老版本「content 为纯字符串」。
-			var cs string
-			if err2 := json.Unmarshal(raw.Content, &cs); err2 == nil {
-				if raw.Plain != nil && strings.TrimSpace(*raw.Plain) != "" {
-					return *raw.Plain, true
-				}
-				if strings.TrimSpace(cs) != "" {
-					return cs, true
-				}
-				return richTextFallbackDisplay, true
-			}
-			// content 既非数组又非字符串：形态不可信，不当 RichText 处理。
-			return "", false
-		}
-	}
-
-	// 优先顶层 plain（server 权威），其次按 blocks 现场拼接。
+	// plain 优先：顶层非空 plain 是 server 权威文本。必须在解析 content 之前返回，
+	// 这样 content 是对象 / 标量 / 坏形态导致的解析失败都不会盖过 plain（丢字）。
 	if raw.Plain != nil && strings.TrimSpace(*raw.Plain) != "" {
 		return *raw.Plain, true
 	}
-	if plain := buildRichTextPlain(blocks); strings.TrimSpace(plain) != "" {
-		return plain, true
+
+	// 无可用 plain，再尝试从 content 还原文本。
+	if hasContent {
+		var blocks []richTextBlock
+		if err := json.Unmarshal(raw.Content, &blocks); err == nil {
+			if plain := buildRichTextPlain(blocks); strings.TrimSpace(plain) != "" {
+				return plain, true
+			}
+			// 识别为 RichText 但 blocks 拼接为空 → 兜底占位，避免空串/裸 JSON。
+			return richTextFallbackDisplay, true
+		}
+		// content 不是 block 数组：回退兼容老版本「content 为纯字符串」。
+		var cs string
+		if err := json.Unmarshal(raw.Content, &cs); err == nil {
+			if strings.TrimSpace(cs) != "" {
+				return cs, true
+			}
+			return richTextFallbackDisplay, true
+		}
+		// content 既非数组又非字符串（对象 / 标量 / 坏形态），且无 plain 可用：
+		// 类型已声明为 14，兜底占位而非泄漏裸 JSON 噪声。
+		return richTextFallbackDisplay, true
 	}
-	// 识别为 RichText 但内容为空 → 兜底占位，避免空串/裸 JSON。
+
+	// 仅有 plain 字段但为空串：识别为 RichText 但内容为空 → 兜底占位。
 	return richTextFallbackDisplay, true
 }
 

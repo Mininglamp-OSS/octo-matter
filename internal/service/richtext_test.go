@@ -57,6 +57,50 @@ func TestMessageDisplayContent_RichType14(t *testing.T) {
 	}
 }
 
+// TestMessageDisplayContent_Type14PlainWinsOverUnparseableContent is the core
+// regression for the lost-words bug: a type=14 message whose top-level "plain"
+// is the authoritative text must return that plain even when "content" is in an
+// unrecognized shape (object / null / broken JSON / scalar). The old code parsed
+// content before checking plain, so a content unmarshal failure made the whole
+// payload collapse to the fallback placeholder, dropping the authoritative plain
+// ("plain 优先" contract violation).
+func TestMessageDisplayContent_Type14PlainWinsOverUnparseableContent(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "content is an object",
+			content: `{"content":{"blocks":[]},"plain":"deploy plan"}`,
+			want:    "deploy plan",
+		},
+		{
+			name:    "content is null",
+			content: `{"content":null,"plain":"deploy plan"}`,
+			want:    "deploy plan",
+		},
+		{
+			name:    "content is a number scalar",
+			content: `{"content":42,"plain":"deploy plan"}`,
+			want:    "deploy plan",
+		},
+		{
+			name:    "content is a nested object with fields",
+			content: `{"content":{"text":"x","meta":{"k":1}},"plain":"上线方案"}`,
+			want:    "上线方案",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := messageDisplayContent(ExtractMessage{Content: tc.content, ContentType: 14})
+			if got != tc.want {
+				t.Fatalf("plain should win over unparseable content: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMessageDisplayContent_RichTextAutoDetect verifies backward compat: even
 // when the caller does NOT set ContentType=14 (older octo-web), a Content that
 // is structurally a RichText payload is still normalized rather than passed as
@@ -111,7 +155,7 @@ func TestMessageDisplayContent_NonRichJSONUntypedUntouched(t *testing.T) {
 }
 
 // TestMessageDisplayContent_UntypedContentStringNotHijacked is the core
-// regression for the PR #64 review blocker: an untyped (ContentType=0) JSON
+// regression for untyped string-content JSON: an untyped (ContentType=0) JSON
 // object whose "content" is a STRING (not a block array) must NOT be auto
 // detected as RichText. The old code parsed it as legacy string content and
 // returned only "deploy", silently dropping "source":"ops". Auto-detect is now
@@ -135,7 +179,7 @@ func TestMessageDisplayContent_UntypedContentStringNotHijacked(t *testing.T) {
 }
 
 // TestMessageDisplayContent_NonType14ContentStringNotHijacked covers the most
-// clearly-wrong case from the review: a caller that explicitly declares a
+// clearly-wrong shape: a caller that explicitly declares a
 // non-14 ContentType (e.g. 1 = plain text) whose body happens to be a RichText
 // shaped string-content JSON must NOT be shape-sniffed and truncated. It is
 // returned verbatim.
@@ -148,11 +192,11 @@ func TestMessageDisplayContent_NonType14ContentStringNotHijacked(t *testing.T) {
 }
 
 // TestMessageDisplayContent_NonType14BlockArrayAutoDetected documents the
-// intentional behavior endorsed by the reviewers: the block-array shape is
+// intentional behavior: the block-array shape is
 // structurally distinctive enough to auto-detect for ANY non-14 message,
 // because a JSON block array is unambiguously RichText and normalizing it loses
 // no data (the alternative is dumping raw block-array JSON into the prompt —
-// exactly the bug this PR fixes). Only the broad string-content / plain-only
+// exactly the bug this change fixes). Only the broad string-content / plain-only
 // legacy handling is reserved for explicit ContentType==14.
 func TestMessageDisplayContent_NonType14BlockArrayAutoDetected(t *testing.T) {
 	body := `{"content":[{"type":"text","text":"hi"}],"plain":"hi"}`
