@@ -145,15 +145,20 @@ func DaemonJWTMiddleware(verifier *JWTVerifier) gin.HandlerFunc {
 		auth := c.GetHeader("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"code": "UNAUTHORIZED", "message": "missing Bearer token"},
+				"error": gin.H{"code": "UNAUTHORIZED", "message": "unauthorized"},
 			})
 			return
 		}
 		tok := strings.TrimPrefix(auth, "Bearer ")
 		cl, err := verifier.Verify(tok)
 		if err != nil {
+			// Generic public message; details go to server log so ops can
+			// still triage. Don't leak go-jose internals / kid state / claim
+			// expiry deltas to the caller — those are useful only to attackers
+			// probing the JWT validation surface.
+			log.Printf("[auth-jwt] daemon JWT verify failed: %v", err)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"code": "UNAUTHORIZED", "message": err.Error()},
+				"error": gin.H{"code": "UNAUTHORIZED", "message": "unauthorized"},
 			})
 			return
 		}

@@ -153,6 +153,39 @@ func (r *BotTaskRepo) Ack(ctx context.Context, id, claimToken, status, errMsg, r
 	return nil
 }
 
+// LoadDispatchedForWriteback resolves a (task_id, claim_token) pair to its
+// matter_bot_task row, returning nil when the task is missing, mismatched,
+// or no longer in 'dispatched' state. Writeback handlers use this to bind
+// timeline/activity inserts to a specific in-flight task — a daemon JWT
+// alone is insufficient to write under another bot's identity; the daemon
+// must also be the one currently holding the task lease.
+//
+// Reviewer fix: previously WriteTimeline/WriteActivity trusted body.actor_uid
+// as-is, which under DualAuth let any valid daemon JWT impersonate any bot.
+// Returning nil here causes the handler to 403, closing the gap.
+func (r *BotTaskRepo) LoadDispatchedForWriteback(ctx context.Context, id, claimToken string) (*model.BotTask, error) {
+	var t model.BotTask
+	_, err := r.runner.SelectBySql(
+		`SELECT id, matter_id, space_id, bot_uid, trigger_kind, trigger_entry_id,
+		        prompt, matter_title, status, claim_token, claimed_by, claimed_at,
+		        lease_until, attempt, max_attempts, error_msg, result_summary,
+		        elapsed_ms, created_at, updated_at
+		   FROM matter_bot_task
+		  WHERE id=? AND claim_token=? AND status='dispatched'`,
+		id, claimToken,
+	).LoadContext(ctx, &t)
+	if err != nil {
+		if errors.Is(err, dbr.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if t.ID == "" {
+		return nil, nil
+	}
+	return &t, nil
+}
+
 // Sweeper: reclaim expired leases back to queued (attempt++), or
 // dead-letter when attempt >= max_attempts. Called on a 5min ticker
 // from cmd/main.go.
