@@ -326,7 +326,13 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 	// Bot dispatch: if a bot was just added as assignee, kick the runtime so
 	// the bot starts working on the matter immediately. Mirrors the same
 	// fire-and-forget pattern used in Create.
-	if runtime.IsBotUID(assigneeUID) && h.runtime != nil {
+	//
+	// PR-B fix (齐乐 review): the gate must consider BOTH dispatch paths
+	// (local botTaskRepo + legacy runtime client). Original code only
+	// checked h.runtime != nil, so deployments without OCTO_SERVER_URL
+	// (where runtime client is nil) silently dropped assignee dispatches
+	// even though botTaskRepo could have handled them.
+	if runtime.IsBotUID(assigneeUID) && (h.botTaskRepo != nil || h.runtime != nil) {
 		h.worker.Submit(func() {
 			matter, err := h.svc.GetMatterForNotification(context.Background(), matterID, space)
 			if err != nil || matter == nil {

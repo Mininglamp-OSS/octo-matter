@@ -132,6 +132,13 @@ func main() {
 	// Router
 	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, internalH, authMW, spaceMW, daemonJWTMW, readiness)
 
+	// PR-B sweeper: every 5 min, reclaim expired-lease bot_tasks back to
+	// queued (attempt++) or dead-letter them once they hit max_attempts.
+	// Plan §4 T2 + §8 require this — without it a daemon crash mid-task
+	// leaves the row stuck in 'dispatched' forever.
+	sweepCtx, sweepCancel := context.WithCancel(context.Background())
+	go runBotTaskSweeper(sweepCtx, botTaskRepo)
+
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}
 
@@ -146,6 +153,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down...")
+	sweepCancel()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -154,4 +162,41 @@ func main() {
 	}
 	conn.Close()
 	log.Println("server exited cleanly")
+}
+
+// runBotTaskSweeper ticks every 5min and reclaims expired bot_task leases.
+// Implements plan §4 T2 + §8: tasks stuck in 'dispatched' past their
+// lease_until are reset to 'queued' (attempt++), and tasks that exceed
+// max_attempts are dead-lettered to 'failed' with error_msg='exceeded
+// max_attempts'. Without this loop, a daemon crash mid-task strands the
+// row forever and no other daemon can pick it up.
+func runBotTaskSweeper(ctx context.Context, repo *repository.BotTaskRepo) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	log.Println("bot_task sweeper started (5min tick)")
+	// Fire once at boot so a fresh restart picks up any lease that
+	// expired during downtime.
+	sweepBotTaskOnce(ctx, repo)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("bot_task sweeper stopped")
+			return
+		case <-ticker.C:
+			sweepBotTaskOnce(ctx, repo)
+		}
+	}
+}
+
+func sweepBotTaskOnce(ctx context.Context, repo *repository.BotTaskRepo) {
+	tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	reclaimed, deadLettered, err := repo.ReclaimExpired(tctx)
+	if err != nil {
+		log.Printf("[bot_task-sweeper] error: %v", err)
+		return
+	}
+	if reclaimed > 0 || deadLettered > 0 {
+		log.Printf("[bot_task-sweeper] reclaimed=%d dead_lettered=%d", reclaimed, deadLettered)
+	}
 }
