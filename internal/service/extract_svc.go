@@ -42,8 +42,9 @@ type ExtractMessage struct {
 	// 图文混排) the Content string is a stringified RichText payload that must
 	// be normalized to plain text before it reaches the LLM — see
 	// messageDisplayContent. Older callers that omit this field still work:
-	// a Content that is structurally a RichText payload is detected and
-	// normalized regardless of the declared type.
+	// a Content that is structurally a RichText block array is detected and
+	// normalized regardless of the declared type, while ordinary text or
+	// non-RichText JSON passes through verbatim (no silent field drop).
 	ContentType int                        `json:"content_type,omitempty"`
 	Attachments []ExtractMessageAttachment `json:"attachments,omitempty"`
 }
