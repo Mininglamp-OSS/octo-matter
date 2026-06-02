@@ -20,11 +20,12 @@ import (
 )
 
 type TimelineHandler struct {
-	svc       *service.TimelineService
-	matterSvc *service.MatterService
-	notifier  notification.Notifier
-	worker    *notification.Worker
-	runtime   *rtclient.Client // PoC3c: @mention dispatch; nil disables it
+	svc         *service.TimelineService
+	matterSvc   *service.MatterService
+	notifier    notification.Notifier
+	worker      *notification.Worker
+	runtime     *rtclient.Client            // legacy: HTTP dispatch to octo-fleet (PR-A.2)
+	botTaskRepo *repository.BotTaskRepo     // PR-B: local DB enqueue, daemon pulls
 }
 
 // NewTimelineHandler wires the timeline handler. Note: the LLM rate limiter
@@ -36,11 +37,12 @@ func NewTimelineHandler(
 	notifier notification.Notifier,
 	worker *notification.Worker,
 	runtime *rtclient.Client,
+	botTaskRepo *repository.BotTaskRepo,
 ) *TimelineHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &TimelineHandler{svc: svc, matterSvc: matterSvc, notifier: notifier, worker: worker, runtime: runtime}
+	return &TimelineHandler{svc: svc, matterSvc: matterSvc, notifier: notifier, worker: worker, runtime: runtime, botTaskRepo: botTaskRepo}
 }
 
 type attachmentInput struct {
@@ -154,7 +156,13 @@ func (h *TimelineHandler) Create(c *gin.Context) {
 // best-effort — a dispatch failure is logged, not surfaced to the comment
 // author (the comment itself was persisted successfully).
 func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid string, entry *model.TimelineEntry) {
-	if h.runtime == nil || entry == nil || entry.Content == nil {
+	if entry == nil || entry.Content == nil {
+		return
+	}
+	// PR-B: prefer local DB enqueue (botTaskRepo). Fall back to legacy
+	// HTTP dispatch to octo-fleet (rtclient) only when the repo isn't
+	// wired (older deployments pre-PR-B).
+	if h.botTaskRepo == nil && h.runtime == nil {
 		return
 	}
 	agentBotUIDs := mention.AgentIDs(mention.Parse(*entry.Content))
@@ -174,13 +182,45 @@ func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid 
 				log.Printf("[mention-dispatch] build prompt failed matter=%s bot=%s: %v", matterID, bot, err)
 				return
 			}
+
+			if h.botTaskRepo != nil {
+				triggerID := entry.ID
+				task := &model.BotTask{
+					MatterID:       matterID,
+					SpaceID:        sid,
+					BotUID:         bot,
+					TriggerKind:    "mention",
+					TriggerEntryID: &triggerID,
+					Prompt:         prompt,
+					MatterTitle:    matterTitle,
+				}
+				inserted, ierr := h.botTaskRepo.Insert(ctx, task)
+				if ierr != nil {
+					log.Printf("[mention-dispatch] DB insert failed matter=%s bot=%s: %v", matterID, bot, ierr)
+					h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentTaskFailed,
+						map[string]any{"bot_uid": bot, "task_id": "", "error": "mention dispatch: " + ierr.Error()})
+					return
+				}
+				if !inserted {
+					// Dedup hit on uk_trigger — silently skip; activity already
+					// recorded from the earlier enqueue.
+					log.Printf("[mention-dispatch] matter=%s bot=%s dedup (trigger=%s already queued)", matterID, bot, triggerID)
+					return
+				}
+				log.Printf("[mention-dispatch] matter=%s bot=%s queued task_id=%s (from comment)", matterID, bot, task.ID)
+				h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentDispatched,
+					map[string]any{"bot_uid": bot, "task_id": task.ID, "trigger": "mention", "requester": requesterUID})
+				return
+			}
+
+			// Legacy fleet HTTP path
 			id, err := h.runtime.EnqueueBotTask(ctx, rtclient.BotTaskReq{
 				MatterID:     matterID,
 				SpaceID:      sid,
 				BotUID:       bot,
 				RequesterUID: requesterUID,
 				Title:        matterTitle,
-				Description:  "", // prompt carries everything; description not needed
+				Description:  "",
 				Prompt:       prompt,
 			})
 			if err != nil {

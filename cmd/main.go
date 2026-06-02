@@ -105,22 +105,32 @@ func main() {
 
 	// Handlers
 	rtClient := runtime.NewClient(cfg.OctoServerURL, cfg.NotifyInternalToken, cfg.SelfBaseURL)
+	botTaskRepo := repository.NewBotTaskRepo(sess)
 	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, rtClient)
 	extractH := handler.NewExtractHandler(extractSvc)
-	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker, rtClient)
+	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker, rtClient, botTaskRepo)
 	activityH := handler.NewActivityHandler(activitySvc)
-	internalH := handler.NewInternalHandler(timelineSvc, matterSvc)
+	internalH := handler.NewInternalHandler(timelineSvc, matterSvc, botTaskRepo)
 	outputsH := handler.NewOutputsHandler(outputsSvc)
 
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
 	spaceMW := auth.SpaceMiddleware(cfg.OctoIMURL)
+	// PR-B: daemons authenticate to matter with daemon-scope JWTs issued by
+	// octo-server. Verifier eagerly fetches the JWKS at boot (lazy retry on
+	// first request if that fails). Env override matches fleet's convention.
+	jwksURL := os.Getenv("OCTO_SERVER_JWKS_URL")
+	if jwksURL == "" {
+		jwksURL = "http://localhost:8090/.well-known/jwks.json"
+	}
+	daemonJWTVerifier := auth.NewJWTVerifier(jwksURL)
+	daemonJWTMW := auth.DaemonJWTMiddleware(daemonJWTVerifier)
 
 	// Readiness
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, internalH, authMW, spaceMW, readiness)
+	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, internalH, authMW, spaceMW, daemonJWTMW, readiness)
 
 	// Graceful shutdown
 	srv := &http.Server{Addr: ":" + cfg.ServerPort, Handler: r}

@@ -40,6 +40,7 @@ func SetupRouter(
 	internalH *InternalHandler,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
+	daemonJWTMW gin.HandlerFunc,
 	ready ReadinessCheck,
 ) *gin.Engine {
 	r := gin.Default()
@@ -105,6 +106,15 @@ func SetupRouter(
 		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
 		internal.POST("/matters/:id/activities", internalH.WriteActivity)
 		internal.GET("/bots/:bot_uid/feed", internalH.BotFeed)
+	}
+
+	// PR-B: daemon-facing bot_task endpoints — JWT auth instead of
+	// X-Internal-Token so the daemon's existing JWT chain (server JWKS)
+	// works without a shared secret.
+	if internalH != nil && daemonJWTMW != nil {
+		dgrp := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), daemonJWTMW)
+		dgrp.GET("/bot-tasks", internalH.ListBotTasksForDaemon)
+		dgrp.POST("/bot-tasks/:id/ack", internalH.AckBotTaskFromDaemon)
 	}
 
 	return r

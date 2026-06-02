@@ -6,6 +6,7 @@ require (
 	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/anthropics/anthropic-sdk-go v1.44.1
 	github.com/gin-gonic/gin v1.12.0
+	github.com/go-jose/go-jose/v3 v3.0.5
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocraft/dbr/v2 v2.7.7
 	github.com/google/uuid v1.6.0
