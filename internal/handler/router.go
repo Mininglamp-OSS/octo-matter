@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -97,23 +98,26 @@ func SetupRouter(
 		matters.GET("/:id/outputs", outputsH.List)
 	}
 
-	// Internal API (X-Internal-Token auth, NO session auth, NO space middleware).
-	// Used by octo-server's bot_task ack handler to write bot replies back to
-	// matter timelines. Kept outside /api/v1 group so the session middleware
-	// chain doesn't apply.
+	// Internal API — dual-protocol auth (daemon JWT preferred, X-Internal-Token
+	// fallback). Daemon now writes timeline/activities via its JWT (no shared
+	// secret needed on the user's machine); fleet's bot-feed proxy and any
+	// legacy server caller keep working with X-Internal-Token. Both protocols
+	// coexist indefinitely — additive, not a cutover.
 	if internalH != nil {
-		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), internalH.AuthMiddleware())
+		var mw gin.HandlerFunc = internalH.AuthMiddleware()
+		if daemonJWTMW != nil {
+			mw = auth.DualAuth(daemonJWTMW, internalH.AuthMiddleware())
+		}
+		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), mw)
 		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
 		internal.POST("/matters/:id/activities", internalH.WriteActivity)
 		internal.GET("/bots/:bot_uid/feed", internalH.BotFeed)
 	}
 
-	// PR-B: daemon-facing bot_task endpoints — JWT auth. Writebacks
-	// (timeline + activity) stay on the existing X-Internal-Token
-	// endpoints above — daemon supplies NOTIFY_INTERNAL_TOKEN via env
-	// (same secret octo-server already shares for /v1/internal/notify),
-	// keeping route registration unambiguous and matter's API surface
-	// minimal for now.
+	// PR-B: bot_task pull/ack — daemon JWT REQUIRED (no token fallback).
+	// These handlers read daemon_id / uid from JWT claims for attribution
+	// and atomic-claim ownership; X-Internal-Token has no daemon identity
+	// so it's not a meaningful fallback here.
 	if internalH != nil && daemonJWTMW != nil {
 		dgrp := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), daemonJWTMW)
 		dgrp.GET("/bot-tasks", internalH.ListBotTasksForDaemon)
