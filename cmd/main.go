@@ -106,7 +106,7 @@ func main() {
 	// Handlers
 	rtClient := runtime.NewClient(cfg.OctoServerURL, cfg.NotifyInternalToken, cfg.SelfBaseURL)
 	botTaskRepo := repository.NewBotTaskRepo(sess)
-	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, rtClient)
+	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, rtClient, botTaskRepo)
 	extractH := handler.NewExtractHandler(extractSvc)
 	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker, rtClient, botTaskRepo)
 	activityH := handler.NewActivityHandler(activitySvc)

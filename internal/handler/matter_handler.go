@@ -16,17 +16,18 @@ import (
 )
 
 type MatterHandler struct {
-	svc      *service.MatterService
-	notifier notification.Notifier
-	worker   *notification.Worker
-	runtime  *runtime.Client // optional: nil disables bot-task dispatch
+	svc         *service.MatterService
+	notifier    notification.Notifier
+	worker      *notification.Worker
+	runtime     *runtime.Client          // legacy: HTTP dispatch (PR-A.2); nil disables it
+	botTaskRepo *repository.BotTaskRepo  // PR-B: local DB enqueue (preferred over runtime)
 }
 
-func NewMatterHandler(svc *service.MatterService, notifier notification.Notifier, worker *notification.Worker, rtClient *runtime.Client) *MatterHandler {
+func NewMatterHandler(svc *service.MatterService, notifier notification.Notifier, worker *notification.Worker, rtClient *runtime.Client, botTaskRepo *repository.BotTaskRepo) *MatterHandler {
 	if notifier == nil {
 		notifier = notification.Noop{}
 	}
-	return &MatterHandler{svc: svc, notifier: notifier, worker: worker, runtime: rtClient}
+	return &MatterHandler{svc: svc, notifier: notifier, worker: worker, runtime: rtClient, botTaskRepo: botTaskRepo}
 }
 
 // createMatterSourceMsgRef accepts the client's existing payload shape — the
@@ -331,7 +332,7 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 			if err != nil || matter == nil {
 				return
 			}
-			dispatchOneBotAssignee(h.svc, h.runtime, matter, assigneeUID)
+			dispatchOneBotAssignee(h.svc, h.runtime, h.botTaskRepo, matter, assigneeUID)
 		})
 	}
 	ok(c, nil)
@@ -414,8 +415,12 @@ func (h *MatterHandler) UnlinkChannel(c *gin.Context) {
 // dispatchBotAssignees walks the assignee list and fires one bot-task per
 // bot-suffixed uid. Each dispatch is fire-and-forget (worker pool) — a
 // dispatch failure surfaces as a log line, never blocks the caller.
+//
+// PR-B: prefer local matter_bot_task DB insert over the legacy HTTP
+// dispatch to fleet/server. The HTTP path is kept for back-compat when
+// botTaskRepo is nil (older deployments).
 func (h *MatterHandler) dispatchBotAssignees(c *gin.Context, matter *model.Matter, assigneeIDs []string) {
-	if h.runtime == nil {
+	if h.botTaskRepo == nil && h.runtime == nil {
 		return
 	}
 	m := *matter // shallow copy: handler returns before goroutine reads
@@ -425,18 +430,55 @@ func (h *MatterHandler) dispatchBotAssignees(c *gin.Context, matter *model.Matte
 		}
 		assignee := aid
 		h.worker.Submit(func() {
-			dispatchOneBotAssignee(h.svc, h.runtime, &m, assignee)
+			dispatchOneBotAssignee(h.svc, h.runtime, h.botTaskRepo, &m, assignee)
 		})
 	}
 }
 
-func dispatchOneBotAssignee(svc *service.MatterService, rt *runtime.Client, matter *model.Matter, botUID string) {
+func dispatchOneBotAssignee(svc *service.MatterService, rt *runtime.Client, repo *repository.BotTaskRepo, matter *model.Matter, botUID string) {
 	desc := ""
 	if matter.Description != nil {
 		desc = *matter.Description
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+
+	// PR-B path: local DB insert (preferred).
+	if repo != nil {
+		// Build a minimal continuation prompt — assignee dispatch happens at
+		// matter creation/assign time when there's no existing timeline to
+		// reflect on, so just stitch title + description.
+		prompt := buildAssigneePrompt(matter.Title, desc, botUID)
+		task := &model.BotTask{
+			MatterID:       matter.ID,
+			SpaceID:        matter.SpaceID,
+			BotUID:         botUID,
+			TriggerKind:    "assignee_added",
+			TriggerEntryID: nil, // assignee dispatch has no triggering timeline entry
+			Prompt:         prompt,
+			MatterTitle:    matter.Title,
+		}
+		inserted, ierr := repo.Insert(ctx, task)
+		if ierr != nil {
+			logBotDispatchErr(matter.ID, botUID, ierr)
+			svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentTaskFailed,
+				map[string]any{"bot_uid": botUID, "task_id": "", "error": "dispatch: " + ierr.Error()})
+			return
+		}
+		if !inserted {
+			// Dedup (uk_trigger) — assignee can be added/removed/re-added but
+			// trigger_entry_id is NULL so multiple inserts succeed. Insert
+			// returning !inserted is an actual unique-key duplicate (rare here).
+			log.Printf("[bot-dispatch] matter=%s bot=%s already queued (dedup)", matter.ID, botUID)
+			return
+		}
+		logBotDispatchOK(matter.ID, botUID, 0)
+		svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentDispatched,
+			map[string]any{"bot_uid": botUID, "task_id": task.ID, "trigger": "assignee_added"})
+		return
+	}
+
+	// Legacy HTTP path.
 	id, err := rt.EnqueueBotTask(ctx, runtime.BotTaskReq{
 		MatterID:     matter.ID,
 		SpaceID:      matter.SpaceID,
@@ -458,6 +500,19 @@ func dispatchOneBotAssignee(svc *service.MatterService, rt *runtime.Client, matt
 	logBotDispatchOK(matter.ID, botUID, id)
 	svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentDispatched,
 		map[string]any{"bot_uid": botUID, "task_id": id})
+}
+
+// buildAssigneePrompt — minimal initial prompt sent to a bot when it's
+// added as an assignee (no existing thread to summarize). Mirrors the
+// shape of TimelineService.BuildContinuationPrompt but stripped down.
+func buildAssigneePrompt(title, description, botUID string) string {
+	out := "You are agent `" + botUID + "` and have just been assigned to a new matter.\n\n"
+	out += "Title: " + title + "\n"
+	if description != "" {
+		out += "Description:\n" + description + "\n"
+	}
+	out += "\nPlease respond with your initial plan or first action."
+	return out
 }
 
 func logBotDispatchErr(matterID, botUID string, err error) {
