@@ -108,9 +108,12 @@ func SetupRouter(
 		internal.GET("/bots/:bot_uid/feed", internalH.BotFeed)
 	}
 
-	// PR-B: daemon-facing bot_task endpoints — JWT auth instead of
-	// X-Internal-Token so the daemon's existing JWT chain (server JWKS)
-	// works without a shared secret.
+	// PR-B: daemon-facing bot_task endpoints — JWT auth. Writebacks
+	// (timeline + activity) stay on the existing X-Internal-Token
+	// endpoints above — daemon supplies NOTIFY_INTERNAL_TOKEN via env
+	// (same secret octo-server already shares for /v1/internal/notify),
+	// keeping route registration unambiguous and matter's API surface
+	// minimal for now.
 	if internalH != nil && daemonJWTMW != nil {
 		dgrp := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), daemonJWTMW)
 		dgrp.GET("/bot-tasks", internalH.ListBotTasksForDaemon)

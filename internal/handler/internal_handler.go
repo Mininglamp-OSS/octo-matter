@@ -144,6 +144,7 @@ func (h *InternalHandler) BotFeed(c *gin.Context) {
 type botTaskOut struct {
 	ID          string `json:"id"`
 	MatterID    string `json:"matter_id"`
+	SpaceID     string `json:"space_id"`
 	BotUID      string `json:"bot_uid"`
 	Prompt      string `json:"prompt"`
 	MatterTitle string `json:"matter_title,omitempty"`
@@ -200,6 +201,7 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		out = append(out, botTaskOut{
 			ID:          r.ID,
 			MatterID:    r.MatterID,
+			SpaceID:     r.SpaceID,
 			BotUID:      r.BotUID,
 			Prompt:      r.Prompt,
 			MatterTitle: r.MatterTitle,
