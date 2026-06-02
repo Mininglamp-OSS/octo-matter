@@ -70,7 +70,14 @@ func (r *BotTaskRepo) Insert(ctx context.Context, t *model.BotTask) (bool, error
 // stamping them with a fresh claim_token and lease. Returns the claimed
 // rows. Caller must finish them before lease_until or matter's sweeper
 // will reset them to queued (attempt++).
-func (r *BotTaskRepo) ClaimNextForBot(ctx context.Context, botUID, claimedBy string, limit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
+//
+// PR-D.1 #3 (security): spaceID is the caller's JWT.space_id; we only
+// claim tasks whose own space_id matches. Closes cross-space task
+// hijacking (a daemon JWT minted for Space A cannot pull/DOS tasks of
+// bots in Space B even if it knows the victim bot_uid). Fix #1 (server
+// space-membership at JWT mint) is what makes JWT.space_id trustworthy
+// here — these two fixes are interdependent and ship together.
+func (r *BotTaskRepo) ClaimNextForBot(ctx context.Context, botUID, spaceID, claimedBy string, limit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -83,14 +90,14 @@ func (r *BotTaskRepo) ClaimNextForBot(ctx context.Context, botUID, claimedBy str
 	sess, ok := r.runner.(*dbr.Session)
 	if !ok {
 		// Tx already — caller wraps. Skip own tx.
-		return r.claimNextForBotInner(ctx, r.runner, botUID, claimedBy, limit, leaseDuration)
+		return r.claimNextForBotInner(ctx, r.runner, botUID, spaceID, claimedBy, limit, leaseDuration)
 	}
 	tx, err := sess.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.RollbackUnlessCommitted()
-	rows, err := r.claimNextForBotInner(ctx, tx, botUID, claimedBy, limit, leaseDuration)
+	rows, err := r.claimNextForBotInner(ctx, tx, botUID, spaceID, claimedBy, limit, leaseDuration)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +107,7 @@ func (r *BotTaskRepo) ClaimNextForBot(ctx context.Context, botUID, claimedBy str
 	return rows, nil
 }
 
-func (r *BotTaskRepo) claimNextForBotInner(ctx context.Context, runner dbr.SessionRunner, botUID, claimedBy string, limit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
+func (r *BotTaskRepo) claimNextForBotInner(ctx context.Context, runner dbr.SessionRunner, botUID, spaceID, claimedBy string, limit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
 	claimToken := uuid.New().String()
 	leaseUntil := time.Now().Add(leaseDuration)
 	// Stamp candidates first — UPDATE with ORDER BY + LIMIT in MySQL is
@@ -108,10 +115,10 @@ func (r *BotTaskRepo) claimNextForBotInner(ctx context.Context, runner dbr.Sessi
 	_, err := runner.UpdateBySql(
 		`UPDATE matter_bot_task
 		    SET status='dispatched', claim_token=?, claimed_by=?, claimed_at=NOW(3), lease_until=?
-		  WHERE bot_uid=? AND status='queued'
+		  WHERE bot_uid=? AND space_id=? AND status='queued'
 		  ORDER BY created_at ASC
 		  LIMIT ?`,
-		claimToken, claimedBy, leaseUntil, botUID, limit,
+		claimToken, claimedBy, leaseUntil, botUID, spaceID, limit,
 	).ExecContext(ctx)
 	if err != nil {
 		return nil, err
@@ -124,8 +131,8 @@ func (r *BotTaskRepo) claimNextForBotInner(ctx context.Context, runner dbr.Sessi
 		        lease_until, attempt, max_attempts, error_msg, result_summary,
 		        elapsed_ms, created_at, updated_at
 		   FROM matter_bot_task
-		  WHERE bot_uid=? AND claim_token=? AND status='dispatched'`,
-		botUID, claimToken,
+		  WHERE bot_uid=? AND space_id=? AND claim_token=? AND status='dispatched'`,
+		botUID, spaceID, claimToken,
 	).LoadContext(ctx, &rows)
 	return rows, err
 }

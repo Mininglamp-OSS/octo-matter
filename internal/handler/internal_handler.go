@@ -261,6 +261,16 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 	if limit <= 0 || limit > 50 {
 		limit = 10
 	}
+	// PR-D.1 #3: daemon JWT path carries an authoritative space_id
+	// claim (server #1 fix ensures it's not forgeable). Restrict task
+	// claims to bots in that space — even if a daemon knows another
+	// space's bot_uid it cannot pull/DOS its tasks.
+	spaceIDVal, _ := c.Get("space_id")
+	spaceID, _ := spaceIDVal.(string)
+	if spaceID == "" {
+		failCode(c, http.StatusForbidden, "MISSING_SPACE", "JWT missing space_id claim", nil)
+		return
+	}
 	claimedBy, _ := c.Get("daemon_id")
 	claimedByStr, _ := claimedBy.(string)
 	if claimedByStr == "" {
@@ -274,7 +284,7 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		claimedByStr = "unknown"
 	}
 
-	rows, err := h.botTaskRepo.ClaimNextForBot(c.Request.Context(), botUID, claimedByStr, limit, 10*time.Minute)
+	rows, err := h.botTaskRepo.ClaimNextForBot(c.Request.Context(), botUID, spaceID, claimedByStr, limit, 10*time.Minute)
 	if err != nil {
 		respondErr(c, err)
 		return
