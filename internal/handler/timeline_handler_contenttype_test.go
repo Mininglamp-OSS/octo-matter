@@ -161,7 +161,10 @@ func TestTimelineHandler_Create_PassesContentTypeToPrompt(t *testing.T) {
 			},
 		},
 	}
-	buf, _ := json.Marshal(body)
+	buf, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/matters/"+matterID+"/timeline", strings.NewReader(string(buf)))
 	req.Header.Set("Content-Type", "application/json")
