@@ -17,7 +17,6 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/octoim"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
-	"github.com/Mininglamp-OSS/octo-matter/internal/runtime"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -104,11 +103,10 @@ func main() {
 	outputsSvc := service.NewOutputsService(matterRepo, matterSvc, timelineAttachmentRepo)
 
 	// Handlers
-	rtClient := runtime.NewClient(cfg.OctoServerURL, cfg.NotifyInternalToken, cfg.SelfBaseURL)
 	botTaskRepo := repository.NewBotTaskRepo(sess)
-	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, rtClient, botTaskRepo)
+	matterH := handler.NewMatterHandler(matterSvc, notifier, notifyWorker, botTaskRepo)
 	extractH := handler.NewExtractHandler(extractSvc)
-	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker, rtClient, botTaskRepo)
+	timelineH := handler.NewTimelineHandler(timelineSvc, matterSvc, notifier, notifyWorker, botTaskRepo)
 	activityH := handler.NewActivityHandler(activitySvc)
 	internalH := handler.NewInternalHandler(timelineSvc, matterSvc, botTaskRepo)
 	outputsH := handler.NewOutputsHandler(outputsSvc)
