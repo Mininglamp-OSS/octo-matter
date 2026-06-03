@@ -66,6 +66,81 @@ func (r *BotTaskRepo) Insert(ctx context.Context, t *model.BotTask) (bool, error
 	return n > 0, nil
 }
 
+// ClaimNextForBots is the batched form of ClaimNextForBot. For each bot_uid
+// in the input list it claims up to perBotLimit queued tasks, sharing a
+// single transaction so the entire batch either commits or rolls back. The
+// per-bot loop preserves fairness (a noisy bot can't starve quiet ones the
+// way a single `WHERE bot_uid IN (...) LIMIT N` would).
+//
+// Defensive: deduplicates botUIDs (preserves first-seen order) since a
+// duplicate would re-enter claimNextForBotInner and claim another perBotLimit
+// rows for the same bot, doubling the per-bot cap. The HTTP handler also
+// dedupes, but this method is exported so other callers get the same
+// guarantee.
+//
+// Returned slice is flat — each task carries its own BotUID for grouping.
+// Empty input or empty bot_uids returns (nil, nil) without touching the DB.
+func (r *BotTaskRepo) ClaimNextForBots(ctx context.Context, botUIDs []string, spaceID, claimedBy string, perBotLimit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
+	if len(botUIDs) == 0 {
+		return nil, nil
+	}
+	if perBotLimit <= 0 {
+		perBotLimit = 5
+	}
+	if leaseDuration <= 0 {
+		leaseDuration = 10 * time.Minute
+	}
+
+	seen := make(map[string]struct{}, len(botUIDs))
+	unique := make([]string, 0, len(botUIDs))
+	for _, uid := range botUIDs {
+		if uid == "" {
+			continue
+		}
+		if _, ok := seen[uid]; ok {
+			continue
+		}
+		seen[uid] = struct{}{}
+		unique = append(unique, uid)
+	}
+	if len(unique) == 0 {
+		return nil, nil
+	}
+
+	doBatch := func(runner dbr.SessionRunner) ([]*model.BotTask, error) {
+		var out []*model.BotTask
+		for _, botUID := range unique {
+			rows, err := r.claimNextForBotInner(ctx, runner, botUID, spaceID, claimedBy, perBotLimit, leaseDuration)
+			if err != nil {
+				return nil, err
+			}
+			if len(rows) > 0 {
+				out = append(out, rows...)
+			}
+		}
+		return out, nil
+	}
+
+	sess, ok := r.runner.(*dbr.Session)
+	if !ok {
+		// Tx already — caller wraps. Skip own tx.
+		return doBatch(r.runner)
+	}
+	tx, err := sess.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.RollbackUnlessCommitted()
+	rows, err := doBatch(tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
 // ClaimNextForBot atomically pulls up to limit queued tasks for the bot,
 // stamping them with a fresh claim_token and lease. Returns the claimed
 // rows. Caller must finish them before lease_until or matter's sweeper

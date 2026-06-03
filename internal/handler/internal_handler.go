@@ -243,18 +243,27 @@ type botTaskOut struct {
 	LeaseUntil  string `json:"lease_until"`
 }
 
-// ListBotTasksForDaemon — GET /api/v1/internal/bot-tasks?bot_uid=X[&limit=N].
-// Atomically claims up to N queued tasks for the bot. Daemon must ack each
-// returned task with the matching claim_token before lease_until or matter's
-// sweeper will reset to queued (attempt++).
+// ListBotTasksForDaemon — GET /api/v1/internal/bot-tasks.
+// Two query shapes:
+//
+//	?bot_uid=X[&limit=N]           single-bot (legacy)
+//	?bot_uids=X,Y,Z[&limit=N]      batched per-bot, limit = per-bot
+//
+// Atomically claims up to N queued tasks per bot. When both params are
+// present, bot_uids wins. Daemon must ack each returned task with its
+// matching claim_token before lease_until or matter's sweeper will reset
+// it to queued (attempt++). Response shape is identical for both forms
+// ({"tasks": [...]}) — each task carries its own bot_uid for client-side
+// grouping.
 func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 	if h.botTaskRepo == nil {
 		failCode(c, http.StatusServiceUnavailable, "NOT_AVAILABLE", "bot_task repo not wired", nil)
 		return
 	}
+	botUIDsParam := strings.TrimSpace(c.Query("bot_uids"))
 	botUID := strings.TrimSpace(c.Query("bot_uid"))
-	if botUID == "" {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid required", nil)
+	if botUIDsParam == "" && botUID == "" {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid or bot_uids required", nil)
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
@@ -284,7 +293,31 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		claimedByStr = "unknown"
 	}
 
-	rows, err := h.botTaskRepo.ClaimNextForBot(c.Request.Context(), botUID, spaceID, claimedByStr, limit, 10*time.Minute)
+	var rows []*model.BotTask
+	var err error
+	if botUIDsParam != "" {
+		uids := dedupNonEmpty(splitCSV(botUIDsParam))
+		// Cap unique bots per call so a single daemon can't claim against
+		// arbitrarily many bots in one tx; per-bot limit further caps each
+		// bot's share so a noisy bot can't drown out quiet ones.
+		const maxBots = 50
+		if len(uids) > maxBots {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR",
+				fmt.Sprintf("bot_uids exceeds max=%d (got %d unique); split into multiple calls", maxBots, len(uids)), nil)
+			return
+		}
+		if len(uids) == 0 {
+			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uids empty after dedup", nil)
+			return
+		}
+		perBot := limit
+		if perBot > 50 {
+			perBot = 50
+		}
+		rows, err = h.botTaskRepo.ClaimNextForBots(c.Request.Context(), uids, spaceID, claimedByStr, perBot, 10*time.Minute)
+	} else {
+		rows, err = h.botTaskRepo.ClaimNextForBot(c.Request.Context(), botUID, spaceID, claimedByStr, limit, 10*time.Minute)
+	}
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -311,6 +344,39 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": out})
+}
+
+// splitCSV splits a comma-separated value, trimming whitespace and
+// dropping empty entries.
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// dedupNonEmpty preserves first-seen order, drops duplicates and empties.
+// Without this, ?bot_uids=A,A,A would run claimNextForBotInner three times
+// for the same bot, each claim claiming up to perBotLimit more rows.
+func dedupNonEmpty(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
 }
 
 type ackBotTaskReq struct {
