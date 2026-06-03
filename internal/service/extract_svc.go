@@ -32,11 +32,20 @@ type ExtractMessageAttachment struct {
 
 // ExtractMessage is the frontend-supplied message payload.
 type ExtractMessage struct {
-	MessageID   string                     `json:"message_id"`
-	FromUID     string                     `json:"from_uid"`
-	FromUname   string                     `json:"from_uname"`
-	Timestamp   int64                      `json:"timestamp"`
-	Content     string                     `json:"content"`
+	MessageID string `json:"message_id"`
+	FromUID   string `json:"from_uid"`
+	FromUname string `json:"from_uname"`
+	Timestamp int64  `json:"timestamp"`
+	Content   string `json:"content"`
+	// ContentType is the IM message type (octo-lib ContentType). It is
+	// optional and defaults to 0 ("unknown"); when set to 14 (RichText /
+	// 图文混排) the Content string is a stringified RichText payload that must
+	// be normalized to plain text before it reaches the LLM — see
+	// messageDisplayContent. Older callers that omit this field still work:
+	// a Content that is structurally a RichText block array is detected and
+	// normalized regardless of the declared type, while ordinary text or
+	// non-RichText JSON passes through verbatim (no silent field drop).
+	ContentType int                        `json:"content_type,omitempty"`
 	Attachments []ExtractMessageAttachment `json:"attachments,omitempty"`
 }
 
@@ -541,7 +550,7 @@ func buildMessagesPrompt(msgs []ExtractMessage) string {
 	var b strings.Builder
 	b.WriteString("以下是与目标事项相关的聊天消息：\n\n")
 	for _, m := range msgs {
-		content := m.Content
+		content := messageDisplayContent(m)
 		if r := []rune(content); len(r) > ExtractMaxContentChars {
 			content = string(r[:ExtractMaxContentChars])
 		}

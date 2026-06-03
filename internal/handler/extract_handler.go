@@ -30,6 +30,7 @@ type extractMessageReq struct {
 	FromUname   string                        `json:"from_uname"`
 	Timestamp   int64                         `json:"timestamp"`
 	Content     string                        `json:"content"`
+	ContentType int                           `json:"content_type"`
 	Attachments []extractMessageAttachmentReq `json:"attachments"`
 }
 
@@ -68,6 +69,7 @@ func (h *ExtractHandler) Create(c *gin.Context) {
 			FromUname:   m.FromUname,
 			Timestamp:   m.Timestamp,
 			Content:     m.Content,
+			ContentType: m.ContentType,
 			Attachments: atts,
 		})
 	}
