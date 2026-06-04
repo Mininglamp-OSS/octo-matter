@@ -98,6 +98,13 @@ func SetupRouter(
 		matters.GET("/:id/outputs", outputsH.List)
 	}
 
+	// User-facing bot endpoints — auth-only, no per-space scoping
+	// (a bot belongs to one space; ownership is checked against
+	// related_uids inside the handler). Replaces the legacy
+	// fleet `/v1/runtimes/bots/:id/feed` proxy.
+	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW)
+	bots.GET("/:bot_uid/feed", timelineH.BotFeed)
+
 	// Internal API — dual-protocol auth (daemon JWT preferred, X-Internal-Token
 	// fallback). Daemon now writes timeline/activities via its JWT (no shared
 	// secret needed on the user's machine); fleet's bot-feed proxy and any

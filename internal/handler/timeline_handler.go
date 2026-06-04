@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
@@ -253,6 +254,40 @@ func (h *TimelineHandler) Delete(c *gin.Context) {
 		return
 	}
 	ok(c, nil)
+}
+
+// BotFeed handles GET /api/v1/bots/:bot_uid/feed?limit=50. User-facing
+// endpoint: caller must own this bot (user auth path expands related_uids
+// to include owned_bots) or BE this bot (bot auth path has bot_uid in
+// related_uids). Returns the same merged timeline+activity shape as the
+// internal endpoint.
+//
+// Replaces the fleet `/v1/runtimes/bots/:id/feed` proxy — web now calls
+// matter directly, eliminating the X-Internal-Token shared-secret hop.
+func (h *TimelineHandler) BotFeed(c *gin.Context) {
+	botUID := strings.TrimSpace(c.Param("bot_uid"))
+	if botUID == "" {
+		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid required", nil)
+		return
+	}
+	allowed := false
+	for _, u := range relatedUIDs(c) {
+		if u == botUID {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		failCode(c, http.StatusForbidden, "FORBIDDEN", "not your bot", nil)
+		return
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	items, err := h.svc.ListBotFeed(c.Request.Context(), botUID, limit)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	ok(c, items)
 }
 
 func (h *TimelineHandler) respondCreateErr(c *gin.Context, err error) {
