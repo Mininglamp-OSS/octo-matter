@@ -7,7 +7,7 @@
 #
 # KNOWN LIMITATION — stale required status after sprint/field change:
 #   This check re-evaluates only on pull_request_target events
-#   (opened, synchronize, reopened). Two scenarios can leave a stale
+#   (opened, synchronize, reopened, edited, ready_for_review). Two scenarios can leave a stale
 #   green status on branch protection:
 #
 #   1. Sprint rollover: the org's active sprint advances while this PR
@@ -33,7 +33,7 @@ name: Check Sprint
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
     branches: [main]
 
 permissions: {}
