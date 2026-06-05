@@ -75,16 +75,9 @@ type verifyAPIKeyResp struct {
 //   - Bot:     "Authorization: Bearer bf_<token>" → POST /v1/auth/verify-bot
 //   - APIKey:  "Authorization: Bearer uk_<key>"   → POST /v1/auth/verify-api-key (daemon)
 //
-// Prefix dispatch is strict (HasPrefix + min length); Bearer headers that
-// don't match uk_ fall through to bot path, letting server verify-bot
-// reject them. Phase 4 will tighten this to outright 401 for non-uk_/bf_.
-//
-// On success, injects into gin context:
-//   - "uid"            — caller identity (user uid / bot uid / api_key owner uid)
-//   - "auth_kind"      — one of AuthKindSession / AuthKindBot / AuthKindAPIKey
-//   - "space_id"       — bound space (api_key + bot) or set later (user)
-//   - "name", "role"   — user/bot only (api_key path skips these)
-//   - "related_uids"   — visibility set (user/bot only)
+// Prefix dispatch is strict (HasPrefix + min length). Bearer headers
+// without uk_ or bf_ prefix are rejected outright (Phase 4 收紧, 不再
+// fall through to bot path letting server verify-bot reject).
 // verifyCache caches auth verify results to avoid calling octoim on every request.
 // It bounds memory via periodic eviction of expired entries and a hard cap.
 type verifyCache struct {
@@ -154,8 +147,16 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 				handleAPIKeyAuth(c, client, cfg.OctoIMURL, token, cache)
 				return
 			}
-			// Bot token (or any other Bearer): let server verify-bot decide.
-			handleBotAuth(c, client, cfg.OctoIMURL, token, cache)
+			// Bot token: strict bf_ prefix.
+			if strings.HasPrefix(token, botTokenPrefix) {
+				handleBotAuth(c, client, cfg.OctoIMURL, token, cache)
+				return
+			}
+			// 合并 plan 决策一+二 Phase 4: 非 uk_/bf_ 的 Bearer 直接 401
+			// (旧 JWT 路径已删, 不再 fall through 让 server verify-bot 兜底).
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error": gin.H{"code": "UNAUTHORIZED", "message": "Bearer token must start with uk_ or bf_"},
+			})
 			return
 		}
 
@@ -184,7 +185,6 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 			relatedUIDs = append(relatedUIDs, bot.UID)
 		}
 		c.Set("related_uids", relatedUIDs)
-		c.Next()
 		return
 	}
 
@@ -228,7 +228,6 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 	// Cache for 60s
 	cache.set("user:"+token, &result, 60*time.Second)
 
-	c.Next()
 }
 
 func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string, cache *verifyCache) {
@@ -250,7 +249,6 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 		}
 		relatedUIDs := []string{result.BotUID}
 		c.Set("related_uids", relatedUIDs)
-		c.Next()
 		return
 	}
 
@@ -303,7 +301,6 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 
 	cache.set("bot:"+botToken, &result, 60*time.Second)
 
-	c.Next()
 }
 
 // handleAPIKeyAuth verifies a daemon api_key by calling server's
@@ -316,7 +313,6 @@ func handleAPIKeyAuth(c *gin.Context, client *http.Client, baseURL, apiKey strin
 	if cached, ok := cache.get("apikey:" + apiKey); ok {
 		result := cached.(*verifyAPIKeyResp)
 		applyAPIKeyResult(c, result)
-		c.Next()
 		return
 	}
 
@@ -349,7 +345,6 @@ func handleAPIKeyAuth(c *gin.Context, client *http.Client, baseURL, apiKey strin
 	applyAPIKeyResult(c, &result)
 	cache.set("apikey:"+apiKey, &result, 60*time.Second)
 
-	c.Next()
 }
 
 func applyAPIKeyResult(c *gin.Context, r *verifyAPIKeyResp) {

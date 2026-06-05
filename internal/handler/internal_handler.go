@@ -41,12 +41,6 @@ type internalTimelineReq struct {
 	ActorUID string `json:"actor_uid" binding:"required,max=64"`
 	SpaceID  string `json:"space_id" binding:"required,max=64"`
 	Content  string `json:"content" binding:"required,max=10000"`
-	// TaskID + ClaimToken bind this writeback to the in-flight bot_task
-	// the daemon just processed. Required on the daemon JWT path (DualAuth
-	// JWT branch); ignored on the legacy X-Internal-Token path where the
-	// caller (octo-server/fleet) is already a trusted infra peer.
-	TaskID     string `json:"task_id"`
-	ClaimToken string `json:"claim_token"`
 }
 
 // WriteTimeline handles POST /api/v1/internal/matters/:id/timeline.
@@ -94,13 +88,7 @@ type internalActivityReq struct {
 	ActorUID string         `json:"actor_uid" binding:"required,max=64"`
 	Action   string         `json:"action" binding:"required,max=64"`
 	Detail   map[string]any `json:"detail"`
-	// Same DualAuth-daemon-JWT binding fields as internalTimelineReq.
-	// Required on JWT path; ignored on X-Internal-Token path.
-	TaskID     string `json:"task_id"`
-	ClaimToken string `json:"claim_token"`
-	// SpaceID optional in body — for the JWT path we cross-check against the
-	// resolved task's space_id; for the X-Internal-Token path it's not used.
-	SpaceID string `json:"space_id"`
+	SpaceID  string         `json:"space_id"`
 }
 
 // WriteActivity handles POST /api/v1/internal/matters/:id/activities. Used

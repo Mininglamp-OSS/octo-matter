@@ -125,11 +125,11 @@ func TestAuthMiddleware_APIKey_Valid(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&srv.apiKeyCalls))
 }
 
-// Case: api_key too short (< 35 chars) → falls through to handleBotAuth
-// (合并 plan §4 prefix 严格性: 长度校验防 "uk_" + 空字符串绕过).
-// mock verify-bot will accept it since we didn't reject it; verify it
-// went to bot endpoint not api-key endpoint.
-func TestAuthMiddleware_APIKey_TooShort_FallsThroughToBot(t *testing.T) {
+// Case: api_key too short (< 35 chars) → rejected as non-uk_ Bearer
+// (合并 plan §4 Phase 4 收紧: 非 uk_/bf_ Bearer 直接 401, 不再 fall
+// through 到 bot path). 短的 "uk_..." 不满足 minLength → 不走 api_key
+// path, 也不是 bf_ → 401.
+func TestAuthMiddleware_APIKey_TooShort_StrictReject(t *testing.T) {
 	srv := newMockOctoServer()
 	defer srv.Close()
 	r := newTestRouter(srv.URL)
@@ -140,9 +140,43 @@ func TestAuthMiddleware_APIKey_TooShort_FallsThroughToBot(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+shortToken)
 	r.ServeHTTP(w, req)
 
-	require.Equal(t, 200, w.Code) // server verify-bot accepted it
+	assert.Equal(t, 401, w.Code)
+	assert.Contains(t, w.Body.String(), "uk_ or bf_")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&srv.apiKeyCalls), "api-key endpoint should NOT be hit")
-	assert.Equal(t, int32(1), atomic.LoadInt32(&srv.botCalls), "bot endpoint should be hit instead")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&srv.botCalls), "bot endpoint should NOT be hit (strict prefix)")
+}
+
+// Case: bot_token with bf_ prefix → handleBotAuth, auth_kind=bot.
+func TestAuthMiddleware_BotToken_WithPrefix(t *testing.T) {
+	srv := newMockOctoServer()
+	defer srv.Close()
+	r := newTestRouter(srv.URL)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/probe", nil)
+	req.Header.Set("Authorization", "Bearer bf_validtoken")
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, 200, w.Code)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, AuthKindBot, resp["auth_kind"])
+	assert.Equal(t, int32(1), atomic.LoadInt32(&srv.botCalls))
+}
+
+// Case: Bearer with non-uk_/non-bf_ prefix → 401 strict reject.
+func TestAuthMiddleware_Bearer_InvalidPrefix(t *testing.T) {
+	srv := newMockOctoServer()
+	defer srv.Close()
+	r := newTestRouter(srv.URL)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/probe", nil)
+	req.Header.Set("Authorization", "Bearer randomgarbage_xyz")
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, 401, w.Code)
+	assert.Contains(t, w.Body.String(), "uk_ or bf_")
 }
 
 // Case: server rejects api_key → 401.
@@ -177,23 +211,6 @@ func TestAuthMiddleware_APIKey_CacheHit(t *testing.T) {
 	}
 	assert.Equal(t, int32(1), atomic.LoadInt32(&srv.apiKeyCalls),
 		"3 requests with same key should hit server exactly once (cache TTL 60s)")
-}
-
-// Case: bot_token (Bearer bf_...) → handleBotAuth → 200 + auth_kind=bot.
-func TestAuthMiddleware_BotToken(t *testing.T) {
-	srv := newMockOctoServer()
-	defer srv.Close()
-	r := newTestRouter(srv.URL)
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/probe", nil)
-	req.Header.Set("Authorization", "Bearer bf_botxxx")
-	r.ServeHTTP(w, req)
-
-	require.Equal(t, 200, w.Code)
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, AuthKindBot, resp["auth_kind"])
 }
 
 // Case: session token (token: header) → handleUserAuth → 200 + auth_kind=session.
