@@ -19,6 +19,26 @@ type Config struct {
 	OctoIMURL string // octoim base URL
 }
 
+// Auth kind constants — injected into gin context by AuthMiddleware so
+// downstream RequireKind / handlers can disambiguate the caller type.
+const (
+	AuthKindSession = "session" // browser session token (header: token: <session>)
+	AuthKindBot     = "bot"     // bot_token (header: Authorization: Bearer bf_<token>)
+	AuthKindAPIKey  = "apikey"  // daemon api_key (header: Authorization: Bearer uk_<key>)
+)
+
+// API key / bot token prefix constants.
+//
+// API key prefix uk_ + ≥32 random chars (合并 plan §4 prefix 严格性).
+// We require strict HasPrefix match + minimum length so a Bearer with
+// "uk_" + empty string can't sneak through the middleware to land on
+// the server side.
+const (
+	apiKeyPrefix    = "uk_"
+	apiKeyMinLength = 35 // "uk_" + 32-char body
+	botTokenPrefix  = "bf_"
+)
+
 // --- verify API response types ---
 
 type ownedBot struct {
@@ -41,14 +61,30 @@ type verifyBotResp struct {
 	SpaceID   string `json:"space_id"`
 }
 
+// verifyAPIKeyResp mirrors POST /v1/auth/verify-api-key on server
+// (合并 plan §3). The endpoint only returns the user + bound space —
+// daemon-facing handlers derive everything else from owner_uid filtering.
+type verifyAPIKeyResp struct {
+	UID     string `json:"uid"`
+	SpaceID string `json:"space_id"`
+}
+
 // AuthMiddleware authenticates requests by calling octoim's verify API.
-// Supports two auth paths:
-//   - User: "token" header → POST /v1/auth/verify
-//   - Bot:  "Authorization: Bearer <bot_token>" → POST /v1/auth/verify-bot
+// Supports three auth paths (合并 plan §4 三协议):
+//   - User:    "token" header → POST /v1/auth/verify (session)
+//   - Bot:     "Authorization: Bearer bf_<token>" → POST /v1/auth/verify-bot
+//   - APIKey:  "Authorization: Bearer uk_<key>"   → POST /v1/auth/verify-api-key (daemon)
+//
+// Prefix dispatch is strict (HasPrefix + min length); Bearer headers that
+// don't match uk_ fall through to bot path, letting server verify-bot
+// reject them. Phase 4 will tighten this to outright 401 for non-uk_/bf_.
 //
 // On success, injects into gin context:
-//   - "uid", "name", "role" — caller identity
-//   - "related_uids" — [self, owned_bots...] or [self, owner] for visibility
+//   - "uid"            — caller identity (user uid / bot uid / api_key owner uid)
+//   - "auth_kind"      — one of AuthKindSession / AuthKindBot / AuthKindAPIKey
+//   - "space_id"       — bound space (api_key + bot) or set later (user)
+//   - "name", "role"   — user/bot only (api_key path skips these)
+//   - "related_uids"   — visibility set (user/bot only)
 // verifyCache caches auth verify results to avoid calling octoim on every request.
 // It bounds memory via periodic eviction of expired entries and a hard cap.
 type verifyCache struct {
@@ -109,10 +145,17 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 	cache := newVerifyCache()
 
 	return func(c *gin.Context) {
-		// Check for Bot auth first
+		// Bearer auth: dispatch by prefix (api_key vs bot_token).
 		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			botToken := strings.TrimPrefix(authHeader, "Bearer ")
-			handleBotAuth(c, client, cfg.OctoIMURL, botToken, cache)
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			// API key path: strict uk_ prefix + min length to avoid
+			// "uk_" with empty body sneaking through.
+			if strings.HasPrefix(token, apiKeyPrefix) && len(token) >= apiKeyMinLength {
+				handleAPIKeyAuth(c, client, cfg.OctoIMURL, token, cache)
+				return
+			}
+			// Bot token (or any other Bearer): let server verify-bot decide.
+			handleBotAuth(c, client, cfg.OctoIMURL, token, cache)
 			return
 		}
 
@@ -135,6 +178,7 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 		c.Set("uid", result.UID)
 		c.Set("name", result.Name)
 		c.Set("role", result.Role)
+		c.Set("auth_kind", AuthKindSession)
 		relatedUIDs := []string{result.UID}
 		for _, bot := range result.OwnedBots {
 			relatedUIDs = append(relatedUIDs, bot.UID)
@@ -173,6 +217,7 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 	c.Set("uid", result.UID)
 	c.Set("name", result.Name)
 	c.Set("role", result.Role)
+	c.Set("auth_kind", AuthKindSession)
 
 	relatedUIDs := []string{result.UID}
 	for _, bot := range result.OwnedBots {
@@ -193,6 +238,7 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 		c.Set("uid", result.BotUID)
 		c.Set("name", result.BotName)
 		c.Set("role", "bot")
+		c.Set("auth_kind", AuthKindBot)
 		if result.OwnerUID != "" {
 			c.Set("owner_uid", result.OwnerUID)
 		}
@@ -237,6 +283,7 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	c.Set("uid", result.BotUID)
 	c.Set("name", result.BotName)
 	c.Set("role", "bot")
+	c.Set("auth_kind", AuthKindBot)
 	if result.OwnerUID != "" {
 		c.Set("owner_uid", result.OwnerUID)
 	}
@@ -257,6 +304,91 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	cache.set("bot:"+botToken, &result, 60*time.Second)
 
 	c.Next()
+}
+
+// handleAPIKeyAuth verifies a daemon api_key by calling server's
+// /v1/auth/verify-api-key endpoint and caches the result for 60s.
+//
+// Injects uid + space_id + auth_kind="apikey" only — api_key callers
+// (daemon / runtime / agent processes) don't need name/role/related_uids;
+// 决策二信任模型把跨 user 隔离推到业务 SQL WHERE owner_uid=?.
+func handleAPIKeyAuth(c *gin.Context, client *http.Client, baseURL, apiKey string, cache *verifyCache) {
+	if cached, ok := cache.get("apikey:" + apiKey); ok {
+		result := cached.(*verifyAPIKeyResp)
+		applyAPIKeyResult(c, result)
+		c.Next()
+		return
+	}
+
+	body, _ := json.Marshal(map[string]string{"api_key": apiKey})
+	resp, err := client.Post(baseURL+"/v1/auth/verify-api-key", "application/json", bytes.NewReader(body))
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{"code": "AUTH_UNAVAILABLE", "message": "failed to reach auth service"},
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, resp.Body)
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid api_key"},
+		})
+		return
+	}
+
+	var result verifyAPIKeyResp
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{"code": "AUTH_ERROR", "message": "failed to parse auth response"},
+		})
+		return
+	}
+
+	applyAPIKeyResult(c, &result)
+	cache.set("apikey:"+apiKey, &result, 60*time.Second)
+
+	c.Next()
+}
+
+func applyAPIKeyResult(c *gin.Context, r *verifyAPIKeyResp) {
+	c.Set("uid", r.UID)
+	c.Set("space_id", r.SpaceID)
+	c.Set("auth_kind", AuthKindAPIKey)
+}
+
+// RequireKind enforces that the authenticated caller's auth_kind matches
+// one of the allowed kinds (合并 plan §4 Endpoint 鉴权矩阵).
+//
+// Returns 403 (not 401 — credential is valid but the endpoint disallows
+// this caller type) on mismatch. Must be mounted after AuthMiddleware:
+//
+//	r.Group("/api/v1/internal/bot-tasks",
+//	    auth.AuthMiddleware(cfg),
+//	    auth.RequireKind(auth.AuthKindAPIKey))
+//
+// Phase 2 ships the helper; Phase 3B is where individual endpoint groups
+// adopt it as daemon-facing handlers migrate off DualAuth onto AuthMiddleware.
+func RequireKind(allowed ...string) gin.HandlerFunc {
+	set := make(map[string]struct{}, len(allowed))
+	for _, k := range allowed {
+		set[k] = struct{}{}
+	}
+	return func(c *gin.Context) {
+		raw, _ := c.Get("auth_kind")
+		kind, _ := raw.(string)
+		if _, ok := set[kind]; !ok {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error": gin.H{
+					"code":    "AUTH_KIND_NOT_ALLOWED",
+					"message": fmt.Sprintf("endpoint requires one of: %s", strings.Join(allowed, ", ")),
+				},
+			})
+			return
+		}
+		c.Next()
+	}
 }
 
 // SpaceMiddleware reads X-Space-Id header and validates membership
