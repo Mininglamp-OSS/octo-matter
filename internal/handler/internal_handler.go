@@ -1,11 +1,9 @@
 package handler
 
 import (
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -17,55 +15,25 @@ import (
 	"github.com/gocraft/dbr/v2"
 )
 
-// InternalHandler exposes endpoints called by trusted backend services
-// and daemons via DualAuth (see internal/auth/dual_auth.go).
+// InternalHandler exposes endpoints called by daemons via AuthMiddleware
+// + RequireKind(apikey) (合并 plan 决策一+二 Phase 4).
 //
-//   - X-Internal-Token routes (kept indefinitely for legacy infra peers
-//     like fleet's bot-feed proxy and any server→matter notify path)
-//   - Daemon JWT routes (PR-B): octo-daemon-cli pulls and acks bot_tasks
-//     from matter directly. Auth gated by auth.DaemonJWTMiddleware in
-//     SetupRouter — handlers below trust the gin context keys.
+// 历史: 之前用 DualAuth (daemon JWT + X-Internal-Token fallback), Phase 4
+// 全部切到 api_key 直连. X-Internal-Token AuthMiddleware 函数 + token field
+// 一起删 (NOTIFY_INTERNAL_TOKEN env 仅 matter notification client → server
+// 的反向调用还在用, 跟此 handler 无关).
 type InternalHandler struct {
 	timelineSvc *service.TimelineService
 	matterSvc   *service.MatterService
 	botTaskRepo *repository.BotTaskRepo
-	token       string
 }
 
-// NewInternalHandler wires the internal handler. token is read from env at
-// construction time so the middleware closure can capture it.
-//
-// Deployment note: matter MUST keep NOTIFY_INTERNAL_TOKEN set even after
-// daemons stop using it — fleet's bot-feed proxy still calls matter with
-// X-Internal-Token, and an empty token fails closed (every X-Internal-Token
-// request returns 401). The daemon side, by contrast, no longer reads this
-// env at all — it uses its JWT for writeback now.
+// NewInternalHandler wires the internal handler.
 func NewInternalHandler(timelineSvc *service.TimelineService, matterSvc *service.MatterService, botTaskRepo *repository.BotTaskRepo) *InternalHandler {
 	return &InternalHandler{
 		timelineSvc: timelineSvc,
 		matterSvc:   matterSvc,
 		botTaskRepo: botTaskRepo,
-		token:       os.Getenv("NOTIFY_INTERNAL_TOKEN"),
-	}
-}
-
-// AuthMiddleware validates X-Internal-Token. Fails closed when token is unset.
-func (h *InternalHandler) AuthMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if h.token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"code": "UNAUTHORIZED", "message": "internal API auth not configured"},
-			})
-			return
-		}
-		hdr := c.GetHeader("X-Internal-Token")
-		if subtle.ConstantTimeCompare([]byte(hdr), []byte(h.token)) != 1 {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"code": "UNAUTHORIZED", "message": "unauthorized"},
-			})
-			return
-		}
-		c.Next()
 	}
 }
 
@@ -105,10 +73,11 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	if err := h.assertDaemonWritebackContext(c, req.TaskID, req.ClaimToken, req.ActorUID, req.SpaceID); err != nil {
-		failCode(c, http.StatusForbidden, "WRITEBACK_FORBIDDEN", err.Error(), nil)
-		return
-	}
+	// 合并 plan 决策一+二 Phase 4: AU5 assertDaemonWritebackContext 已删.
+	// 信任模型转移到 caller 持 api_key, RequireKind(apikey) 已拦在路由层.
+	// 跨 user 隔离: 同 user 多 daemon 互信 (会议决策接受), 跨 user 写回
+	// 拦在 fleet managed_bots 那一头 (daemon 拿不到别 user 的 bot_uid).
+	// issue #75 完整修复推迟决策四 (bot 子进程持 bot_token 直接调 matter).
 	entry, err := h.timelineSvc.CreateInternalEntry(c.Request.Context(), matterID, req.SpaceID, req.ActorUID, req.Content)
 	if err != nil {
 		respondErr(c, err)
@@ -149,66 +118,18 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	if err := h.assertDaemonWritebackContext(c, req.TaskID, req.ClaimToken, req.ActorUID, req.SpaceID); err != nil {
-		failCode(c, http.StatusForbidden, "WRITEBACK_FORBIDDEN", err.Error(), nil)
-		return
-	}
+	// 合并 plan 决策一+二 Phase 4: AU5 assertDaemonWritebackContext 已删 (同 WriteTimeline).
 	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, req.ActorUID, req.Action, req.Detail)
 	c.Status(http.StatusNoContent)
 }
 
-// assertDaemonWritebackContext closes the actor_uid spoofing gap that
-// DualAuth introduced. Returns nil on:
-//   - X-Internal-Token path (no daemon_id in ctx — trusted infra caller)
-//   - daemon JWT path with (task_id, claim_token) matching an in-flight
-//     matter_bot_task whose bot_uid + space_id + claimed_by line up with
-//     the asserted actor_uid + space_id + JWT daemon_id
-//
-// Detection of "daemon JWT path": presence of "daemon_id" gin key, set by
-// auth.DaemonJWTMiddleware. X-Internal-Token middleware doesn't set it.
-func (h *InternalHandler) assertDaemonWritebackContext(c *gin.Context, taskID, claimToken, actorUID, spaceID string) error {
-	daemonIDVal, ok := c.Get("daemon_id")
-	if !ok {
-		return nil // X-Internal-Token path — legacy trusted contract
-	}
-	daemonID, _ := daemonIDVal.(string)
-	if daemonID == "" {
-		// JWT minted without daemon_id claim — refuse, this should never
-		// happen for a daemon-scope JWT but better to fail closed than
-		// degrade silently to "any valid JWT can write anywhere".
-		return errors.New("daemon JWT missing daemon_id claim")
-	}
-	if h.botTaskRepo == nil {
-		return errors.New("matter bot_task repo not wired")
-	}
-	if taskID == "" || claimToken == "" {
-		return errors.New("daemon JWT writeback requires task_id + claim_token in body")
-	}
-	t, err := h.botTaskRepo.LoadDispatchedForWriteback(c.Request.Context(), taskID, claimToken)
-	if err != nil {
-		// DB error — fail closed; daemon will retry.
-		return fmt.Errorf("writeback context lookup failed: %w", err)
-	}
-	if t == nil {
-		// Task gone / claim_token mismatch / lease expired and reclaimed —
-		// daemon's writeback is no longer authoritative.
-		return errors.New("task not found or no longer dispatched (claim_token stale?)")
-	}
-	if t.BotUID != actorUID {
-		return errors.New("actor_uid does not match task's bot_uid")
-	}
-	// space_id is mandatory on JWT path to avoid fail-open if a future
-	// caller (or a buggy daemon build) forgets to send it. internalTimelineReq
-	// already has binding:"required" on SpaceID; internalActivityReq doesn't,
-	// so we enforce the check here uniformly.
-	if spaceID == "" || t.SpaceID != spaceID {
-		return errors.New("space_id missing or does not match task's space_id")
-	}
-	if t.ClaimedBy == nil || *t.ClaimedBy != daemonID {
-		return errors.New("this task is not claimed by your daemon")
-	}
-	return nil
-}
+// assertDaemonWritebackContext 已删 (合并 plan 决策一+二 Phase 4).
+// 旧的 AU5 4-invariant (bot_uid / space_id / claimed_by / claim_token+status)
+// 在 daemon JWT 路径下挡 actor_uid 伪造. Phase 4 daemon 切 api_key 后:
+// - 同 user 多 daemon 互信 (决策二信任模型 by design 接受)
+// - 跨 user 隔离靠 fleet managed_bots filter (daemon 拿不到别 user 的 bot_uid)
+// - 同 space 跨 owner bot 越权 (issue #75) + actor_uid 伪造 (剩余攻击面)
+//   等决策四 (bot 子进程持 bot_token 直接调 matter) 自然解.
 
 // BotFeed handles GET /api/v1/internal/bots/:bot_uid/feed?limit=50.
 // Returns merged timeline+activity rows where the bot is author/actor.

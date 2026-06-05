@@ -41,7 +41,6 @@ func SetupRouter(
 	internalH *InternalHandler,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
-	daemonJWTMW gin.HandlerFunc,
 	ready ReadinessCheck,
 ) *gin.Engine {
 	r := gin.Default()
@@ -106,8 +105,8 @@ func SetupRouter(
 	bots.GET("/:bot_uid/feed", timelineH.BotFeed)
 
 	// Internal API endpoint groups (合并 plan §4 Endpoint 鉴权矩阵).
-	// daemonJWTMW 参数保留为兼容签名; Phase 4 清理时跟 cmd/main.go 一起删。
-	_ = daemonJWTMW
+	// 合并 plan 决策一+二 Phase 4: daemonJWTMW 参数 + DualAuth 已删,
+	// 都走新的 AuthMiddleware + RequireKind.
 	if internalH != nil {
 		// Daemon writeback + task pull/ack — apikey only.
 		// 合并 plan 决策二: daemon 直连 api_key, fleet/matter 调 server

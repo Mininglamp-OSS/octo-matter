@@ -114,21 +114,15 @@ func main() {
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
 	spaceMW := auth.SpaceMiddleware(cfg.OctoIMURL)
-	// PR-B: daemons authenticate to matter with daemon-scope JWTs issued by
-	// octo-server. Verifier eagerly fetches the JWKS at boot (lazy retry on
-	// first request if that fails). Env override matches fleet's convention.
-	jwksURL := os.Getenv("OCTO_SERVER_JWKS_URL")
-	if jwksURL == "" {
-		jwksURL = "http://localhost:8090/.well-known/jwks.json"
-	}
-	daemonJWTVerifier := auth.NewJWTVerifier(jwksURL)
-	daemonJWTMW := auth.DaemonJWTMiddleware(daemonJWTVerifier)
+	// 合并 plan 决策一+二 Phase 4: daemon JWT 路径已删, daemon 直接持
+	// api_key 调 matter, AuthMiddleware + RequireKind(apikey) 处理.
+	// daemonJWTVerifier / daemonJWTMW / OCTO_SERVER_JWKS_URL env 全清.
 
 	// Readiness
 	readiness := func() error { return conn.Ping() }
 
 	// Router
-	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, internalH, authMW, spaceMW, daemonJWTMW, readiness)
+	r := handler.SetupRouter(matterH, timelineH, activityH, outputsH, extractH, extractLimiter, internalH, authMW, spaceMW, readiness)
 
 	// PR-B sweeper: every 5 min, reclaim expired-lease bot_tasks back to
 	// queued (attempt++) or dead-letter them once they hit max_attempts.
