@@ -105,30 +105,27 @@ func SetupRouter(
 	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW)
 	bots.GET("/:bot_uid/feed", timelineH.BotFeed)
 
-	// Internal API — dual-protocol auth (daemon JWT preferred, X-Internal-Token
-	// fallback). Daemon now writes timeline/activities via its JWT (no shared
-	// secret needed on the user's machine); fleet's bot-feed proxy and any
-	// legacy server caller keep working with X-Internal-Token. Both protocols
-	// coexist indefinitely — additive, not a cutover.
+	// Internal API endpoint groups (合并 plan §4 Endpoint 鉴权矩阵).
+	// daemonJWTMW 参数保留为兼容签名; Phase 4 清理时跟 cmd/main.go 一起删。
+	_ = daemonJWTMW
 	if internalH != nil {
-		var mw gin.HandlerFunc = internalH.AuthMiddleware()
-		if daemonJWTMW != nil {
-			mw = auth.DualAuth(daemonJWTMW, internalH.AuthMiddleware())
-		}
-		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), mw)
-		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
-		internal.POST("/matters/:id/activities", internalH.WriteActivity)
-		internal.GET("/bots/:bot_uid/feed", internalH.BotFeed)
-	}
+		// Daemon writeback + task pull/ack — apikey only.
+		// 合并 plan 决策二: daemon 直连 api_key, fleet/matter 调 server
+		// verify-api-key 验证。AU5 4-invariant (assertDaemonWritebackContext)
+		// 在 Phase 4 删, 替代校验已在 handler 内 (matter creator_id 校验).
+		daemonAPI := r.Group("/api/v1/internal",
+			RequestTimeout(15*time.Second), MaxBodySize(maxBodySize),
+			authMW, auth.RequireKind(auth.AuthKindAPIKey))
+		daemonAPI.POST("/matters/:id/timeline", internalH.WriteTimeline)
+		daemonAPI.POST("/matters/:id/activities", internalH.WriteActivity)
+		daemonAPI.GET("/bot-tasks", internalH.ListBotTasksForDaemon)
+		daemonAPI.POST("/bot-tasks/:id/ack", internalH.AckBotTaskFromDaemon)
 
-	// PR-B: bot_task pull/ack — daemon JWT REQUIRED (no token fallback).
-	// These handlers read daemon_id / uid from JWT claims for attribution
-	// and atomic-claim ownership; X-Internal-Token has no daemon identity
-	// so it's not a meaningful fallback here.
-	if internalH != nil && daemonJWTMW != nil {
-		dgrp := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), daemonJWTMW)
-		dgrp.GET("/bot-tasks", internalH.ListBotTasksForDaemon)
-		dgrp.POST("/bot-tasks/:id/ack", internalH.AckBotTaskFromDaemon)
+		// Bot feed: browser direct call (session token) or bot token caller.
+		botFeedGrp := r.Group("/api/v1/internal",
+			RequestTimeout(15*time.Second), MaxBodySize(maxBodySize),
+			authMW, auth.RequireKind(auth.AuthKindSession, auth.AuthKindBot))
+		botFeedGrp.GET("/bots/:bot_uid/feed", internalH.BotFeed)
 	}
 
 	return r
