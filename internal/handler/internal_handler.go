@@ -71,8 +71,25 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 	// 信任模型转移到 caller 持 api_key, RequireKind(apikey) 已拦在路由层.
 	// 跨 user 隔离: 同 user 多 daemon 互信 (会议决策接受), 跨 user 写回
 	// 拦在 fleet managed_bots 那一头 (daemon 拿不到别 user 的 bot_uid).
-	// issue #75 完整修复推迟决策四 (bot 子进程持 bot_token 直接调 matter).
-	entry, err := h.timelineSvc.CreateInternalEntry(c.Request.Context(), matterID, req.SpaceID, req.ActorUID, req.Content)
+	// issue #75 顺带在 v2 鉴权关系数据补全 PR 修 (ClaimNextForBots 加
+	// owned_bots filter, 见 bot_task_repo.go).
+	//
+	// v2 fix (reviewer matter#78 P0-1, 跨 space writeback): use the
+	// verified space_id from AuthMiddleware ctx instead of trusting the
+	// body field. Body's space_id is still accepted but must match the
+	// verified one — defense in depth so a buggy daemon spec change
+	// doesn't silently widen the attack surface.
+	verifiedSpaceID, _ := c.Get("space_id")
+	spaceID, _ := verifiedSpaceID.(string)
+	if spaceID == "" {
+		failCode(c, http.StatusForbidden, "MISSING_SPACE", "api_key missing bound space", nil)
+		return
+	}
+	if req.SpaceID != "" && req.SpaceID != spaceID {
+		failCode(c, http.StatusForbidden, "SPACE_MISMATCH", "body space_id does not match api_key bound space", nil)
+		return
+	}
+	entry, err := h.timelineSvc.CreateInternalEntry(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Content)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -94,7 +111,16 @@ type internalActivityReq struct {
 // WriteActivity handles POST /api/v1/internal/matters/:id/activities. Used
 // by daemon's agent_task_completed / agent_task_failed writeback so the
 // matter activity feed reflects what the runtime did. Returns 204 on
-// success. See WriteTimeline for the daemon-JWT actor binding contract.
+// success.
+//
+// v2 fix (reviewer matter#78 P0-1): activities are recorded against
+// matter_id only (RecordAgentActivity has no spaceID parameter), so the
+// space-mismatch attack here is "any api_key for matter X's space writes
+// activity to matter X". The handler still validates the verified space
+// before calling the service so a body-supplied space_id can't widen the
+// access pattern; matter-level cross-space writes are still gated by the
+// caller knowing the matter UUID + holding a valid api_key for the right
+// space.
 func (h *InternalHandler) WriteActivity(c *gin.Context) {
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
@@ -106,7 +132,16 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	// 合并 plan 决策一+二 Phase 4: AU5 assertDaemonWritebackContext 已删 (同 WriteTimeline).
+	verifiedSpaceID, _ := c.Get("space_id")
+	spaceID, _ := verifiedSpaceID.(string)
+	if spaceID == "" {
+		failCode(c, http.StatusForbidden, "MISSING_SPACE", "api_key missing bound space", nil)
+		return
+	}
+	if req.SpaceID != "" && req.SpaceID != spaceID {
+		failCode(c, http.StatusForbidden, "SPACE_MISMATCH", "body space_id does not match api_key bound space", nil)
+		return
+	}
 	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, req.ActorUID, req.Action, req.Detail)
 	c.Status(http.StatusNoContent)
 }
@@ -121,13 +156,29 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 
 // BotFeed handles GET /api/v1/internal/bots/:bot_uid/feed?limit=50.
 // Returns merged timeline+activity rows where the bot is author/actor.
-// PoC4: trusted internal-only endpoint (X-Internal-Token); no per-space
-// gating because the caller (octo-server bot detail handler) has already
-// verified the bot's owner.
+//
+// v2 fix (reviewer matter#78 P0-2): the previous "trusted internal" model
+// (X-Internal-Token, single internal caller) was replaced by AuthMiddleware
+// in 决策一+二. Without an ownership check this route became "any session
+// or bot caller can read any bot's feed by guessing the bot_uid". This
+// commit re-introduces the ownership check using the verified
+// owned_bots_by_space map (from /v1/auth/verify?include=context or
+// /v1/auth/verify-api-key?include=context). Session callers can read feeds
+// for bots they own; bot callers can read their own feed; everything else
+// is 403.
+//
+// related_uids (session path, owned_bots list expansion) is kept as a
+// fallback for pre-v2 server responses so a rolling upgrade window doesn't
+// hard-fail. Once server >= v2 everywhere, related_uids logic in the
+// session path is redundant — keep until we drop the fallback.
 func (h *InternalHandler) BotFeed(c *gin.Context) {
 	botUID := c.Param("bot_uid")
 	if strings.TrimSpace(botUID) == "" {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid required", nil)
+		return
+	}
+	if !h.callerOwnsBot(c, botUID) {
+		failCode(c, http.StatusForbidden, "FORBIDDEN", "not your bot", nil)
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -137,6 +188,42 @@ func (h *InternalHandler) BotFeed(c *gin.Context) {
 		return
 	}
 	ok(c, items)
+}
+
+// callerOwnsBot returns true when the verified context authorizes the
+// caller to read this bot's data. Checks in order:
+//   - bot path: caller IS the bot (uid == botUID)
+//   - any path: owned_bots_by_space map (v2) contains botUID in any space
+//   - session fallback (pre-v2): related_uids contains botUID
+func (h *InternalHandler) callerOwnsBot(c *gin.Context, botUID string) bool {
+	// Bot calling its own feed.
+	if uid, _ := c.Get("uid"); uid == botUID {
+		return true
+	}
+	// v2: server-validated owned_bots_by_space map.
+	if raw, ok := c.Get("owned_bots_by_space"); ok {
+		if m, _ := raw.(map[string][]string); m != nil {
+			for _, bots := range m {
+				for _, b := range bots {
+					if b == botUID {
+						return true
+					}
+				}
+			}
+		}
+	}
+	// Pre-v2 fallback: related_uids carries owned bot uids on session path.
+	// Drop this branch once server >= v2 is universal.
+	if raw, ok := c.Get("related_uids"); ok {
+		if uids, _ := raw.([]string); uids != nil {
+			for _, u := range uids {
+				if u == botUID {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // --- PR-B: daemon JWT routes (mounted at /api/v1/internal/bot-tasks) ---
@@ -218,6 +305,23 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		if len(uids) == 0 {
 			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uids empty after dedup", nil)
 			return
+		}
+		// v2 fix (closes issue #75 — cross-owner bot task pull): intersect
+		// the caller-supplied bot_uids with server-validated
+		// owned_bots_by_space[spaceID]. Before this filter, user A could
+		// pull bot_tasks targeted at user B's bot by including B's bot_uid
+		// in the request (same-space, different owner). When no owned_bots
+		// is available (pre-v2 server during rolling upgrade) we fall back
+		// to the old behavior + log so the window is observable.
+		if owned := callerOwnedBotsInSpace(c, spaceID); owned != nil {
+			uids = intersectStrings(uids, owned)
+			if len(uids) == 0 {
+				// Caller asked for bots they don't own → empty result, not
+				// 403, so an honest daemon that just temporarily has no
+				// bots in this space doesn't see auth errors.
+				ok(c, []botTaskOut{})
+				return
+			}
 		}
 		perBot := limit
 		if perBot > 50 {
@@ -325,3 +429,45 @@ func (h *InternalHandler) AckBotTaskFromDaemon(c *gin.Context) {
 // Helpers — model package kept implicit through return types above.
 var _ = model.BotTask{}
 var _ = fmt.Sprintf
+
+// callerOwnedBotsInSpace returns the verified bot_uids the caller owns in
+// the given space, or nil when the verify response carried no
+// owned_bots_by_space (pre-v2 server). Returning nil is intentionally
+// distinct from returning [] — the caller (ClaimNextForBots filter)
+// treats nil as "skip the filter for backward compat" and [] as "caller
+// owns no bots in this space, deny".
+func callerOwnedBotsInSpace(c *gin.Context, spaceID string) []string {
+	raw, ok := c.Get("owned_bots_by_space")
+	if !ok {
+		return nil
+	}
+	m, ok := raw.(map[string][]string)
+	if !ok || m == nil {
+		return nil
+	}
+	bots, ok := m[spaceID]
+	if !ok {
+		return []string{} // caller has the map but no bots in this space
+	}
+	return bots
+}
+
+// intersectStrings returns elements present in both a and b, preserving
+// order of a. Used to constrain caller-supplied bot_uids to the verified
+// owned set without rejecting the entire request.
+func intersectStrings(a, b []string) []string {
+	if len(a) == 0 || len(b) == 0 {
+		return nil
+	}
+	want := make(map[string]struct{}, len(b))
+	for _, s := range b {
+		want[s] = struct{}{}
+	}
+	out := make([]string, 0, len(a))
+	for _, s := range a {
+		if _, ok := want[s]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
