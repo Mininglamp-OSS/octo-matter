@@ -51,6 +51,12 @@ type verifyTokenResp struct {
 	Name      string     `json:"name"`
 	Role      string     `json:"role"`
 	OwnedBots []ownedBot `json:"owned_bots"`
+
+	// v2 鉴权关系数据补全: populated by server when middleware passes
+	// ?include=context. Used to enforce X-Space-Id membership and per-bot
+	// ownership against server-validated data instead of client headers.
+	Spaces           []string            `json:"spaces,omitempty"`
+	OwnedBotsBySpace map[string][]string `json:"owned_bots_by_space,omitempty"`
 }
 
 type verifyBotResp struct {
@@ -62,11 +68,14 @@ type verifyBotResp struct {
 }
 
 // verifyAPIKeyResp mirrors POST /v1/auth/verify-api-key on server
-// (合并 plan §3). The endpoint only returns the user + bound space —
-// daemon-facing handlers derive everything else from owner_uid filtering.
+// (合并 plan §3). The endpoint returns the user + bound space; when
+// middleware passes ?include=context the response also carries owned_bots
+// keyed by space (always a single-key map for api_key — it's bound to
+// exactly one space).
 type verifyAPIKeyResp struct {
-	UID     string `json:"uid"`
-	SpaceID string `json:"space_id"`
+	UID       string              `json:"uid"`
+	SpaceID   string              `json:"space_id"`
+	OwnedBots map[string][]string `json:"owned_bots,omitempty"`
 }
 
 // AuthMiddleware authenticates requests by calling octoim's verify API.
@@ -176,20 +185,15 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 	// Check cache
 	if cached, ok := cache.get("user:" + token); ok {
 		result := cached.(*verifyTokenResp)
-		c.Set("uid", result.UID)
-		c.Set("name", result.Name)
-		c.Set("role", result.Role)
-		c.Set("auth_kind", AuthKindSession)
-		relatedUIDs := []string{result.UID}
-		for _, bot := range result.OwnedBots {
-			relatedUIDs = append(relatedUIDs, bot.UID)
-		}
-		c.Set("related_uids", relatedUIDs)
+		applyUserResult(c, result)
 		return
 	}
 
 	body, _ := json.Marshal(map[string]string{"token": token})
-	resp, err := client.Post(baseURL+"/v1/auth/verify", "application/json", bytes.NewReader(body))
+	// ?include=context asks server for spaces + owned_bots_by_space so the
+	// handler layer can enforce X-Space-Id membership + bot ownership
+	// against server-validated data instead of client headers.
+	resp, err := client.Post(baseURL+"/v1/auth/verify?include=context", "application/json", bytes.NewReader(body))
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
 			"error": gin.H{"code": "AUTH_UNAVAILABLE", "message": "failed to reach auth service"},
@@ -214,6 +218,13 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 		return
 	}
 
+	applyUserResult(c, &result)
+	cache.set("user:"+token, &result, 60*time.Second)
+}
+
+// applyUserResult injects verified user context into gin ctx. Shared by
+// cache-hit and fresh-fetch paths so both code paths stay in sync.
+func applyUserResult(c *gin.Context, result *verifyTokenResp) {
 	c.Set("uid", result.UID)
 	c.Set("name", result.Name)
 	c.Set("role", result.Role)
@@ -225,9 +236,14 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 	}
 	c.Set("related_uids", relatedUIDs)
 
-	// Cache for 60s
-	cache.set("user:"+token, &result, 60*time.Second)
-
+	// v2 context fields. Pre-v2 server returns nil/empty; handlers should
+	// treat that as "no access" rather than "skip the check".
+	if len(result.Spaces) > 0 {
+		c.Set("spaces", result.Spaces)
+	}
+	if len(result.OwnedBotsBySpace) > 0 {
+		c.Set("owned_bots_by_space", result.OwnedBotsBySpace)
+	}
 }
 
 func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string, cache *verifyCache) {
@@ -317,7 +333,10 @@ func handleAPIKeyAuth(c *gin.Context, client *http.Client, baseURL, apiKey strin
 	}
 
 	body, _ := json.Marshal(map[string]string{"api_key": apiKey})
-	resp, err := client.Post(baseURL+"/v1/auth/verify-api-key", "application/json", bytes.NewReader(body))
+	// ?include=context asks server for owned_bots map so handlers can
+	// enforce per-bot ownership (e.g. ClaimNextForBots restricting
+	// bot_uids to owned set, issue #75).
+	resp, err := client.Post(baseURL+"/v1/auth/verify-api-key?include=context", "application/json", bytes.NewReader(body))
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
 			"error": gin.H{"code": "AUTH_UNAVAILABLE", "message": "failed to reach auth service"},
@@ -351,6 +370,12 @@ func applyAPIKeyResult(c *gin.Context, r *verifyAPIKeyResp) {
 	c.Set("uid", r.UID)
 	c.Set("space_id", r.SpaceID)
 	c.Set("auth_kind", AuthKindAPIKey)
+	// v2: owned_bots map (single-key for api_key path). Handlers use this
+	// to enforce per-bot ownership without trusting client-supplied
+	// bot_uid lists (closes reviewer matter#78 P0-2 + issue #75 fix path).
+	if len(r.OwnedBots) > 0 {
+		c.Set("owned_bots_by_space", r.OwnedBots)
+	}
 }
 
 // RequireKind enforces that the authenticated caller's auth_kind matches
