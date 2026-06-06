@@ -116,21 +116,26 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 	// activity on a matter for which one of its bots is currently
 	// processing a dispatched task.
 	//
-	// Skip when actor is the human caller themselves (callerCanActAs
-	// allows actor_uid == ctx.uid). In the current daemon flow this
-	// branch is unreachable — daemon writeback always tags actor_uid
-	// as a bot_uid. Kept defensive for a future "daemon writes as the
-	// user" use case; that case would need its own gate (e.g. user-
-	// style CanAccessMatter), not implemented here as it has no
-	// current consumer.
-	if req.ActorUID != c.GetString("uid") {
-		hasTask, err := h.botTaskRepo.HasDispatchedTaskForBotOnMatter(
-			c.Request.Context(), matterID, req.ActorUID)
-		if err != nil || !hasTask {
-			failCode(c, http.StatusForbidden, "NO_TASK_BINDING",
-				"actor_uid has no active task on this matter", nil)
-			return
-		}
+	// v3.3.3 §A fix (caster R6 review): applies to ALL actor_uid values,
+	// including actor == ctx.uid. The prior skip branch was fail-open —
+	// callerCanActAs allows actor == caller's uid (e.g. user Alice
+	// submitting actor_uid=alice_uid), so without the EXISTS check Alice
+	// could write any matter in her bound space without holding any
+	// dispatched task. For the actor==ctx.uid case the EXISTS naturally
+	// returns false (matter_bot_task.bot_uid is always a bot uid minted
+	// as a robot=1 user record, never a regular user uid), so the call
+	// is rejected. This is intentional: the /internal writeback path is
+	// for daemons writing bot replies, not for users writing personal
+	// entries — user personal writes go through /api/v1/matters/:id/timeline
+	// which is gated by CanAccessMatter (creator / assignee / participant /
+	// channel member). The §G RequireKind also prevents api_key callers
+	// from reaching that user path; the two gates close from both sides.
+	hasTask, err := h.botTaskRepo.HasDispatchedTaskForBotOnMatter(
+		c.Request.Context(), matterID, req.ActorUID)
+	if err != nil || !hasTask {
+		failCode(c, http.StatusForbidden, "NO_TASK_BINDING",
+			"actor_uid has no active task on this matter", nil)
+		return
 	}
 	entry, err := h.timelineSvc.CreateInternalEntry(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Content)
 	if err != nil {
@@ -206,16 +211,15 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 	// v3.3.3 §A: same task-binding gate as WriteTimeline (above). Daemon
 	// activity writeback must be bound to an active task lease on the
 	// matter for the named bot — same Jerry-Xin v3.3.2 P0, symmetric
-	// fix. See WriteTimeline above for the full rationale + ctx.uid
-	// dead-branch note.
-	if req.ActorUID != c.GetString("uid") {
-		hasTask, err := h.botTaskRepo.HasDispatchedTaskForBotOnMatter(
-			c.Request.Context(), matterID, req.ActorUID)
-		if err != nil || !hasTask {
-			failCode(c, http.StatusForbidden, "NO_TASK_BINDING",
-				"actor_uid has no active task on this matter", nil)
-			return
-		}
+	// fix. Applies to ALL actor_uid values (caster R6 review: prior
+	// skip-when-actor==ctx.uid branch was fail-open). See WriteTimeline
+	// above for the full rationale.
+	hasTask, err := h.botTaskRepo.HasDispatchedTaskForBotOnMatter(
+		c.Request.Context(), matterID, req.ActorUID)
+	if err != nil || !hasTask {
+		failCode(c, http.StatusForbidden, "NO_TASK_BINDING",
+			"actor_uid has no active task on this matter", nil)
+		return
 	}
 	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Action, req.Detail)
 	c.Status(http.StatusNoContent)
