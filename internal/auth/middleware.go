@@ -29,7 +29,7 @@ const (
 
 // API key / bot token prefix constants.
 //
-// API key prefix uk_ + ≥32 random chars (合并 plan §4 prefix 严格性).
+// API key prefix uk_ + ≥32 random chars (strict prefix dispatch per auth-decisions plan §4).
 // We require strict HasPrefix match + minimum length so a Bearer with
 // "uk_" + empty string can't sneak through the middleware to land on
 // the server side.
@@ -52,7 +52,17 @@ type verifyTokenResp struct {
 	Role      string     `json:"role"`
 	OwnedBots []ownedBot `json:"owned_bots"`
 
-	// v2 鉴权关系数据补全: populated by server when middleware passes
+	// v3.3.1 §B.1' (lml2468 + caster state-space scan): explicit signal
+	// from server that ?include=context took effect (server >= v2).
+	// Distinguishes "server returned empty spaces" (caller has zero
+	// memberships) from "pre-v2 server omitted the field" — needed so
+	// applyUserResult can deterministically gate ctx keys instead of
+	// using `len > 0` which collapses both into the same fall-through.
+	// Mirrors fleet's same-named field (v3 §4.5) and server's
+	// authVerifyTokenResp.ContextIncluded (server commit d354cc4).
+	ContextIncluded bool `json:"context_included"`
+
+	// v2 auth-relations work: populated by server when middleware passes
 	// ?include=context. Used to enforce X-Space-Id membership and per-bot
 	// ownership against server-validated data instead of client headers.
 	Spaces           []string            `json:"spaces,omitempty"`
@@ -68,25 +78,28 @@ type verifyBotResp struct {
 }
 
 // verifyAPIKeyResp mirrors POST /v1/auth/verify-api-key on server
-// (合并 plan §3). The endpoint returns the user + bound space; when
+// (auth-decisions plan §3). The endpoint returns the user + bound space; when
 // middleware passes ?include=context the response also carries owned_bots
 // keyed by space (always a single-key map for api_key — it's bound to
 // exactly one space).
 type verifyAPIKeyResp struct {
-	UID       string              `json:"uid"`
-	SpaceID   string              `json:"space_id"`
-	OwnedBots map[string][]string `json:"owned_bots,omitempty"`
+	UID     string `json:"uid"`
+	SpaceID string `json:"space_id"`
+	// v3.3.1 §B.1: same signal as verifyTokenResp, paired with the
+	// server-side authVerifyAPIKeyResp.ContextIncluded (server d354cc4).
+	ContextIncluded bool                `json:"context_included"`
+	OwnedBots       map[string][]string `json:"owned_bots,omitempty"`
 }
 
 // AuthMiddleware authenticates requests by calling octoim's verify API.
-// Supports three auth paths (合并 plan §4 三协议):
+// Supports three auth paths (auth-decisions plan §4):
 //   - User:    "token" header → POST /v1/auth/verify (session)
 //   - Bot:     "Authorization: Bearer bf_<token>" → POST /v1/auth/verify-bot
 //   - APIKey:  "Authorization: Bearer uk_<key>"   → POST /v1/auth/verify-api-key (daemon)
 //
 // Prefix dispatch is strict (HasPrefix + min length). Bearer headers
-// without uk_ or bf_ prefix are rejected outright (Phase 4 收紧, 不再
-// fall through to bot path letting server verify-bot reject).
+// without uk_ or bf_ prefix are rejected outright (Phase 4 tightening; the
+// pre-v4 JWT path was removed and no longer falls through to server verify-bot).
 // verifyCache caches auth verify results to avoid calling octoim on every request.
 // It bounds memory via periodic eviction of expired entries and a hard cap.
 type verifyCache struct {
@@ -161,8 +174,9 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 				handleBotAuth(c, client, cfg.OctoIMURL, token, cache)
 				return
 			}
-			// 合并 plan 决策一+二 Phase 4: 非 uk_/bf_ 的 Bearer 直接 401
-			// (旧 JWT 路径已删, 不再 fall through 让 server verify-bot 兜底).
+			// Decisions 1+2 Phase 4: non-uk_/bf_ Bearer → 401 outright.
+			// The legacy JWT path was removed; we no longer fall through
+			// to let server verify-bot reject as a catch-all.
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": gin.H{"code": "UNAUTHORIZED", "message": "Bearer token must start with uk_ or bf_"},
 			})
@@ -236,13 +250,31 @@ func applyUserResult(c *gin.Context, result *verifyTokenResp) {
 	}
 	c.Set("related_uids", relatedUIDs)
 
-	// v2 context fields. Pre-v2 server returns nil/empty; handlers should
-	// treat that as "no access" rather than "skip the check".
-	if len(result.Spaces) > 0 {
-		c.Set("spaces", result.Spaces)
-	}
-	if len(result.OwnedBotsBySpace) > 0 {
-		c.Set("owned_bots_by_space", result.OwnedBotsBySpace)
+	// v3.3.1 §B.1' (caster state-space scan, three-round): ALWAYS set
+	// verify_context_included + spaces + owned map when server confirmed
+	// v2 (ContextIncluded=true), even if Spaces/OwnedBotsBySpace are nil
+	// or empty. Pre-v3.3.1 the guard was `len > 0`, which collapsed two
+	// cases:
+	//   - pre-v2 server omitted the fields (nil after decode)
+	//   - v2 server returned `[]` / `{}` (caller has zero memberships or
+	//     zero owned bots — legitimate, common for new users)
+	// Both fall into the same fall-through branch where downstream
+	// handlers see "no ctx key" and skip ownership checks (fail-open for
+	// the few entry points that branch on `if owned != nil`). v3 §4.5
+	// landed the same fix in fleet via ContextIncluded; v3.3.1 ports it
+	// to matter so the apply pair (apiKey + user) is symmetric.
+	if result.ContextIncluded {
+		c.Set("verify_context_included", true)
+		spaces := result.Spaces
+		if spaces == nil {
+			spaces = []string{}
+		}
+		c.Set("spaces", spaces)
+		owned := result.OwnedBotsBySpace
+		if owned == nil {
+			owned = map[string][]string{}
+		}
+		c.Set("owned_bots_by_space", owned)
 	}
 }
 
@@ -324,7 +356,8 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 //
 // Injects uid + space_id + auth_kind="apikey" only — api_key callers
 // (daemon / runtime / agent processes) don't need name/role/related_uids;
-// 决策二信任模型把跨 user 隔离推到业务 SQL WHERE owner_uid=?.
+// decision 2's trust model pushes cross-user isolation down to business
+// SQL WHERE owner_uid=? guards.
 func handleAPIKeyAuth(c *gin.Context, client *http.Client, baseURL, apiKey string, cache *verifyCache) {
 	if cached, ok := cache.get("apikey:" + apiKey); ok {
 		result := cached.(*verifyAPIKeyResp)
@@ -370,16 +403,28 @@ func applyAPIKeyResult(c *gin.Context, r *verifyAPIKeyResp) {
 	c.Set("uid", r.UID)
 	c.Set("space_id", r.SpaceID)
 	c.Set("auth_kind", AuthKindAPIKey)
-	// v2: owned_bots map (single-key for api_key path). Handlers use this
-	// to enforce per-bot ownership without trusting client-supplied
-	// bot_uid lists (closes reviewer matter#78 P0-2 + issue #75 fix path).
-	if len(r.OwnedBots) > 0 {
-		c.Set("owned_bots_by_space", r.OwnedBots)
+	// v3.3.1 §B.1 (lml2468 + Jerry-Xin three-round P0 + caster state-
+	// space scan): symmetric fix with applyUserResult above. The previous
+	// `len(r.OwnedBots) > 0` collapsed two distinct cases — nil (pre-v2
+	// server omitted the field) and empty `{}` (v2 server, caller owns
+	// zero bots in this space) — into the same fall-through where the
+	// ctx key stays unset and ListBotTasksForDaemon fail-opens (its
+	// `if owned != nil` guard skips and ClaimNextForBot[s] runs with
+	// caller-supplied bot_uid). ContextIncluded is the explicit signal:
+	// when true, set the ctx key even if the map is empty so the
+	// downstream "caller owns no bots, deny" branch reaches.
+	if r.ContextIncluded {
+		c.Set("verify_context_included", true)
+		owned := r.OwnedBots
+		if owned == nil {
+			owned = map[string][]string{}
+		}
+		c.Set("owned_bots_by_space", owned)
 	}
 }
 
 // RequireKind enforces that the authenticated caller's auth_kind matches
-// one of the allowed kinds (合并 plan §4 Endpoint 鉴权矩阵).
+// one of the allowed kinds (auth-decisions plan §4 Endpoint authz matrix).
 //
 // Returns 403 (not 401 — credential is valid but the endpoint disallows
 // this caller type) on mismatch. Must be mounted after AuthMiddleware:

@@ -16,12 +16,14 @@ import (
 )
 
 // InternalHandler exposes endpoints called by daemons via AuthMiddleware
-// + RequireKind(apikey) (合并 plan 决策一+二 Phase 4).
+// + RequireKind(apikey) (decisions 1+2 Phase 4, see auth-decisions plan).
 //
-// 历史: 之前用 DualAuth (daemon JWT + X-Internal-Token fallback), Phase 4
-// 全部切到 api_key 直连. X-Internal-Token AuthMiddleware 函数 + token field
-// 一起删 (NOTIFY_INTERNAL_TOKEN env 仅 matter notification client → server
-// 的反向调用还在用, 跟此 handler 无关).
+// History: previously used DualAuth (daemon JWT + X-Internal-Token
+// fallback); Phase 4 cut entirely over to api_key direct. The
+// X-Internal-Token AuthMiddleware path + body token field were removed
+// together (the NOTIFY_INTERNAL_TOKEN env is still used by the matter
+// notification client when calling server in the reverse direction,
+// unrelated to this handler).
 type InternalHandler struct {
 	timelineSvc *service.TimelineService
 	matterSvc   *service.MatterService
@@ -49,7 +51,7 @@ type internalTimelineReq struct {
 //   - api_key Bearer (uk_ prefix). The route group enforces
 //     RequireKind(AuthKindAPIKey) — only daemon-equivalent callers reach
 //     here. Pre-v2 "X-Internal-Token" and "daemon JWT" paths were both
-//     removed in 决策一+二 Phase 4.
+//     removed in decisions 1+2 Phase 4.
 //   - The handler uses verified ctx.space_id to gate matter↔space
 //     ownership (timeline_svc.CreateInternalEntry calls
 //     matterRepo.GetByID(matterID, spaceID) up-front, ENTRY_FORBIDDEN
@@ -71,14 +73,16 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	// 合并 plan 决策一+二 Phase 4: AU5 assertDaemonWritebackContext 已删.
-	// 信任模型转移到 caller 持 api_key, RequireKind(apikey) 已拦在路由层.
-	// 跨 user 隔离: 同 user 多 daemon 互信 (会议决策接受), 跨 user 写回
-	// 拦在 fleet managed_bots 那一头 (daemon 拿不到别 user 的 bot_uid).
-	// issue #75 顺带在 v2 鉴权关系数据补全 PR 修 (ClaimNextForBots 加
-	// owned_bots filter, 见 bot_task_repo.go).
+	// Decisions 1+2 Phase 4: AU5 assertDaemonWritebackContext removed.
+	// Trust model now lives in api_key + RequireKind(apikey) at the route
+	// layer. Cross-user isolation: same-user multi-daemon is mutually
+	// trusted (architecture decision), cross-user writeback is blocked
+	// at the fleet managed_bots layer (a daemon can't obtain another
+	// user's bot_uid). Issue #75 closed as a side effect of the v2
+	// auth-relations work (ClaimNextForBots gained an owned_bots filter,
+	// see bot_task_repo.go).
 	//
-	// v2 fix (reviewer matter#78 P0-1, 跨 space writeback): use the
+	// v2 fix (reviewer matter#78 P0-1, cross-space writeback): use the
 	// verified space_id from AuthMiddleware ctx instead of trusting the
 	// body field. Body's space_id is still accepted but must match the
 	// verified one — defense in depth so a buggy daemon spec change
@@ -93,11 +97,12 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 		failCode(c, http.StatusForbidden, "SPACE_MISMATCH", "body space_id does not match api_key bound space", nil)
 		return
 	}
-	// v3 §3.4 (actor_uid 顺带解, aunknown H1): an api_key for user A could
-	// previously submit actor_uid="bot_of_user_B" and impersonate B on the
-	// timeline. Constrain actor to {ctx.uid ∪ owned_bots_by_space[space]}.
-	// Pre-v2 server (no owned_bots map) → callerCanActAs is a no-op for the
-	// owned_bots branch and we accept any actor matching the caller uid only.
+	// v3 §3.4 (actor_uid piggy-back fix, aunknown H1): an api_key for
+	// user A could previously submit actor_uid="bot_of_user_B" and
+	// impersonate B on the timeline. Constrain actor to
+	// {ctx.uid ∪ owned_bots_by_space[space]}. Pre-v2 server (no
+	// owned_bots map) → callerCanActAs no-ops the owned_bots branch
+	// and accepts any actor matching the caller uid only.
 	if !callerCanActAs(c, spaceID, req.ActorUID) {
 		failCode(c, http.StatusForbidden, "ACTOR_FORBIDDEN", "actor_uid must be caller or an owned bot in this space", nil)
 		return
@@ -165,20 +170,23 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// assertDaemonWritebackContext 已删 (合并 plan 决策一+二 Phase 4).
-// 旧的 AU5 4-invariant (bot_uid / space_id / claimed_by / claim_token+status)
-// 在 daemon JWT 路径下挡 actor_uid 伪造. Phase 4 daemon 切 api_key 后:
-// - 同 user 多 daemon 互信 (决策二信任模型 by design 接受)
-// - 跨 user 隔离靠 fleet managed_bots filter (daemon 拿不到别 user 的 bot_uid)
-// - 同 space 跨 owner bot 越权 (issue #75) + actor_uid 伪造 (剩余攻击面)
-//   等决策四 (bot 子进程持 bot_token 直接调 matter) 自然解.
+// assertDaemonWritebackContext removed (decisions 1+2 Phase 4).
+// The old AU5 4-invariant (bot_uid / space_id / claimed_by /
+// claim_token+status) guarded actor_uid forgery under the daemon JWT
+// path. After Phase 4 daemon → api_key:
+// - same-user multi-daemon is mutually trusted (decision 2 trust model)
+// - cross-user isolation lives in the fleet managed_bots filter
+//   (a daemon can't obtain another user's bot_uid)
+// - same-space cross-owner bot pull (issue #75) and actor_uid forgery
+//   (residual surface) close naturally under decision 4 (bot subprocess
+//   holds bot_token, calls matter directly).
 
 // BotFeed handles GET /api/v1/internal/bots/:bot_uid/feed?limit=50.
 // Returns merged timeline+activity rows where the bot is author/actor.
 //
 // v2 fix (reviewer matter#78 P0-2): the previous "trusted internal" model
 // (X-Internal-Token, single internal caller) was replaced by AuthMiddleware
-// in 决策一+二. Without an ownership check this route became "any session
+// in decisions 1+2. Without an ownership check this route became "any session
 // or bot caller can read any bot's feed by guessing the bot_uid". This
 // commit re-introduces the ownership check using the verified
 // owned_bots_by_space map (from /v1/auth/verify?include=context or
@@ -348,7 +356,7 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		}
 		rows, err = h.botTaskRepo.ClaimNextForBots(c.Request.Context(), uids, spaceID, claimedByStr, perBot, 10*time.Minute)
 	} else {
-		// v3 §3.1 (Jerry-Xin / yujiawei / lml2468 三家共识): single-bot
+		// v3 §3.1 (Jerry-Xin / yujiawei / lml2468 three-way consensus): single-bot
 		// path was the symmetric gap left by v2 — multi-bot path runs
 		// callerOwnedBotsInSpace to close issue #75 (cross-owner pull),
 		// but this branch claimed by direct (botUID, spaceID) without
@@ -522,13 +530,13 @@ func intersectStrings(a, b []string) []string {
 //
 //	{ctx.uid} ∪ owned_bots_by_space[spaceID]
 //
-// v3 §3.4 (actor_uid 顺带解, aunknown H1): without this gate, an api_key
+// v3 §3.4 (actor_uid piggy-back fix, aunknown H1): without this gate, an api_key
 // bound to user A's space could submit writebacks tagged actor_uid=B (any
 // bot/user uid the caller can guess) — fake bot impersonation on
 // matter timeline / activity feed.
 //
 // Decision 4 (bot subprocess holds bot_token, writeback uses bot_token
-// directly) compatibility: when 决策四 lands, the bot subprocess'
+// directly) compatibility: when decision 4 lands, the bot subprocess'
 // effective uid IS the bot, so ctx.uid == bot_uid. The allowed set
 // degenerates to {ctx.uid} which still trivially admits the legitimate
 // write. The owned_bots branch becomes redundant but harmless — only

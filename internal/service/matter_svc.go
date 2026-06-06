@@ -111,27 +111,48 @@ const (
 
 // RecordAgentActivity is the public entrypoint for code outside MatterService
 // (handlers, the internal POST endpoint) to append an agent_* activity to a
-// matter. Same best-effort semantics as recordActivity: failures are logged,
-// not returned. action should be one of ActionAgent* constants.
+// matter.
 //
-// v3 §3.2 (Jerry-Xin + yujiawei): require spaceID and verify the matter
-// actually belongs to it via matterRepo.GetByID(matterID, spaceID). Without
-// this, an api_key for SpaceA could write activities to a matter that lives
-// in SpaceB just by knowing its UUID — the handler's body.SpaceID compare
-// was bypassable by sending an empty body.SpaceID. Mirrors WriteTimeline's
-// CreateInternalEntry pattern (timeline_svc.go: GetByID(matterID, spaceID)
-// up-front, ENTRY_FORBIDDEN if cross-space).
+// v3 §3.2 (Jerry-Xin + yujiawei two-round): require spaceID and verify
+// the matter actually belongs to it via matterRepo.GetByID(matterID,
+// spaceID). Without this, an api_key for SpaceA could write activities
+// to a matter that lives in SpaceB just by knowing its UUID — the
+// handler's body.SpaceID compare was bypassable by sending an empty
+// body.SpaceID. Mirrors WriteTimeline's CreateInternalEntry pattern.
+//
+// v3.3.1 §B.2 (Jerry-Xin three-round, position reversal): the v3
+// implementation guarded on `spaceID != "" && s.matterRepo != nil`,
+// silently falling through to record when either was missing — Jerry-Xin
+// flagged that this is a service-layer invariant violation. v3 chose
+// fail-quiet to match recordActivity's existing best-effort semantics;
+// v3.3.1 reverses that for the missing-argument case only (cross-space
+// stays fail-quiet WARN+drop, as before). The reason for the reversal:
+//
+//   - "Best-effort" is the right posture for transient DB failures
+//     (what recordActivity itself logs at WARN level).
+//   - But "caller forgot to pass spaceID" is not a transient failure,
+//     it's a contract violation. Letting the service silently write
+//     activity without the verify primes a future caller to regress
+//     the very protection v3 §3.2 was meant to add.
+//
+// Practically, all current handler call sites already pass non-empty
+// spaceID + non-nil matterRepo, so this fail-loud path is a defensive
+// invariant for future callers, not a behavior change today. The cross-
+// space WARN log is unchanged; alerting should now also trigger on the
+// new ERROR log to catch caller bugs early.
 func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, spaceID, actorID, action string, detail interface{}) {
-	if spaceID != "" && s.matterRepo != nil {
-		if _, err := s.matterRepo.GetByID(ctx, matterID, spaceID); err != nil {
-			// Best-effort path: log + return without recording. Same error
-			// envelope as recordActivity's own failure mode — caller (writeback
-			// daemon) sees a 204 from the handler but the timeline doesn't
-			// gain a forged cross-space entry. Cross-space cases will surface
-			// in monitoring via the warn log.
-			log.Printf("[WARN] RecordAgentActivity cross-space or missing matter=%s space=%s: %v", matterID, spaceID, err)
-			return
-		}
+	if spaceID == "" || s.matterRepo == nil {
+		log.Printf("[ERROR] RecordAgentActivity invariant violation: matter=%s spaceID=%q matterRepoSet=%v action=%s — call dropped (v3.3.1 §B.2 fail-closed)",
+			matterID, spaceID, s.matterRepo != nil, action)
+		return
+	}
+	if _, err := s.matterRepo.GetByID(ctx, matterID, spaceID); err != nil {
+		// Cross-space or missing-matter: fail-quiet WARN per v3 §3.2.
+		// daemon sees 204 from the handler but the activity isn't
+		// forged onto a foreign matter. Monitor the WARN log to catch
+		// real cross-space attempts.
+		log.Printf("[WARN] RecordAgentActivity cross-space or missing matter=%s space=%s: %v", matterID, spaceID, err)
+		return
 	}
 	recordActivity(ctx, s.activity, matterID, actorID, action, detail)
 }

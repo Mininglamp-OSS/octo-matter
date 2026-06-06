@@ -300,3 +300,105 @@ func TestRequireKind_MultipleAllowed(t *testing.T) {
 	r.ServeHTTP(w3, req3)
 	assert.Equal(t, 403, w3.Code)
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// v3.3.1 §B.1 / §B.1' — ContextIncluded gate, nil vs empty distinction
+//
+// Pre-v3.3.1 both applyAPIKeyResult and applyUserResult used `len > 0`
+// as the gate to set ctx keys, which collapsed two cases — nil (pre-v2
+// server omitted the field) and empty map / slice (v2 server,
+// caller-with-zero-bots-or-spaces) — into the same "ctx key absent"
+// fall-through. Downstream ListBotTasksForDaemon's `if owned != nil`
+// branch then fail-opened the bot-task claim API for zero-bot api_key
+// callers (a common state — new users, service accounts).
+//
+// v3.3.1 introduces ContextIncluded as the explicit signal: when true
+// the ctx keys are set unconditionally (with explicit empty if needed),
+// so the downstream "caller owns no bots, deny" branch actually reaches.
+// ─────────────────────────────────────────────────────────────────────
+
+func newCtxForTest(t *testing.T) *gin.Context {
+	t.Helper()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	return c
+}
+
+func TestApplyAPIKeyResult_ContextIncludedEmptyOwnedBots_SetsCtxKey(t *testing.T) {
+	c := newCtxForTest(t)
+	r := &verifyAPIKeyResp{
+		UID:             "alice",
+		SpaceID:         "sp_a",
+		ContextIncluded: true, // v2 server, caller verified
+		OwnedBots:       map[string][]string{}, // legitimately zero owned bots
+	}
+	applyAPIKeyResult(c, r)
+
+	raw, ok := c.Get("owned_bots_by_space")
+	require.True(t, ok, "ctx key MUST be set when ContextIncluded=true even if OwnedBots is empty (v3.3.1 §B.1)")
+	m, ok := raw.(map[string][]string)
+	require.True(t, ok)
+	assert.Len(t, m, 0, "ctx map should be empty (matches server response), not nil")
+
+	flag, _ := c.Get("verify_context_included")
+	assert.Equal(t, true, flag, "verify_context_included flag must be set")
+}
+
+func TestApplyAPIKeyResult_ContextIncludedFalseNilOwnedBots_DoesNotSetCtxKey(t *testing.T) {
+	c := newCtxForTest(t)
+	r := &verifyAPIKeyResp{
+		UID:             "alice",
+		SpaceID:         "sp_a",
+		ContextIncluded: false, // pre-v2 server omitted the field
+		OwnedBots:       nil,
+	}
+	applyAPIKeyResult(c, r)
+
+	_, ok := c.Get("owned_bots_by_space")
+	assert.False(t, ok, "ctx key MUST NOT be set when server is pre-v2 — preserves pre-v2 fallback semantics")
+	_, ok = c.Get("verify_context_included")
+	assert.False(t, ok)
+}
+
+func TestApplyUserResult_ContextIncludedEmptyMaps_SetsCtxKeys(t *testing.T) {
+	c := newCtxForTest(t)
+	r := &verifyTokenResp{
+		UID:              "alice",
+		Name:             "Alice",
+		Role:             "user",
+		OwnedBots:        []ownedBot{},
+		ContextIncluded:  true,
+		Spaces:           []string{}, // legitimately zero memberships
+		OwnedBotsBySpace: map[string][]string{},
+	}
+	applyUserResult(c, r)
+
+	rawS, ok := c.Get("spaces")
+	require.True(t, ok, "spaces ctx key MUST be set when ContextIncluded=true even if Spaces is empty (v3.3.1 §B.1')")
+	spaces, _ := rawS.([]string)
+	assert.Len(t, spaces, 0)
+
+	rawO, ok := c.Get("owned_bots_by_space")
+	require.True(t, ok, "owned_bots_by_space ctx key MUST be set when ContextIncluded=true")
+	owned, _ := rawO.(map[string][]string)
+	assert.Len(t, owned, 0)
+
+	flag, _ := c.Get("verify_context_included")
+	assert.Equal(t, true, flag)
+}
+
+func TestApplyUserResult_ContextIncludedFalse_DoesNotSetSpacesOrOwned(t *testing.T) {
+	c := newCtxForTest(t)
+	r := &verifyTokenResp{
+		UID:             "alice",
+		Name:            "Alice",
+		Role:            "user",
+		OwnedBots:       []ownedBot{},
+		ContextIncluded: false, // pre-v2 server
+	}
+	applyUserResult(c, r)
+
+	_, ok := c.Get("spaces")
+	assert.False(t, ok, "pre-v2 server: spaces ctx key MUST NOT be set")
+	_, ok = c.Get("owned_bots_by_space")
+	assert.False(t, ok, "pre-v2 server: owned_bots_by_space ctx key MUST NOT be set")
+}

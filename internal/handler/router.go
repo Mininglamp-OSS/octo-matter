@@ -104,18 +104,21 @@ func SetupRouter(
 	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW)
 	bots.GET("/:bot_uid/feed", timelineH.BotFeed)
 
-	// Internal API endpoint groups (合并 plan §4 Endpoint 鉴权矩阵).
-	// 合并 plan 决策一+二 Phase 4: daemonJWTMW 参数 + DualAuth 已删,
-	// 都走新的 AuthMiddleware + RequireKind.
+	// Internal API endpoint groups (auth-decisions plan §4 Endpoint
+	// authz matrix). Decisions 1+2 Phase 4 removed the daemonJWTMW arg
+	// and DualAuth fallback — everything now goes through the new
+	// AuthMiddleware + RequireKind pair.
 	if internalH != nil {
 		// Daemon writeback + task pull/ack — apikey only.
-		// 合并 plan 决策二: daemon 直连 api_key, fleet/matter 调 server
-		// verify-api-key 验证。AU5 4-invariant (assertDaemonWritebackContext)
-		// 在 Phase 4 删, v3 §3.2 后替代校验在 service 层强制
-		// (RecordAgentActivity 调 matterRepo.GetByID(matter,space) 拒跨
-		// space; WriteTimeline 用 verified ctx.space_id 配 matter↔space
-		// up-front; actor_uid v3 §3.4 由 owned_bots_by_space 限制 actor
-		// 必须是 caller 自己或自己的 bot).
+		// Decision 2: daemon connects with api_key direct,
+		// fleet/matter call server verify-api-key for validation.
+		// AU5 4-invariant (assertDaemonWritebackContext) was deleted in
+		// Phase 4; v3 §3.2 replaced it with a service-layer enforcement
+		// (RecordAgentActivity calls matterRepo.GetByID(matter,space)
+		// to reject cross-space; WriteTimeline uses verified ctx.space_id
+		// to gate matter↔space up-front; actor_uid is constrained by
+		// owned_bots_by_space in v3 §3.4 so the actor must be either
+		// the caller or one of the caller's own bots).
 		daemonAPI := r.Group("/api/v1/internal",
 			RequestTimeout(15*time.Second), MaxBodySize(maxBodySize),
 			authMW, auth.RequireKind(auth.AuthKindAPIKey))
