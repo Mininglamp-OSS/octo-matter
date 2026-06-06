@@ -346,7 +346,17 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 				// Caller asked for bots they don't own → empty result, not
 				// 403, so an honest daemon that just temporarily has no
 				// bots in this space doesn't see auth errors.
-				ok(c, []botTaskOut{})
+				//
+				// v3.3.2 #3 (Jerry-Xin + lml2468 three-round P0): use the
+				// same `{"tasks": [...]}` wire format as the happy path
+				// at line 412. The previous `ok(c, []botTaskOut{})` call
+				// returned a bare `[]`, which violates the daemon
+				// contract documented above the handler (and breaks
+				// clients decoding the `tasks` field). The empty-owned
+				// path is hit on every poll for the (common) caller
+				// with no owned bots in this space — silent client
+				// decode failure looks identical to "no work, retry".
+				c.JSON(http.StatusOK, gin.H{"tasks": []botTaskOut{}})
 				return
 			}
 		}
@@ -378,7 +388,10 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 				// Same shape as the multi-bot path: empty result, not
 				// 403 — an honest daemon temporarily holding no bots
 				// in this space shouldn't see auth errors mid-poll.
-				ok(c, []botTaskOut{})
+				// v3.3.2 #3: must return `{"tasks": []}` to match the
+				// happy-path contract, not bare `[]` (see line 349
+				// for the symmetric fix and reasoning).
+				c.JSON(http.StatusOK, gin.H{"tasks": []botTaskOut{}})
 				return
 			}
 		}
