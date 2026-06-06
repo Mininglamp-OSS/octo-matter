@@ -33,9 +33,8 @@ func newTestCtx(t *testing.T, keys map[string]any) *gin.Context {
 func TestCallerOwnsBot_BotPathSelfAccess(t *testing.T) {
 	// Bot calling its own feed (uid == botUID) is always allowed,
 	// regardless of owned_bots_by_space content.
-	h := &InternalHandler{}
 	c := newTestCtx(t, map[string]any{"uid": "bot_self_uid"})
-	if !h.callerOwnsBot(c, "bot_self_uid") {
+	if !callerOwnsBot(c, "bot_self_uid") {
 		t.Errorf("bot calling its own feed must be allowed")
 	}
 }
@@ -43,7 +42,6 @@ func TestCallerOwnsBot_BotPathSelfAccess(t *testing.T) {
 func TestCallerOwnsBot_OwnedBotsBySpace_Match(t *testing.T) {
 	// Session/api_key caller listed in owned_bots_by_space[space] for any
 	// space — allowed.
-	h := &InternalHandler{}
 	c := newTestCtx(t, map[string]any{
 		"uid": "user_x",
 		"owned_bots_by_space": map[string][]string{
@@ -51,10 +49,10 @@ func TestCallerOwnsBot_OwnedBotsBySpace_Match(t *testing.T) {
 			"space-C": {"bot_owned_in_c"},
 		},
 	})
-	if !h.callerOwnsBot(c, "bot_owned_in_a") {
+	if !callerOwnsBot(c, "bot_owned_in_a") {
 		t.Errorf("caller listed as owner in owned_bots_by_space must be allowed")
 	}
-	if !h.callerOwnsBot(c, "bot_owned_in_c") {
+	if !callerOwnsBot(c, "bot_owned_in_c") {
 		t.Errorf("ownership search must cover every space in the map")
 	}
 }
@@ -64,7 +62,6 @@ func TestCallerOwnsBot_OwnedBotsBySpace_Match(t *testing.T) {
 // of their spaces must be rejected — even if they "look authenticated"
 // with a valid uid.
 func TestCallerOwnsBot_CrossSpaceBotRejected(t *testing.T) {
-	h := &InternalHandler{}
 	c := newTestCtx(t, map[string]any{
 		"uid": "user_attacker",
 		"owned_bots_by_space": map[string][]string{
@@ -72,7 +69,7 @@ func TestCallerOwnsBot_CrossSpaceBotRejected(t *testing.T) {
 		},
 		// Note: NO 'bot_in_victim_space' anywhere in the map.
 	})
-	if h.callerOwnsBot(c, "bot_in_victim_space") {
+	if callerOwnsBot(c, "bot_in_victim_space") {
 		t.Errorf("cross-space bot must be rejected: caller has no ownership claim")
 	}
 }
@@ -81,15 +78,14 @@ func TestCallerOwnsBot_NoVerifiedContext_FallbackToRelatedUIDs(t *testing.T) {
 	// Pre-v2 server (no owned_bots_by_space). Fallback to related_uids
 	// keeps the rolling-upgrade window working — once server >= v2 the
 	// fallback path can be deleted.
-	h := &InternalHandler{}
 	c := newTestCtx(t, map[string]any{
 		"uid":          "user_y",
 		"related_uids": []string{"user_y", "bot_legacy_owned"},
 	})
-	if !h.callerOwnsBot(c, "bot_legacy_owned") {
+	if !callerOwnsBot(c, "bot_legacy_owned") {
 		t.Errorf("pre-v2 related_uids fallback must allow listed bot")
 	}
-	if h.callerOwnsBot(c, "bot_not_listed") {
+	if callerOwnsBot(c, "bot_not_listed") {
 		t.Errorf("fallback path must still reject bots not in related_uids")
 	}
 }
@@ -98,9 +94,8 @@ func TestCallerOwnsBot_EmptyContext_DenyAll(t *testing.T) {
 	// No verified context, no related_uids — must deny by default.
 	// This is the "fail-secure" property: a misconfigured caller doesn't
 	// silently get access.
-	h := &InternalHandler{}
 	c := newTestCtx(t, map[string]any{"uid": "user_z"})
-	if h.callerOwnsBot(c, "any_bot_uid") {
+	if callerOwnsBot(c, "any_bot_uid") {
 		t.Errorf("caller with no ownership data must be denied (fail-secure)")
 	}
 }

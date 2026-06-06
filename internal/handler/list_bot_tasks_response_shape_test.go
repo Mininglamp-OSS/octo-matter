@@ -34,6 +34,10 @@ func TestListBotTasksForDaemon_EmptyOwned_ReturnsTasksKey(t *testing.T) {
 		c.Set("uid", "user_x")
 		c.Set("space_id", "space-A")
 		c.Set("auth_kind", "apikey")
+		// v3.3.3 §C: handler now requires verify_context_included=true
+		// (fail-closed against pre-v2 servers). Test simulates v2 server
+		// returning empty owned_bots map, not pre-v2 server.
+		c.Set("verify_context_included", true)
 		c.Set("owned_bots_by_space", map[string][]string{"space-A": {}})
 		h.ListBotTasksForDaemon(c)
 	})

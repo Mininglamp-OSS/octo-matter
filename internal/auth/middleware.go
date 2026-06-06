@@ -2,6 +2,7 @@ package auth
 
 import (
 	"bytes"
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -102,20 +103,33 @@ type verifyAPIKeyResp struct {
 // pre-v4 JWT path was removed and no longer falls through to server verify-bot).
 // verifyCache caches auth verify results to avoid calling octoim on every request.
 // It bounds memory via periodic eviction of expired entries and a hard cap.
+//
+// v3.3.3 §H4 (yujiawei v3.3.2 nit): replaces "flush all on cap" with LRU
+// (oldest-first eviction). The prior implementation cleared the whole map
+// on cap, which under high key cardinality converts steady cached load
+// into a synchronous verify storm against octo-server — precisely when
+// load is already high. Standard `container/list` + map LRU; concurrency
+// safety: all evict + map delete + list mutation are inside c.mu (write
+// lock) — get is also Lock (not RLock) because hit must MoveToFront.
 type verifyCache struct {
-	mu      sync.RWMutex
-	entries map[string]verifyCacheEntry
+	mu      sync.Mutex
+	entries map[string]*list.Element // map key → list node
+	order   *list.List               // doubly-linked list, front = newest
 }
 
 const verifyCacheMaxSize = 10000
 
 type verifyCacheEntry struct {
+	key      string
 	result   interface{}
 	expireAt time.Time
 }
 
 func newVerifyCache() *verifyCache {
-	c := &verifyCache{entries: make(map[string]verifyCacheEntry)}
+	c := &verifyCache{
+		entries: make(map[string]*list.Element),
+		order:   list.New(),
+	}
 	go c.evictLoop()
 	return c
 }
@@ -126,8 +140,13 @@ func (c *verifyCache) evictLoop() {
 	for range ticker.C {
 		c.mu.Lock()
 		now := time.Now()
-		for k, e := range c.entries {
-			if now.After(e.expireAt) {
+		// Walk from oldest (back) forward; stop at first non-expired
+		// since list isn't sorted by expireAt (LRU != TTL order), but
+		// it's a periodic sweep so a partial pass is fine — the next
+		// tick continues. Doing full pass for correctness.
+		for k, el := range c.entries {
+			if now.After(el.Value.(verifyCacheEntry).expireAt) {
+				c.order.Remove(el)
 				delete(c.entries, k)
 			}
 		}
@@ -136,23 +155,45 @@ func (c *verifyCache) evictLoop() {
 }
 
 func (c *verifyCache) get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.entries[key]
-	if !ok || time.Now().After(e.expireAt) {
+	c.mu.Lock() // must be Lock (not RLock): hit promotes via MoveToFront
+	defer c.mu.Unlock()
+	el, ok := c.entries[key]
+	if !ok {
 		return nil, false
 	}
-	return e.result, true
+	entry := el.Value.(verifyCacheEntry)
+	if time.Now().After(entry.expireAt) {
+		// Expired — remove eagerly to keep map / list in sync.
+		c.order.Remove(el)
+		delete(c.entries, key)
+		return nil, false
+	}
+	c.order.MoveToFront(el)
+	return entry.result, true
 }
 
 func (c *verifyCache) set(key string, result interface{}, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.entries) >= verifyCacheMaxSize {
-		// Hard cap reached — clear all to prevent unbounded growth.
-		c.entries = make(map[string]verifyCacheEntry)
+	if el, ok := c.entries[key]; ok {
+		// Refresh existing entry (TTL extends, promote to front).
+		el.Value = verifyCacheEntry{key: key, result: result, expireAt: time.Now().Add(ttl)}
+		c.order.MoveToFront(el)
+		return
 	}
-	c.entries[key] = verifyCacheEntry{result: result, expireAt: time.Now().Add(ttl)}
+	if len(c.entries) >= verifyCacheMaxSize {
+		// v3.3.3 §H4: evict oldest (LRU) instead of flushing whole map.
+		// Single eviction per set keeps the cache at the cap; under
+		// sustained overflow this self-regulates without verify-storm.
+		oldest := c.order.Back()
+		if oldest != nil {
+			oldestKey := oldest.Value.(verifyCacheEntry).key
+			c.order.Remove(oldest)
+			delete(c.entries, oldestKey)
+		}
+	}
+	el := c.order.PushFront(verifyCacheEntry{key: key, result: result, expireAt: time.Now().Add(ttl)})
+	c.entries[key] = el
 }
 
 func AuthMiddleware(cfg Config) gin.HandlerFunc {
@@ -218,6 +259,16 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
+		// v3.3.3 §H3 (yujiawei v3.3.2 nit): map server 5xx → 503 instead
+		// of 401 to give callers retryable signal (avoid spurious key
+		// rotation on transient upstream blip). 4xx stays 401 = real
+		// credential rejection.
+		if resp.StatusCode >= 500 {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": gin.H{"code": "AUTH_UPSTREAM_5XX", "message": "auth service upstream error; retry"},
+			})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 			"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid or expired token"},
 		})
@@ -312,6 +363,12 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode >= 500 { // v3.3.3 §H3
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": gin.H{"code": "AUTH_UPSTREAM_5XX", "message": "auth service upstream error; retry"},
+			})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 			"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid bot token"},
 		})
@@ -380,6 +437,12 @@ func handleAPIKeyAuth(c *gin.Context, client *http.Client, baseURL, apiKey strin
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode >= 500 { // v3.3.3 §H3
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"error": gin.H{"code": "AUTH_UPSTREAM_5XX", "message": "auth service upstream error; retry"},
+			})
+			return
+		}
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 			"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid api_key"},
 		})

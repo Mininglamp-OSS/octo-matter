@@ -62,7 +62,21 @@ func SetupRouter(
 	})
 
 	api := r.Group("/api/v1")
-	api.Use(RequestTimeout(30*time.Second), MaxBodySize(maxBodySize), authMW, spaceMW)
+	// v3.3.3 §G (yujiawei v3.3.2 P1): main /api/v1 routes are user-facing
+	// (matters CRUD, channels, timeline, etc.). api_key has always been a
+	// user-space-scoped daemon credential (BotFather/daemon issued, one
+	// per user-space), and daemon-cli + fleet only call /internal/* —
+	// verified by grep across both repos. The Phase-4-before routing
+	// kept daemon out of user-facing routes via the JWT `scope: daemon`
+	// claim (only /internal accepted daemon JWT). Phase 4 removed the
+	// JWT layer without porting its scope-segregation effect to the
+	// api_key path, so this group accepted api_key on all endpoints
+	// by default. v3.3.3 §G restores the segregation explicitly via
+	// RequireKind on the main group — matches routing accept scope
+	// to daemon's actual use case rather than relying on the implicit
+	// "daemon won't call user-facing endpoints" convention.
+	api.Use(RequestTimeout(30*time.Second), MaxBodySize(maxBodySize), authMW,
+		auth.RequireKind(auth.AuthKindSession, auth.AuthKindBot), spaceMW)
 
 	// Matters
 	matters := api.Group("/matters")
@@ -101,7 +115,14 @@ func SetupRouter(
 	// (a bot belongs to one space; ownership is checked against
 	// related_uids inside the handler). Replaces the legacy
 	// fleet `/v1/runtimes/bots/:id/feed` proxy.
-	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW)
+	//
+	// v3.3.3 §G: independent mount (not nested under main api group),
+	// so the RequireKind on api.Use above does NOT apply here. Add
+	// RequireKind(session, bot) symmetrically — same reasoning, same
+	// trust boundary. daemon-cli + fleet don't call /api/v1/bots
+	// (verified by grep).
+	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW,
+		auth.RequireKind(auth.AuthKindSession, auth.AuthKindBot))
 	bots.GET("/:bot_uid/feed", timelineH.BotFeed)
 
 	// Internal API endpoint groups (auth-decisions plan §4 Endpoint

@@ -270,14 +270,13 @@ func (h *TimelineHandler) BotFeed(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid required", nil)
 		return
 	}
-	allowed := false
-	for _, u := range relatedUIDs(c) {
-		if u == botUID {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	// v3.3.3 §H1 (yujiawei v3.3.2 nit): use the same ownership helper
+	// as the /internal BotFeed route (callerOwnsBot) so the two routes
+	// stay in lockstep. Previously this loop iterated related_uids
+	// inline while /internal used callerOwnsBot — divergence meant the
+	// "drop related_uids fallback" cleanup in callerOwnsBot would
+	// silently break this route. Shared helper closes that trap.
+	if !callerOwnsBot(c, botUID) {
 		failCode(c, http.StatusForbidden, "FORBIDDEN", "not your bot", nil)
 		return
 	}

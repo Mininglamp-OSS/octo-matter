@@ -3,7 +3,8 @@
 // bot_task moved here from octo-fleet's schema so that comment creation
 // and bot dispatch enqueue land in the same transaction. Daemon pulls
 // queued tasks via GET /v1/internal/bot-tasks?bot_uid=X using its
-// daemon-scope JWT.
+// api_key Bearer credential (decisions 1+2 Phase 4 replaced the legacy
+// daemon-scope JWT path with api_key direct).
 package repository
 
 import (
@@ -146,12 +147,14 @@ func (r *BotTaskRepo) ClaimNextForBots(ctx context.Context, botUIDs []string, sp
 // rows. Caller must finish them before lease_until or matter's sweeper
 // will reset them to queued (attempt++).
 //
-// PR-D.1 #3 (security): spaceID is the caller's JWT.space_id; we only
-// claim tasks whose own space_id matches. Closes cross-space task
-// hijacking (a daemon JWT minted for Space A cannot pull/DOS tasks of
-// bots in Space B even if it knows the victim bot_uid). Fix #1 (server
-// space-membership at JWT mint) is what makes JWT.space_id trustworthy
-// here — these two fixes are interdependent and ship together.
+// PR-D.1 #3 (security): spaceID is the caller's authenticated bound space
+// (post-Phase-4: server verify-api-key returns it after validating space
+// membership at api_key issuance time); we only claim tasks whose own
+// space_id matches. Closes cross-space task hijacking (an api_key bound
+// to Space A cannot pull/DOS tasks of bots in Space B even if it knows
+// the victim bot_uid). Fix #1 (server's space-membership check at
+// verify time) is what makes ctx.space_id trustworthy here — these two
+// fixes are interdependent and ship together.
 func (r *BotTaskRepo) ClaimNextForBot(ctx context.Context, botUID, spaceID, claimedBy string, limit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
 	if limit <= 0 {
 		limit = 10
@@ -243,6 +246,38 @@ func (r *BotTaskRepo) Ack(ctx context.Context, id, claimToken, status, errMsg, r
 // longer gates anything — actor authorization moved to v3 §3.4's
 // callerCanActAs (owned_bots_by_space). Removing dead code instead
 // of leaving it as bait for a future "let's resurrect this" PR.
+
+// HasDispatchedTaskForBotOnMatter returns true iff a task currently
+// dispatched on this matter belongs to this bot.
+//
+// v3.3.3 §A (Jerry-Xin three-round P0): re-implements the AU5 task-
+// binding invariant (Phase 4 dropped) at a lighter weight than the
+// original 4-invariant AU5. v3 §3.x rebuilt task-PULL ownership via
+// owned_bots_by_space filter (a daemon only pulls its own bots' tasks)
+// but missed the writeback side — without this gate, a daemon
+// holding any api_key for SpaceA could POST timeline/activity to any
+// matter in SpaceA as one of its own bots, even matters its bots had
+// never been dispatched to.
+//
+// Wire format unchanged (claim_token + task_id were removed from body
+// in Phase 4 and we don't re-add them). The single SELECT here checks
+// just (matter_id, bot_uid, status='dispatched'), equivalent to AU5's
+// constraints minus the claim_token rotation guard. Same-user multi-
+// daemon互信 is preserved per 决策二 — any of the user's daemons can
+// write during an active task lease, not just the one holding the
+// specific claim_token.
+func (r *BotTaskRepo) HasDispatchedTaskForBotOnMatter(ctx context.Context, matterID, botUID string) (bool, error) {
+	var n int
+	_, err := r.runner.SelectBySql(
+		`SELECT COUNT(*) FROM matter_bot_task
+		 WHERE matter_id=? AND bot_uid=? AND status='dispatched'`,
+		matterID, botUID,
+	).LoadContext(ctx, &n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
 
 // Sweeper: reclaim expired leases back to queued (attempt++), or
 // dead-letter when attempt >= max_attempts. Called on a 5min ticker
