@@ -111,7 +111,11 @@ func SetupRouter(
 		// Daemon writeback + task pull/ack — apikey only.
 		// 合并 plan 决策二: daemon 直连 api_key, fleet/matter 调 server
 		// verify-api-key 验证。AU5 4-invariant (assertDaemonWritebackContext)
-		// 在 Phase 4 删, 替代校验已在 handler 内 (matter creator_id 校验).
+		// 在 Phase 4 删, v3 §3.2 后替代校验在 service 层强制
+		// (RecordAgentActivity 调 matterRepo.GetByID(matter,space) 拒跨
+		// space; WriteTimeline 用 verified ctx.space_id 配 matter↔space
+		// up-front; actor_uid v3 §3.4 由 owned_bots_by_space 限制 actor
+		// 必须是 caller 自己或自己的 bot).
 		daemonAPI := r.Group("/api/v1/internal",
 			RequestTimeout(15*time.Second), MaxBodySize(maxBodySize),
 			authMW, auth.RequireKind(auth.AuthKindAPIKey))

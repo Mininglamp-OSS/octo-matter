@@ -194,7 +194,7 @@ func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid 
 			inserted, ierr := h.botTaskRepo.Insert(ctx, task)
 			if ierr != nil {
 				log.Printf("[mention-dispatch] DB insert failed matter=%s bot=%s: %v", matterID, bot, ierr)
-				h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentTaskFailed,
+				h.matterSvc.RecordAgentActivity(ctx, matterID, sid, bot, service.ActionAgentTaskFailed,
 					map[string]any{"bot_uid": bot, "task_id": "", "error": "mention dispatch: " + ierr.Error()})
 				return
 			}
@@ -205,7 +205,7 @@ func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid 
 				return
 			}
 			log.Printf("[mention-dispatch] matter=%s bot=%s queued task_id=%s (from comment)", matterID, bot, task.ID)
-			h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentDispatched,
+			h.matterSvc.RecordAgentActivity(ctx, matterID, sid, bot, service.ActionAgentDispatched,
 				map[string]any{"bot_uid": bot, "task_id": task.ID, "trigger": "mention", "requester": requesterUID})
 		})
 	}

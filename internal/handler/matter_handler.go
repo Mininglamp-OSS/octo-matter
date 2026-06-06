@@ -458,7 +458,7 @@ func dispatchOneBotAssignee(svc *service.MatterService, repo *repository.BotTask
 	inserted, ierr := repo.Insert(ctx, task)
 	if ierr != nil {
 		logBotDispatchErr(matter.ID, botUID, ierr)
-		svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentTaskFailed,
+		svc.RecordAgentActivity(ctx, matter.ID, matter.SpaceID, botUID, service.ActionAgentTaskFailed,
 			map[string]any{"bot_uid": botUID, "task_id": "", "error": "dispatch: " + ierr.Error()})
 		return
 	}
@@ -470,7 +470,7 @@ func dispatchOneBotAssignee(svc *service.MatterService, repo *repository.BotTask
 		return
 	}
 	logBotDispatchOK(matter.ID, botUID, task.ID)
-	svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentDispatched,
+	svc.RecordAgentActivity(ctx, matter.ID, matter.SpaceID, botUID, service.ActionAgentDispatched,
 		map[string]any{"bot_uid": botUID, "task_id": task.ID, "trigger": "assignee_added"})
 }
 

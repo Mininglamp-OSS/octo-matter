@@ -113,7 +113,26 @@ const (
 // (handlers, the internal POST endpoint) to append an agent_* activity to a
 // matter. Same best-effort semantics as recordActivity: failures are logged,
 // not returned. action should be one of ActionAgent* constants.
-func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, actorID, action string, detail interface{}) {
+//
+// v3 §3.2 (Jerry-Xin + yujiawei): require spaceID and verify the matter
+// actually belongs to it via matterRepo.GetByID(matterID, spaceID). Without
+// this, an api_key for SpaceA could write activities to a matter that lives
+// in SpaceB just by knowing its UUID — the handler's body.SpaceID compare
+// was bypassable by sending an empty body.SpaceID. Mirrors WriteTimeline's
+// CreateInternalEntry pattern (timeline_svc.go: GetByID(matterID, spaceID)
+// up-front, ENTRY_FORBIDDEN if cross-space).
+func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, spaceID, actorID, action string, detail interface{}) {
+	if spaceID != "" && s.matterRepo != nil {
+		if _, err := s.matterRepo.GetByID(ctx, matterID, spaceID); err != nil {
+			// Best-effort path: log + return without recording. Same error
+			// envelope as recordActivity's own failure mode — caller (writeback
+			// daemon) sees a 204 from the handler but the timeline doesn't
+			// gain a forged cross-space entry. Cross-space cases will surface
+			// in monitoring via the warn log.
+			log.Printf("[WARN] RecordAgentActivity cross-space or missing matter=%s space=%s: %v", matterID, spaceID, err)
+			return
+		}
+	}
 	recordActivity(ctx, s.activity, matterID, actorID, action, detail)
 }
 

@@ -45,17 +45,21 @@ type internalTimelineReq struct {
 
 // WriteTimeline handles POST /api/v1/internal/matters/:id/timeline.
 //
-// Auth model (DualAuth):
-//   - X-Internal-Token path: trusted infra caller (e.g. fleet bot-feed
-//     proxy in future, server notify). Caller-supplied actor_uid is
-//     trusted as before.
-//   - daemon JWT path: untrusted-by-default. The handler resolves
-//     (task_id, claim_token) → matter_bot_task row and asserts:
-//        body.actor_uid == row.bot_uid       (no impersonation)
-//        body.space_id  == row.space_id      (no cross-space)
-//        jwt.daemon_id  == row.claimed_by    (no daemon hijack)
-//     A daemon JWT without a matching in-flight task gets 403 — closing
-//     the actor_uid spoofing gap reviewer flagged on the DualAuth landing.
+// Auth model (v3 §3.3 — pre-v2 DualAuth doc rewrite):
+//   - api_key Bearer (uk_ prefix). The route group enforces
+//     RequireKind(AuthKindAPIKey) — only daemon-equivalent callers reach
+//     here. Pre-v2 "X-Internal-Token" and "daemon JWT" paths were both
+//     removed in 决策一+二 Phase 4.
+//   - The handler uses verified ctx.space_id to gate matter↔space
+//     ownership (timeline_svc.CreateInternalEntry calls
+//     matterRepo.GetByID(matterID, spaceID) up-front, ENTRY_FORBIDDEN
+//     on mismatch). body.space_id is rejected if it disagrees with the
+//     verified space.
+//   - v3 §3.4: actor_uid is constrained to {caller.uid ∪
+//     owned_bots_by_space[verified.space]}. Pre-v3 the handler trusted
+//     body.actor_uid verbatim, so an api_key for user A could write a
+//     timeline entry as bot B (owned by user B). The check is collapsed
+//     to a single membership test against the verified bot set.
 func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
@@ -89,6 +93,15 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 		failCode(c, http.StatusForbidden, "SPACE_MISMATCH", "body space_id does not match api_key bound space", nil)
 		return
 	}
+	// v3 §3.4 (actor_uid 顺带解, aunknown H1): an api_key for user A could
+	// previously submit actor_uid="bot_of_user_B" and impersonate B on the
+	// timeline. Constrain actor to {ctx.uid ∪ owned_bots_by_space[space]}.
+	// Pre-v2 server (no owned_bots map) → callerCanActAs is a no-op for the
+	// owned_bots branch and we accept any actor matching the caller uid only.
+	if !callerCanActAs(c, spaceID, req.ActorUID) {
+		failCode(c, http.StatusForbidden, "ACTOR_FORBIDDEN", "actor_uid must be caller or an owned bot in this space", nil)
+		return
+	}
 	entry, err := h.timelineSvc.CreateInternalEntry(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Content)
 	if err != nil {
 		respondErr(c, err)
@@ -101,11 +114,15 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 // detail is opaque JSON the caller controls; we passthrough to recordActivity
 // which marshals it. Trusted caller is expected to follow the documented
 // shape per action kind (see service/matter_svc.go ActionAgent* constants).
+//
+// v3 §3.2: SpaceID field dropped. The handler now derives space exclusively
+// from the verified ctx (api_key bound space), and RecordAgentActivity does
+// its own matter↔space verify in the service layer. A body-supplied space
+// would only invite the same "empty-body bypass" yujiawei flagged on v2.
 type internalActivityReq struct {
 	ActorUID string         `json:"actor_uid" binding:"required,max=64"`
 	Action   string         `json:"action" binding:"required,max=64"`
 	Detail   map[string]any `json:"detail"`
-	SpaceID  string         `json:"space_id"`
 }
 
 // WriteActivity handles POST /api/v1/internal/matters/:id/activities. Used
@@ -113,14 +130,13 @@ type internalActivityReq struct {
 // matter activity feed reflects what the runtime did. Returns 204 on
 // success.
 //
-// v2 fix (reviewer matter#78 P0-1): activities are recorded against
-// matter_id only (RecordAgentActivity has no spaceID parameter), so the
-// space-mismatch attack here is "any api_key for matter X's space writes
-// activity to matter X". The handler still validates the verified space
-// before calling the service so a body-supplied space_id can't widen the
-// access pattern; matter-level cross-space writes are still gated by the
-// caller knowing the matter UUID + holding a valid api_key for the right
-// space.
+// v3 §3.2 (Jerry-Xin + yujiawei): cross-space write protection moved into
+// the service layer (RecordAgentActivity calls matterRepo.GetByID(matter,
+// space) and silently skips on miss). v2's body.SpaceID compare was
+// bypassable by sending an empty body.SpaceID; v3 just trusts verified
+// ctx.space_id and lets the service-layer verify do the gate. Mirrors
+// WriteTimeline (timeline_svc.go) which already gated cross-space via
+// matterRepo.GetByID up-front.
 func (h *InternalHandler) WriteActivity(c *gin.Context) {
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
@@ -138,11 +154,14 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 		failCode(c, http.StatusForbidden, "MISSING_SPACE", "api_key missing bound space", nil)
 		return
 	}
-	if req.SpaceID != "" && req.SpaceID != spaceID {
-		failCode(c, http.StatusForbidden, "SPACE_MISMATCH", "body space_id does not match api_key bound space", nil)
+	// v3 §3.4: same actor_uid constraint as WriteTimeline. Without this,
+	// an api_key for user A could log fake agent_dispatched / completed /
+	// failed activities as bot B (owned by user B) on the activity feed.
+	if !callerCanActAs(c, spaceID, req.ActorUID) {
+		failCode(c, http.StatusForbidden, "ACTOR_FORBIDDEN", "actor_uid must be caller or an owned bot in this space", nil)
 		return
 	}
-	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, req.ActorUID, req.Action, req.Detail)
+	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Action, req.Detail)
 	c.Status(http.StatusNoContent)
 }
 
@@ -329,6 +348,32 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 		}
 		rows, err = h.botTaskRepo.ClaimNextForBots(c.Request.Context(), uids, spaceID, claimedByStr, perBot, 10*time.Minute)
 	} else {
+		// v3 §3.1 (Jerry-Xin / yujiawei / lml2468 三家共识): single-bot
+		// path was the symmetric gap left by v2 — multi-bot path runs
+		// callerOwnedBotsInSpace to close issue #75 (cross-owner pull),
+		// but this branch claimed by direct (botUID, spaceID) without
+		// the ownership check. Same-space + different-owner could
+		// bypass #75 fix by hitting ?bot_uid=X instead of ?bot_uids=X.
+		// Mirror the same filter: when verified context is available,
+		// require botUID ∈ owned_bots_by_space[spaceID]; pre-v2 server
+		// returns nil owned which keeps the old behavior (handler
+		// downstream still gates via SQL).
+		if owned := callerOwnedBotsInSpace(c, spaceID); owned != nil {
+			found := false
+			for _, b := range owned {
+				if b == botUID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				// Same shape as the multi-bot path: empty result, not
+				// 403 — an honest daemon temporarily holding no bots
+				// in this space shouldn't see auth errors mid-poll.
+				ok(c, []botTaskOut{})
+				return
+			}
+		}
 		rows, err = h.botTaskRepo.ClaimNextForBot(c.Request.Context(), botUID, spaceID, claimedByStr, limit, 10*time.Minute)
 	}
 	if err != nil {
@@ -470,4 +515,48 @@ func intersectStrings(a, b []string) []string {
 		}
 	}
 	return out
+}
+
+// callerCanActAs returns true when the verified context authorizes the
+// caller to submit an action labeled with actorUID. The allowed set is:
+//
+//	{ctx.uid} ∪ owned_bots_by_space[spaceID]
+//
+// v3 §3.4 (actor_uid 顺带解, aunknown H1): without this gate, an api_key
+// bound to user A's space could submit writebacks tagged actor_uid=B (any
+// bot/user uid the caller can guess) — fake bot impersonation on
+// matter timeline / activity feed.
+//
+// Decision 4 (bot subprocess holds bot_token, writeback uses bot_token
+// directly) compatibility: when 决策四 lands, the bot subprocess'
+// effective uid IS the bot, so ctx.uid == bot_uid. The allowed set
+// degenerates to {ctx.uid} which still trivially admits the legitimate
+// write. The owned_bots branch becomes redundant but harmless — only
+// then can it be tightened to a strict ctx.uid==actor_uid (a *narrowing*,
+// not a removal). The shape v3 ships is the long-lived authz invariant.
+//
+// Pre-v2 server (owned_bots_by_space ctx key absent) → callerCanActAs
+// degrades to {ctx.uid} only. This is fail-closed: pre-v2 servers couldn't
+// distribute owned_bots, so we err on the side of refusing bot-impersonation
+// rather than silently trusting actor_uid. Daemons that need to write
+// activities for owned bots during a rolling upgrade must wait for server
+// upgrade — same posture as fleet §4.5.
+func callerCanActAs(c *gin.Context, spaceID, actorUID string) bool {
+	if actorUID == "" {
+		// empty actor_uid means caller didn't specify — defaults to caller.
+		// Should not happen because the request struct marks ActorUID as
+		// required, but tolerate it here for defense-in-depth.
+		return true
+	}
+	uidVal, _ := c.Get("uid")
+	uid, _ := uidVal.(string)
+	if uid != "" && actorUID == uid {
+		return true
+	}
+	for _, b := range callerOwnedBotsInSpace(c, spaceID) {
+		if b == actorUID {
+			return true
+		}
+	}
+	return false
 }

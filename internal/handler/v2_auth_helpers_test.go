@@ -193,3 +193,58 @@ func TestIntersectStrings_EmptyInputs(t *testing.T) {
 		t.Errorf("nil b must return nil, got %v", got)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// callerCanActAs — v3 §3.4 actor_uid impersonation gate
+// ─────────────────────────────────────────────────────────────────────
+
+func TestCallerCanActAs_CallerSelf_Allowed(t *testing.T) {
+	c := newTestCtx(t, map[string]any{"uid": "user_alice"})
+	if !callerCanActAs(c, "spaceA", "user_alice") {
+		t.Error("caller acting as themselves must be allowed")
+	}
+}
+
+func TestCallerCanActAs_OwnedBot_Allowed(t *testing.T) {
+	c := newTestCtx(t, map[string]any{
+		"uid":                 "user_alice",
+		"owned_bots_by_space": map[string][]string{"spaceA": {"bot_alice_1", "bot_alice_2"}},
+	})
+	if !callerCanActAs(c, "spaceA", "bot_alice_2") {
+		t.Error("caller acting as their owned bot must be allowed")
+	}
+}
+
+func TestCallerCanActAs_ForeignBot_Forbidden(t *testing.T) {
+	// Alice's api_key trying to write as Bob's bot (same space, different owner)
+	// — the core attack v3 §3.4 closes.
+	c := newTestCtx(t, map[string]any{
+		"uid":                 "user_alice",
+		"owned_bots_by_space": map[string][]string{"spaceA": {"bot_alice_1"}},
+	})
+	if callerCanActAs(c, "spaceA", "bot_of_bob") {
+		t.Error("caller acting as foreign owner's bot must be forbidden (v3 §3.4)")
+	}
+}
+
+func TestCallerCanActAs_NoOwnedBotsCtx_OnlyCallerUIDAllowed(t *testing.T) {
+	// pre-v2 server fallback: no owned_bots_by_space in ctx. Fail-closed —
+	// only caller's own uid is accepted; any bot-impersonation refused.
+	c := newTestCtx(t, map[string]any{"uid": "user_alice"})
+	if !callerCanActAs(c, "spaceA", "user_alice") {
+		t.Error("pre-v2 ctx: caller as self must still be allowed")
+	}
+	if callerCanActAs(c, "spaceA", "any_bot") {
+		t.Error("pre-v2 ctx: bot-impersonation must be refused even though owned_bots is absent")
+	}
+}
+
+func TestCallerCanActAs_DecisionFour_BotCallsAsSelf(t *testing.T) {
+	// 决策四 compatibility: when bot subprocess holds bot_token, ctx.uid
+	// IS the bot. callerCanActAs degenerates to "caller-as-self" — still
+	// trivially allowed. v3 §3.4 doesn't need a rewrite after 决策四 lands.
+	c := newTestCtx(t, map[string]any{"uid": "bot_decision_four"})
+	if !callerCanActAs(c, "spaceA", "bot_decision_four") {
+		t.Error("post-决策四: bot writing as itself must be allowed without owned_bots map")
+	}
+}
