@@ -41,7 +41,6 @@ func SetupRouter(
 	internalH *InternalHandler,
 	authMW gin.HandlerFunc,
 	spaceMW gin.HandlerFunc,
-	daemonJWTMW gin.HandlerFunc,
 	ready ReadinessCheck,
 ) *gin.Engine {
 	r := gin.Default()
@@ -63,7 +62,21 @@ func SetupRouter(
 	})
 
 	api := r.Group("/api/v1")
-	api.Use(RequestTimeout(30*time.Second), MaxBodySize(maxBodySize), authMW, spaceMW)
+	// v3.3.3 §G (yujiawei v3.3.2 P1): main /api/v1 routes are user-facing
+	// (matters CRUD, channels, timeline, etc.). api_key has always been a
+	// user-space-scoped daemon credential (BotFather/daemon issued, one
+	// per user-space), and daemon-cli + fleet only call /internal/* —
+	// verified by grep across both repos. The Phase-4-before routing
+	// kept daemon out of user-facing routes via the JWT `scope: daemon`
+	// claim (only /internal accepted daemon JWT). Phase 4 removed the
+	// JWT layer without porting its scope-segregation effect to the
+	// api_key path, so this group accepted api_key on all endpoints
+	// by default. v3.3.3 §G restores the segregation explicitly via
+	// RequireKind on the main group — matches routing accept scope
+	// to daemon's actual use case rather than relying on the implicit
+	// "daemon won't call user-facing endpoints" convention.
+	api.Use(RequestTimeout(30*time.Second), MaxBodySize(maxBodySize), authMW,
+		auth.RequireKind(auth.AuthKindSession, auth.AuthKindBot), spaceMW)
 
 	// Matters
 	matters := api.Group("/matters")
@@ -102,33 +115,44 @@ func SetupRouter(
 	// (a bot belongs to one space; ownership is checked against
 	// related_uids inside the handler). Replaces the legacy
 	// fleet `/v1/runtimes/bots/:id/feed` proxy.
-	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW)
+	//
+	// v3.3.3 §G: independent mount (not nested under main api group),
+	// so the RequireKind on api.Use above does NOT apply here. Add
+	// RequireKind(session, bot) symmetrically — same reasoning, same
+	// trust boundary. daemon-cli + fleet don't call /api/v1/bots
+	// (verified by grep).
+	bots := r.Group("/api/v1/bots", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), authMW,
+		auth.RequireKind(auth.AuthKindSession, auth.AuthKindBot))
 	bots.GET("/:bot_uid/feed", timelineH.BotFeed)
 
-	// Internal API — dual-protocol auth (daemon JWT preferred, X-Internal-Token
-	// fallback). Daemon now writes timeline/activities via its JWT (no shared
-	// secret needed on the user's machine); fleet's bot-feed proxy and any
-	// legacy server caller keep working with X-Internal-Token. Both protocols
-	// coexist indefinitely — additive, not a cutover.
+	// Internal API endpoint groups (auth-decisions plan §4 Endpoint
+	// authz matrix). Decisions 1+2 Phase 4 removed the daemonJWTMW arg
+	// and DualAuth fallback — everything now goes through the new
+	// AuthMiddleware + RequireKind pair.
 	if internalH != nil {
-		var mw gin.HandlerFunc = internalH.AuthMiddleware()
-		if daemonJWTMW != nil {
-			mw = auth.DualAuth(daemonJWTMW, internalH.AuthMiddleware())
-		}
-		internal := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), mw)
-		internal.POST("/matters/:id/timeline", internalH.WriteTimeline)
-		internal.POST("/matters/:id/activities", internalH.WriteActivity)
-		internal.GET("/bots/:bot_uid/feed", internalH.BotFeed)
-	}
+		// Daemon writeback + task pull/ack — apikey only.
+		// Decision 2: daemon connects with api_key direct,
+		// fleet/matter call server verify-api-key for validation.
+		// AU5 4-invariant (assertDaemonWritebackContext) was deleted in
+		// Phase 4; v3 §3.2 replaced it with a service-layer enforcement
+		// (RecordAgentActivity calls matterRepo.GetByID(matter,space)
+		// to reject cross-space; WriteTimeline uses verified ctx.space_id
+		// to gate matter↔space up-front; actor_uid is constrained by
+		// owned_bots_by_space in v3 §3.4 so the actor must be either
+		// the caller or one of the caller's own bots).
+		daemonAPI := r.Group("/api/v1/internal",
+			RequestTimeout(15*time.Second), MaxBodySize(maxBodySize),
+			authMW, auth.RequireKind(auth.AuthKindAPIKey))
+		daemonAPI.POST("/matters/:id/timeline", internalH.WriteTimeline)
+		daemonAPI.POST("/matters/:id/activities", internalH.WriteActivity)
+		daemonAPI.GET("/bot-tasks", internalH.ListBotTasksForDaemon)
+		daemonAPI.POST("/bot-tasks/:id/ack", internalH.AckBotTaskFromDaemon)
 
-	// PR-B: bot_task pull/ack — daemon JWT REQUIRED (no token fallback).
-	// These handlers read daemon_id / uid from JWT claims for attribution
-	// and atomic-claim ownership; X-Internal-Token has no daemon identity
-	// so it's not a meaningful fallback here.
-	if internalH != nil && daemonJWTMW != nil {
-		dgrp := r.Group("/api/v1/internal", RequestTimeout(15*time.Second), MaxBodySize(maxBodySize), daemonJWTMW)
-		dgrp.GET("/bot-tasks", internalH.ListBotTasksForDaemon)
-		dgrp.POST("/bot-tasks/:id/ack", internalH.AckBotTaskFromDaemon)
+		// Bot feed: browser direct call (session token) or bot token caller.
+		botFeedGrp := r.Group("/api/v1/internal",
+			RequestTimeout(15*time.Second), MaxBodySize(maxBodySize),
+			authMW, auth.RequireKind(auth.AuthKindSession, auth.AuthKindBot))
+		botFeedGrp.GET("/bots/:bot_uid/feed", internalH.BotFeed)
 	}
 
 	return r

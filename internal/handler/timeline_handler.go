@@ -194,8 +194,10 @@ func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid 
 			inserted, ierr := h.botTaskRepo.Insert(ctx, task)
 			if ierr != nil {
 				log.Printf("[mention-dispatch] DB insert failed matter=%s bot=%s: %v", matterID, bot, ierr)
-				h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentTaskFailed,
-					map[string]any{"bot_uid": bot, "task_id": "", "error": "mention dispatch: " + ierr.Error()})
+				if err := h.matterSvc.RecordAgentActivity(ctx, matterID, sid, bot, service.ActionAgentTaskFailed,
+					map[string]any{"bot_uid": bot, "task_id": "", "error": "mention dispatch: " + ierr.Error()}); err != nil { // allowed-async-fire-and-forget: caller is worker.Submit fire-and-forget; activity loss logged but not retried (best-effort, see §B3 A4 + §9 outbox follow-up)
+					log.Printf("[mention-dispatch] activity record DB err matter=%s bot=%s: %v — fire-and-forget, dropped", matterID, bot, err)
+				}
 				return
 			}
 			if !inserted {
@@ -205,8 +207,10 @@ func (h *TimelineHandler) dispatchMentionedAgents(c *gin.Context, matterID, sid 
 				return
 			}
 			log.Printf("[mention-dispatch] matter=%s bot=%s queued task_id=%s (from comment)", matterID, bot, task.ID)
-			h.matterSvc.RecordAgentActivity(ctx, matterID, bot, service.ActionAgentDispatched,
-				map[string]any{"bot_uid": bot, "task_id": task.ID, "trigger": "mention", "requester": requesterUID})
+			if err := h.matterSvc.RecordAgentActivity(ctx, matterID, sid, bot, service.ActionAgentDispatched,
+				map[string]any{"bot_uid": bot, "task_id": task.ID, "trigger": "mention", "requester": requesterUID}); err != nil { // allowed-async-fire-and-forget: caller is worker.Submit fire-and-forget; activity loss logged but not retried (best-effort, see §B3 A4 + §9 outbox follow-up)
+				log.Printf("[mention-dispatch] activity record DB err matter=%s bot=%s: %v — fire-and-forget, dropped", matterID, bot, err)
+			}
 		})
 	}
 }
@@ -270,14 +274,13 @@ func (h *TimelineHandler) BotFeed(c *gin.Context) {
 		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "bot_uid required", nil)
 		return
 	}
-	allowed := false
-	for _, u := range relatedUIDs(c) {
-		if u == botUID {
-			allowed = true
-			break
-		}
-	}
-	if !allowed {
+	// v3.3.3 §H1 (yujiawei v3.3.2 nit): use the same ownership helper
+	// as the /internal BotFeed route (callerOwnsBot) so the two routes
+	// stay in lockstep. Previously this loop iterated related_uids
+	// inline while /internal used callerOwnsBot — divergence meant the
+	// "drop related_uids fallback" cleanup in callerOwnsBot would
+	// silently break this route. Shared helper closes that trap.
+	if !callerOwnsBot(c, botUID) {
 		failCode(c, http.StatusForbidden, "FORBIDDEN", "not your bot", nil)
 		return
 	}

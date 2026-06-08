@@ -458,8 +458,10 @@ func dispatchOneBotAssignee(svc *service.MatterService, repo *repository.BotTask
 	inserted, ierr := repo.Insert(ctx, task)
 	if ierr != nil {
 		logBotDispatchErr(matter.ID, botUID, ierr)
-		svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentTaskFailed,
-			map[string]any{"bot_uid": botUID, "task_id": "", "error": "dispatch: " + ierr.Error()})
+		if err := svc.RecordAgentActivity(ctx, matter.ID, matter.SpaceID, botUID, service.ActionAgentTaskFailed,
+			map[string]any{"bot_uid": botUID, "task_id": "", "error": "dispatch: " + ierr.Error()}); err != nil { // allowed-async-fire-and-forget: caller is worker.Submit fire-and-forget; activity loss logged but not retried (best-effort, see §B3 A4 + §9 outbox follow-up)
+			log.Printf("[assignee-dispatch] activity record DB err matter=%s bot=%s: %v — fire-and-forget, dropped", matter.ID, botUID, err)
+		}
 		return
 	}
 	if !inserted {
@@ -470,8 +472,10 @@ func dispatchOneBotAssignee(svc *service.MatterService, repo *repository.BotTask
 		return
 	}
 	logBotDispatchOK(matter.ID, botUID, task.ID)
-	svc.RecordAgentActivity(ctx, matter.ID, botUID, service.ActionAgentDispatched,
-		map[string]any{"bot_uid": botUID, "task_id": task.ID, "trigger": "assignee_added"})
+	if err := svc.RecordAgentActivity(ctx, matter.ID, matter.SpaceID, botUID, service.ActionAgentDispatched,
+		map[string]any{"bot_uid": botUID, "task_id": task.ID, "trigger": "assignee_added"}); err != nil { // allowed-async-fire-and-forget: caller is worker.Submit fire-and-forget; activity loss logged but not retried (best-effort, see §B3 A4 + §9 outbox follow-up)
+		log.Printf("[assignee-dispatch] activity record DB err matter=%s bot=%s: %v — fire-and-forget, dropped", matter.ID, botUID, err)
+	}
 }
 
 // buildAssigneePrompt — minimal initial prompt sent to a bot when it's

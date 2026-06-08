@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -111,10 +113,103 @@ const (
 
 // RecordAgentActivity is the public entrypoint for code outside MatterService
 // (handlers, the internal POST endpoint) to append an agent_* activity to a
-// matter. Same best-effort semantics as recordActivity: failures are logged,
-// not returned. action should be one of ActionAgent* constants.
-func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, actorID, action string, detail interface{}) {
+// matter.
+//
+// v3 §3.2 (Jerry-Xin + yujiawei two-round): require spaceID and verify
+// the matter actually belongs to it via matterRepo.GetByID(matterID,
+// spaceID). Without this, an api_key for SpaceA could write activities
+// to a matter that lives in SpaceB just by knowing its UUID — the
+// handler's body.SpaceID compare was bypassable by sending an empty
+// body.SpaceID. Mirrors WriteTimeline's CreateInternalEntry pattern.
+//
+// v3.3.1 §B.2 (Jerry-Xin three-round, position reversal): the v3
+// implementation guarded on `spaceID != "" && s.matterRepo != nil`,
+// silently falling through to record when either was missing — Jerry-Xin
+// flagged that this is a service-layer invariant violation. v3 chose
+// fail-quiet to match recordActivity's existing best-effort semantics;
+// v3.3.1 reverses that for the missing-argument case only (cross-space
+// stays fail-quiet WARN+drop, as before). The reason for the reversal:
+//
+//   - "Best-effort" is the right posture for transient DB failures
+//     (what recordActivity itself logs at WARN level).
+//   - But "caller forgot to pass spaceID" is not a transient failure,
+//     it's a contract violation. Letting the service silently write
+//     activity without the verify primes a future caller to regress
+//     the very protection v3 §3.2 was meant to add.
+//
+// Practically, all current handler call sites already pass non-empty
+// spaceID + non-nil matterRepo, so this fail-loud path is a defensive
+// invariant for future callers, not a behavior change today. The cross-
+// space WARN log is unchanged; alerting should now also trigger on the
+// new ERROR log to catch caller bugs early.
+// v3.3.4 §B3 (lml2468 R7 P0, return error): pre-v3.3.4 the function was
+// void and silently dropped on both invariant-violation AND DB error,
+// collapsing two semantically different failures into one indistinguishable
+// "204 OK with no activity" — caller had no way to surface a transient
+// DB error to daemon, breaking §H3's 5xx→503 retry contract for activity
+// writeback. v3.3.4 splits the two drops:
+//
+//   - drop #1 (caller-bug invariant violation: spaceID="" or matterRepo=nil):
+//     KEEP silent + ERROR log + return nil. Returning an error would let
+//     daemon retry forever on a caller bug retry can't fix. ERROR log
+//     triggers human alert.
+//
+//   - drop #2 (matterRepo.GetByID errors): SPLIT on errors.Is(err,
+//     apperr.ErrNotFound). ErrNotFound (= cross-space OR matter-deleted
+//     race, both surface as MatterNotFound) stays silent-drop-by-design
+//     (see A4 race acknowledge below). Any other err (transient: conn
+//     drop, deadlock, timeout) propagates up wrapped → handler returns
+//     500 → daemon §H3 5xx→503 retries.
+//
+// **A4 race acknowledge (cross-space vs matter-deleted race)**: drop #2's
+// ErrNotFound covers two scenarios that surface identically from
+// matterRepo.GetByID:
+//   - by-design cross-space (forged actor crossing space): drop = correct,
+//     this is the v3 §3.2 protection.
+//   - race: handler authz check passed but matter was deleted between
+//     authz GetByID and this GetByID. Probability ≪ 1% (matter deletion
+//     is rare + race window is ms). Propagate-5xx would loop daemon
+//     retries forever on a permanently-gone matter — silent drop is the
+//     less-bad choice.
+// If activity ever becomes a critical path (e.g., audit log replacing log
+// files), introduce an outbox table + reconciliation worker to decouple
+// activity persistence from matter existence. Filed as v3.4 follow-up
+// (see plan §9).
+func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, spaceID, actorID, action string, detail interface{}) error {
+	// drop #1: caller-bug invariant violation, retry won't help (see §B3
+	// A4 acknowledge); ERROR log triggers alert. Returning an error would
+	// let daemon §H3 map to 503 and retry forever on a permanently buggy
+	// caller — silent drop + ERROR log is the less-bad choice.
+	if spaceID == "" || s.matterRepo == nil {
+		log.Printf("[ERROR] RecordAgentActivity invariant violation: matter=%s spaceID=%q matterRepoSet=%v action=%s — call dropped (v3.3.1 §B.2 fail-closed; v3.3.4 §B3: caller-bug, retry-won't-help)",
+			matterID, spaceID, s.matterRepo != nil, action)
+		return nil
+	}
+	if _, err := s.matterRepo.GetByID(ctx, matterID, spaceID); err != nil {
+		// drop #2 (cross-space OR matter-deleted race): both surface as
+		// apperr.MatterNotFound (wrapping apperr.ErrNotFound) from
+		// matterRepo.GetByID. We silent-drop both:
+		//   - by-design cross-space (forged actor): drop = correct, this is
+		//     the v3 §3.2 protection.
+		//   - race: handler authz check passed but matter was deleted
+		//     between authz GetByID and this GetByID. Probability ≪ 1%
+		//     (matter deletion is rare + race window is ms). Propagate-5xx
+		//     would loop daemon retries forever on a permanently-gone
+		//     matter — silent drop is the less-bad choice.
+		// If activity ever becomes a critical path (e.g., audit log
+		// replacing log files), introduce an outbox table + reconciliation
+		// worker to decouple activity persistence from matter existence.
+		// Filed as v3.4 follow-up (see plan §9).
+		if errors.Is(err, apperr.ErrNotFound) {
+			log.Printf("[WARN] RecordAgentActivity cross-space matter=%s space=%s", matterID, spaceID)
+			return nil // by-design drop (true cross-space OR matter-deleted race, see §B3 A4)
+		}
+		// Transient err (conn drop, deadlock, timeout, context.DeadlineExceeded,
+		// etc.) — propagate up so handler returns 500 and daemon §H3 retries.
+		return fmt.Errorf("RecordAgentActivity: matter lookup: %w", err)
+	}
 	recordActivity(ctx, s.activity, matterID, actorID, action, detail)
+	return nil
 }
 
 // CreateMatterWithAssignees creates the matter, auto-links its source channel

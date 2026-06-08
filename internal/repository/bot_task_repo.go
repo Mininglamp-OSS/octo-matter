@@ -3,7 +3,8 @@
 // bot_task moved here from octo-fleet's schema so that comment creation
 // and bot dispatch enqueue land in the same transaction. Daemon pulls
 // queued tasks via GET /v1/internal/bot-tasks?bot_uid=X using its
-// daemon-scope JWT.
+// api_key Bearer credential (decisions 1+2 Phase 4 replaced the legacy
+// daemon-scope JWT path with api_key direct).
 package repository
 
 import (
@@ -146,12 +147,14 @@ func (r *BotTaskRepo) ClaimNextForBots(ctx context.Context, botUIDs []string, sp
 // rows. Caller must finish them before lease_until or matter's sweeper
 // will reset them to queued (attempt++).
 //
-// PR-D.1 #3 (security): spaceID is the caller's JWT.space_id; we only
-// claim tasks whose own space_id matches. Closes cross-space task
-// hijacking (a daemon JWT minted for Space A cannot pull/DOS tasks of
-// bots in Space B even if it knows the victim bot_uid). Fix #1 (server
-// space-membership at JWT mint) is what makes JWT.space_id trustworthy
-// here — these two fixes are interdependent and ship together.
+// PR-D.1 #3 (security): spaceID is the caller's authenticated bound space
+// (post-Phase-4: server verify-api-key returns it after validating space
+// membership at api_key issuance time); we only claim tasks whose own
+// space_id matches. Closes cross-space task hijacking (an api_key bound
+// to Space A cannot pull/DOS tasks of bots in Space B even if it knows
+// the victim bot_uid). Fix #1 (server's space-membership check at
+// verify time) is what makes ctx.space_id trustworthy here — these two
+// fixes are interdependent and ship together.
 func (r *BotTaskRepo) ClaimNextForBot(ctx context.Context, botUID, spaceID, claimedBy string, limit int, leaseDuration time.Duration) ([]*model.BotTask, error) {
 	if limit <= 0 {
 		limit = 10
@@ -215,15 +218,25 @@ func (r *BotTaskRepo) claimNextForBotInner(ctx context.Context, runner dbr.Sessi
 // Ack updates a claimed task to succeeded/failed. The claim_token MUST
 // match — a stale daemon trying to ack with an expired token gets
 // dbr.ErrNotFound (caller surfaces 409).
-func (r *BotTaskRepo) Ack(ctx context.Context, id, claimToken, status, errMsg, resultSummary string, elapsedMs int64) error {
+//
+// v3.3.4 §B1 (lml2468 R7 P0): space_id is part of the WHERE clause.
+// space_id filter relies on invariant: task.space_id ≡ api_key.space_id
+// (see model/bot_task.go INVARIANT). Without this filter a (id,
+// claim_token) pair leaked across spaces (logs, snapshots, errant
+// routing) would let a daemon in SpaceA ack a task that belongs to
+// SpaceB. claim_token is a UUID so the practical exploitability is
+// ~10⁻³⁸, but defense-in-depth + symmetry with ClaimNextForBot's
+// space_id filter is required by CLAUDE.md "every query MUST filter
+// by space_id".
+func (r *BotTaskRepo) Ack(ctx context.Context, id, spaceID, claimToken, status, errMsg, resultSummary string, elapsedMs int64) error {
 	if status != "succeeded" && status != "failed" {
 		return errors.New("invalid status (must be 'succeeded' or 'failed')")
 	}
 	res, err := r.runner.UpdateBySql(
 		`UPDATE matter_bot_task
 		    SET status=?, error_msg=?, result_summary=?, elapsed_ms=?, updated_at=NOW(3)
-		  WHERE id=? AND claim_token=? AND status='dispatched'`,
-		status, errMsg, resultSummary, elapsedMs, id, claimToken,
+		  WHERE id=? AND space_id=? AND claim_token=? AND status='dispatched'`,
+		status, errMsg, resultSummary, elapsedMs, id, spaceID, claimToken,
 	).ExecContext(ctx)
 	if err != nil {
 		return err
@@ -235,37 +248,61 @@ func (r *BotTaskRepo) Ack(ctx context.Context, id, claimToken, status, errMsg, r
 	return nil
 }
 
-// LoadDispatchedForWriteback resolves a (task_id, claim_token) pair to its
-// matter_bot_task row, returning nil when the task is missing, mismatched,
-// or no longer in 'dispatched' state. Writeback handlers use this to bind
-// timeline/activity inserts to a specific in-flight task — a daemon JWT
-// alone is insufficient to write under another bot's identity; the daemon
-// must also be the one currently holding the task lease.
+// LoadDispatchedForWriteback removed (v3.2 cleanup, yujiawei R1):
+// the function was part of the DualAuth AU5 4-invariant guard
+// (body.actor_uid == row.bot_uid + jwt.daemon_id == row.claimed_by)
+// for daemon JWT writeback. Phase 4 dropped DualAuth + JWT entirely
+// (api_key replaces it), so the (task_id, claim_token) lookup no
+// longer gates anything — actor authorization moved to v3 §3.4's
+// callerCanActAs (owned_bots_by_space). Removing dead code instead
+// of leaving it as bait for a future "let's resurrect this" PR.
+
+// HasDispatchedTaskForBotOnMatter returns true iff a task currently
+// dispatched on this matter belongs to this bot.
 //
-// Reviewer fix: previously WriteTimeline/WriteActivity trusted body.actor_uid
-// as-is, which under DualAuth let any valid daemon JWT impersonate any bot.
-// Returning nil here causes the handler to 403, closing the gap.
-func (r *BotTaskRepo) LoadDispatchedForWriteback(ctx context.Context, id, claimToken string) (*model.BotTask, error) {
-	var t model.BotTask
+// v3.3.3 §A (Jerry-Xin three-round P0): re-implements the AU5 task-
+// binding invariant (Phase 4 dropped) at a lighter weight than the
+// original 4-invariant AU5. v3 §3.x rebuilt task-PULL ownership via
+// owned_bots_by_space filter (a daemon only pulls its own bots' tasks)
+// but missed the writeback side — without this gate, a daemon
+// holding any api_key for SpaceA could POST timeline/activity to any
+// matter in SpaceA as one of its own bots, even matters its bots had
+// never been dispatched to.
+//
+// Wire format unchanged (claim_token + task_id were removed from body
+// in Phase 4 and we don't re-add them). The single SELECT here checks
+// just (matter_id, space_id, bot_uid, status='dispatched'), equivalent
+// to AU5's constraints minus the claim_token rotation guard. Same-user
+// multi-daemon互信 is preserved per 决策二 — any of the user's daemons
+// can write during an active task lease, not just the one holding the
+// specific claim_token.
+//
+// v3.3.4 §B6 (lml2468 R7 P2, defense-in-depth symmetric with B1):
+// space_id filter relies on invariant: task.space_id ≡ api_key.space_id
+// (see model/bot_task.go INVARIANT). bot_uid is currently cluster-
+// unique (robot=1 minted), so SQL-level cross-space lookup turns up
+// nothing today; but the symmetric filter keeps us consistent with
+// Ack/ClaimNextForBot and prevents a future "bot_uid scoped per
+// space" change from silently widening the surface. Switched
+// COUNT(*) → EXISTS — same boolean semantics, allows the planner to
+// stop on first match.
+//
+// Parameter order (matterID, spaceID, botUID) intentionally mirrors the
+// SQL WHERE clause column order so a future maintainer's swap is a
+// visible diff rather than a silent runtime bug — both spaceID and
+// botUID are strings, Go won't catch a transposition at compile time.
+// v3.3.4 review bot P1; symmetric with Ack(ctx, id, spaceID, claimToken, ...).
+func (r *BotTaskRepo) HasDispatchedTaskForBotOnMatter(ctx context.Context, matterID, spaceID, botUID string) (bool, error) {
+	var exists bool
 	_, err := r.runner.SelectBySql(
-		`SELECT id, matter_id, space_id, bot_uid, trigger_kind, trigger_entry_id,
-		        prompt, matter_title, status, claim_token, claimed_by, claimed_at,
-		        lease_until, attempt, max_attempts, error_msg, result_summary,
-		        elapsed_ms, created_at, updated_at
-		   FROM matter_bot_task
-		  WHERE id=? AND claim_token=? AND status='dispatched'`,
-		id, claimToken,
-	).LoadContext(ctx, &t)
+		`SELECT EXISTS(SELECT 1 FROM matter_bot_task
+		   WHERE matter_id=? AND space_id=? AND bot_uid=? AND status='dispatched')`,
+		matterID, spaceID, botUID,
+	).LoadContext(ctx, &exists)
 	if err != nil {
-		if errors.Is(err, dbr.ErrNotFound) {
-			return nil, nil
-		}
-		return nil, err
+		return false, err
 	}
-	if t.ID == "" {
-		return nil, nil
-	}
-	return &t, nil
+	return exists, nil
 }
 
 // Sweeper: reclaim expired leases back to queued (attempt++), or

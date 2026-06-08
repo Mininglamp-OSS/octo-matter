@@ -609,13 +609,21 @@ func sortBotFeedDesc(items []BotFeedItem) {
 	}
 }
 
-// CreateInternalEntry is the bot-writeback path used by /v1/internal/matters/
-// :id/timeline. It bypasses the access check because the internal endpoint is
-// gated on a shared X-Internal-Token (only trusted services like octo-server's
-// bot_task ack handler call it), and the actor is whatever uid the trusted
-// caller specifies (typically the bot uid that ran the task). Still verifies
-// matter existence in the given space — a wrong space_id is a programming
-// error from the caller, not silent-write territory.
+// CreateInternalEntry is the daemon writeback path for
+// POST /api/v1/internal/matters/:id/timeline.
+//
+// Authz (v3.3.3 §B doc refresh): the legacy X-Internal-Token model was
+// dropped in decisions 1+2 Phase 4 — daemons now authenticate with
+// api_key Bearer, and the /internal route group enforces RequireKind
+// (apikey) at the router level. The handler layer adds:
+//   - callerCanActAs (v3 §3.4): actor_uid ∈ {ctx.uid} ∪ owned_bots_by_space[space]
+//   - HasDispatchedTaskForBotOnMatter (v3.3.3 §A): bot must hold an
+//     active dispatched-task lease on this matter
+//
+// This service function therefore only needs to verify matter↔space
+// binding (defense in depth — handler is the primary gate). A wrong
+// space_id is a programming error from the caller, not silent-write
+// territory.
 func (s *TimelineService) CreateInternalEntry(ctx context.Context, matterID, spaceID, actorUID, content string) (*model.TimelineEntry, error) {
 	content = strings.TrimSpace(content)
 	if content == "" {
