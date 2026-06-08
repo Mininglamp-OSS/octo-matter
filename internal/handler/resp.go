@@ -38,16 +38,6 @@ func paginated(c *gin.Context, data any, hasMore bool, nextCursor string) {
 	c.JSON(http.StatusOK, gin.H{"data": data, "pagination": pg})
 }
 
-// failCode writes a literal (already-localized or code-only) error message.
-// Kept for callers that don't have a message key; prefer failKey.
-func failCode(c *gin.Context, status int, code, msg string, details map[string]any) {
-	body := gin.H{"code": code, "message": msg}
-	if len(details) > 0 {
-		body["details"] = details
-	}
-	c.AbortWithStatusJSON(status, gin.H{"error": body})
-}
-
 // failKey writes a localized error: msgID is resolved against the request
 // language by the i18n responder.
 func failKey(c *gin.Context, status int, code, msgID string, details map[string]any) {
@@ -79,9 +69,12 @@ func bindJSONErr(c *gin.Context, err error) {
 		failKey(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", i18n.KeyPayloadTooLarge, nil)
 		return
 	}
-	// The raw validator/bind error is English and field-specific; surface it
-	// under details for debugging while keeping the message localized.
-	failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidRequest, map[string]any{"reason": err.Error()})
+	// The raw validator/bind error is English and may name internal struct
+	// fields, so it is logged server-side rather than echoed to the client.
+	// The response carries only the localized generic message; field-level
+	// localization (validator tag -> key) is deferred.
+	log.Printf("bind error: %v", err)
+	failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidRequest, nil)
 }
 
 func uid(c *gin.Context) string {

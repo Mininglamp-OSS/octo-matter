@@ -9,6 +9,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
@@ -21,22 +22,32 @@ func TestSafeGo_RecoversPanic(t *testing.T) {
 	<-done
 }
 
-func TestTemplates(t *testing.T) {
+// TestNotificationWording pins the default-language (zh-CN) notification copy
+// rendered from the catalog keys + params — the same strings the payload's
+// fallback `message` carries.
+func TestNotificationWording(t *testing.T) {
+	const zh = i18n.LangZhCN
+	statusDone := i18n.Localize(zh, i18n.KeyNotifyStatusChanged, map[string]any{
+		"Title": "Review PR", "Actor": "Bob",
+		"Action": i18n.Localize(zh, actionKey("done"), nil),
+	})
+	statusOpen := i18n.Localize(zh, i18n.KeyNotifyStatusChanged, map[string]any{
+		"Title": "Review PR", "Actor": "Bob",
+		"Action": i18n.Localize(zh, actionKey("open"), nil),
+	})
 	tests := []struct {
-		name string
-		fn   func() string
-		want string
+		name, got, want string
 	}{
-		{"matterCreated", func() string { return matterCreatedMsg("Review PR", "Alice") }, "📋 新任务「Review PR」— Alice 分配给了你"},
-		{"statusDone", func() string { return statusChangedMsg("Review PR", "Bob", "done") }, "📋 任务「Review PR」— Bob 完成了"},
-		{"statusReopened", func() string { return statusChangedMsg("Review PR", "Bob", "open") }, "📋 任务「Review PR」— Bob 重新打开了"},
-		{"assigneeAdded", func() string { return assigneeAddedMsg("Review PR", "Alice") }, "📋 任务「Review PR」— Alice 将你添加为负责人"},
-		{"timelineEntryAdded", func() string { return timelineEntryAddedMsg("Review PR", "Charlie") }, "📋 任务「Review PR」— Charlie 添加了进展"},
+		{"matterCreated", i18n.Localize(zh, i18n.KeyNotifyMatterCreated, map[string]any{"Title": "Review PR", "Actor": "Alice"}), "📋 新任务「Review PR」— Alice 分配给了你"},
+		{"statusDone", statusDone, "📋 任务「Review PR」— Bob 完成了"},
+		{"statusReopened", statusOpen, "📋 任务「Review PR」— Bob 重新打开了"},
+		{"assigneeAdded", i18n.Localize(zh, i18n.KeyNotifyAssigneeAdded, map[string]any{"Title": "Review PR", "Actor": "Alice"}), "📋 任务「Review PR」— Alice 将你添加为负责人"},
+		{"timelineEntryAdded", i18n.Localize(zh, i18n.KeyNotifyTimelineEntryAdded, map[string]any{"Title": "Review PR", "Actor": "Charlie"}), "📋 任务「Review PR」— Charlie 添加了进展"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.fn(); got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
+			if tt.got != tt.want {
+				t.Errorf("got %q, want %q", tt.got, tt.want)
 			}
 		})
 	}
@@ -148,5 +159,16 @@ func TestOctoNotifier_NotifyMatterCreated(t *testing.T) {
 	}
 	if _, ok := c.body.Payload["message"].(string); !ok {
 		t.Errorf("payload.message missing or not string: %v", c.body.Payload["message"])
+	}
+	// Structured fields the IM server uses to localize per recipient.
+	if c.body.Payload["message_key"] != "notify.matter_created" {
+		t.Errorf("payload.message_key = %v, want notify.matter_created", c.body.Payload["message_key"])
+	}
+	params, ok := c.body.Payload["params"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("payload.params missing or wrong type: %v", c.body.Payload["params"])
+	}
+	if params["Title"] != "Test" || params["Actor"] != "Alice" {
+		t.Errorf("payload.params = %v, want Title=Test Actor=Alice", params)
 	}
 }

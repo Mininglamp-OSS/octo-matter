@@ -425,19 +425,6 @@ func TestPaginated_NoMore(t *testing.T) {
 	}
 }
 
-func TestFailCode(t *testing.T) {
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
-
-	failCode(c, http.StatusBadRequest, "TEST_CODE", "test message", map[string]any{"field": "title"})
-
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
-	}
-	assertErrCode(t, w.Body.Bytes(), "TEST_CODE")
-}
-
 func TestBindJSONErr(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
