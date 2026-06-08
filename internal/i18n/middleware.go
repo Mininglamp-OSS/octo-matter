@@ -10,6 +10,7 @@ func EarlyMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		d := Negotiate(c.Request)
 		setDecision(c, d)
+		c.Request = c.Request.WithContext(WithLanguage(c.Request.Context(), d))
 		h := c.Writer.Header()
 		h.Set("Content-Language", d.Language)
 		h.Add("Vary", "Accept-Language")

@@ -22,6 +22,10 @@ var supported = []string{LangZhCN, LangEnUS}
 
 var (
 	bundle *goi18n.Bundle
+	// localizers holds one cached *Localizer per supported language so hot
+	// paths (error rendering) don't allocate a new one per call. Populated once
+	// under initOnce, then read-only — so reads need no lock.
+	localizers map[string]*goi18n.Localizer
 	// defaultLang is the runtime fallback used when negotiation yields no
 	// signal. Set via Init (from OCTO_DEFAULT_LANGUAGE); zh-CN until then.
 	defaultLang = LangZhCN
@@ -29,8 +33,9 @@ var (
 )
 
 // Init builds the message bundle and records the default fallback language.
-// Safe to call once at startup; subsequent calls are no-ops. An invalid
-// defaultLanguage is rejected by config.Validate before this is reached.
+// Safe to call repeatedly; only the first call does the work (sync.Once), which
+// also establishes the happens-before for lock-free reads of bundle/localizers.
+// An invalid defaultLanguage is rejected by config.Validate before this runs.
 func Init(defaultLanguage string) {
 	initOnce.Do(func() {
 		if MatchSupported(defaultLanguage) != "" {
@@ -48,15 +53,29 @@ func Init(defaultLanguage string) {
 			}
 		}
 		bundle = b
+		// One localizer per supported language, each with a fallback chain of
+		// [lang, defaultLang, en-US source].
+		localizers = make(map[string]*goi18n.Localizer, len(supported))
+		for _, lang := range supported {
+			localizers[lang] = goi18n.NewLocalizer(b, lang, defaultLang, LangEnUS)
+		}
 	})
 }
 
-// ensure lazily initializes with defaults so callers (e.g. tests) that skip
-// Init still get a working localizer.
+// ensure initializes with package defaults for callers (e.g. tests) that skip
+// Init. Calling Init unconditionally — rather than guarding on a racy nil read
+// — routes every caller through sync.Once, giving safe lock-free reads after.
 func ensure() {
-	if bundle == nil {
-		Init(defaultLang)
+	Init(defaultLang)
+}
+
+// localizerFor returns the cached localizer for lang, falling back to the
+// default-language localizer for empty/unsupported input.
+func localizerFor(lang string) *goi18n.Localizer {
+	if loc, ok := localizers[lang]; ok {
+		return loc
 	}
+	return localizers[defaultLang]
 }
 
 // DefaultLanguage returns the configured runtime fallback language.
@@ -70,11 +89,7 @@ func SupportedLanguages() []string { return append([]string(nil), supported...) 
 // produces an empty string.
 func Localize(lang, msgID string, params map[string]any) string {
 	ensure()
-	if lang == "" {
-		lang = defaultLang
-	}
-	loc := goi18n.NewLocalizer(bundle, lang, defaultLang, LangEnUS)
-	out, err := loc.Localize(&goi18n.LocalizeConfig{
+	out, err := localizerFor(lang).Localize(&goi18n.LocalizeConfig{
 		MessageID:    msgID,
 		TemplateData: params,
 	})
