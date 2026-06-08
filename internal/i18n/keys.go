@@ -71,7 +71,7 @@ const (
 	KeyUpstream          = "err.upstream.generic"
 	KeyChannelMembership = "err.upstream.channel_membership"
 	KeyRateLimited       = "err.ratelimited.generic"
-	KeyRateLimitCooldown = "err.ratelimited.cooldown" // params: Cooldown
+	KeyRateLimitCooldown = "err.ratelimited.cooldown" // params: Cooldown (integer seconds)
 	KeyDuplicateAssignee = "err.conflict.duplicate_assignee"
 
 	// LLM

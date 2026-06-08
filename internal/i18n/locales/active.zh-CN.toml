@@ -154,7 +154,7 @@ other = "频道成员服务不可用"
 other = "请稍后再试"
 
 [err.ratelimited.cooldown]
-other = "请在两次请求之间等待 {{.Cooldown}}"
+other = "请在两次请求之间等待 {{.Cooldown}} 秒"
 
 [err.conflict.duplicate_assignee]
 other = "负责人已存在"

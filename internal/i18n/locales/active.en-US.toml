@@ -156,7 +156,7 @@ other = "channel membership service unavailable"
 other = "please wait before retrying"
 
 [err.ratelimited.cooldown]
-other = "please wait {{.Cooldown}} between requests"
+other = "please wait {{.Cooldown}} seconds between requests"
 
 [err.conflict.duplicate_assignee]
 other = "assignee already exists"

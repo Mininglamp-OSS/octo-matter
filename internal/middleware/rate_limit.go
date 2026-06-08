@@ -93,7 +93,7 @@ func (r *RateLimiter) Middleware(keyFn func(c *gin.Context) string) gin.HandlerF
 		}
 		if !r.Allow(k) {
 			i18n.RespondError(c, http.StatusTooManyRequests, "RATE_LIMITED", i18n.KeyRateLimitCooldown,
-				map[string]any{"Cooldown": r.cooldown.String()}, nil)
+				map[string]any{"Cooldown": int(r.cooldown.Seconds())}, nil)
 			return
 		}
 		c.Next()

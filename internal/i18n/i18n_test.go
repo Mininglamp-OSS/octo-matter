@@ -85,6 +85,14 @@ func TestLocalizeBothLanguages(t *testing.T) {
 	if zh != "msgs 超过上限 200" {
 		t.Errorf("zh-CN templated = %q", zh)
 	}
+	// Rate-limit cooldown: numeric seconds + locale-specific unit (no mixed
+	// language like "等待 10s").
+	if got := Localize(LangEnUS, KeyRateLimitCooldown, map[string]any{"Cooldown": 10}); got != "please wait 10 seconds between requests" {
+		t.Errorf("en-US cooldown = %q", got)
+	}
+	if got := Localize(LangZhCN, KeyRateLimitCooldown, map[string]any{"Cooldown": 10}); got != "请在两次请求之间等待 10 秒" {
+		t.Errorf("zh-CN cooldown = %q", got)
+	}
 }
 
 func TestLocalizeUnknownKeyFallsBackToKey(t *testing.T) {
@@ -116,7 +124,7 @@ var allKeys = []string{
 
 func TestCatalogCompleteness(t *testing.T) {
 	// Params that satisfy the templated keys so rendering does not error.
-	params := map[string]any{"Title": "T", "Actor": "A", "Action": "X", "Limit": 1, "Index": 0, "Cooldown": "10s"}
+	params := map[string]any{"Title": "T", "Actor": "A", "Action": "X", "Limit": 1, "Index": 0, "Cooldown": 10}
 	for _, lang := range []string{LangEnUS, LangZhCN} {
 		for _, key := range allKeys {
 			got := Localize(lang, key, params)
