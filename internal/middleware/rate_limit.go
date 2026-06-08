@@ -1,11 +1,11 @@
 package middleware
 
 import (
-	"fmt"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/gin-gonic/gin"
 )
 
@@ -92,12 +92,8 @@ func (r *RateLimiter) Middleware(keyFn func(c *gin.Context) string) gin.HandlerF
 			return
 		}
 		if !r.Allow(k) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": gin.H{
-					"code":    "RATE_LIMITED",
-					"message": fmt.Sprintf("please wait %s between requests", r.cooldown),
-				},
-			})
+			i18n.RespondError(c, http.StatusTooManyRequests, "RATE_LIMITED", i18n.KeyRateLimitCooldown,
+				map[string]any{"Cooldown": r.cooldown.String()}, nil)
 			return
 		}
 		c.Next()

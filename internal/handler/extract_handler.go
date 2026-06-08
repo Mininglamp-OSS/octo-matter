@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/service"
 	"github.com/gin-gonic/gin"
@@ -53,7 +54,7 @@ func (h *ExtractHandler) Create(c *gin.Context) {
 	// bot's owner_uid (bot path). A bot can only create a matter on behalf of
 	// its owner, never arbitrary users.
 	if !authorizedActor(c, req.CreatorUID) {
-		failCode(c, http.StatusForbidden, "FORBIDDEN", "creator_uid not authorized for caller", nil)
+		failKey(c, http.StatusForbidden, "FORBIDDEN", i18n.KeyCreatorUIDNotAuthorized, nil)
 		return
 	}
 
@@ -94,11 +95,11 @@ func (h *ExtractHandler) Create(c *gin.Context) {
 	res, err := h.svc.CreateFromMessages(c.Request.Context(), in)
 	if err != nil {
 		if errors.Is(err, llm.ErrEmptyToolCall) {
-			failCode(c, http.StatusUnprocessableEntity, "LLM_EMPTY_EXTRACTION", "LLM returned no extraction", nil)
+			failKey(c, http.StatusUnprocessableEntity, "LLM_EMPTY_EXTRACTION", i18n.KeyLLMEmptyExtraction, nil)
 			return
 		}
 		if isLLMUpstreamErr(err) {
-			failCode(c, http.StatusBadGateway, "LLM_UPSTREAM_ERROR", "upstream LLM error", nil)
+			failKey(c, http.StatusBadGateway, "LLM_UPSTREAM_ERROR", i18n.KeyLLMUpstream, nil)
 			return
 		}
 		if _, ok := apperr.AsAppError(err); ok {

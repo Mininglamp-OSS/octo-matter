@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,6 +32,10 @@ type verifyTokenResp struct {
 	Name      string     `json:"name"`
 	Role      string     `json:"role"`
 	OwnedBots []ownedBot `json:"owned_bots"`
+	// Language is the user's stored language preference (BCP-47). Optional:
+	// empty when the IM verify API has not yet been extended to return it, in
+	// which case language negotiation falls back to request-level signals.
+	Language string `json:"language"`
 }
 
 type verifyBotResp struct {
@@ -39,6 +44,9 @@ type verifyBotResp struct {
 	OwnerUID  string `json:"owner_uid"`
 	OwnerName string `json:"owner_name"`
 	SpaceID   string `json:"space_id"`
+	// Language is the owner's stored language preference (BCP-47), optional;
+	// see verifyTokenResp.Language.
+	Language string `json:"language"`
 }
 
 // AuthMiddleware authenticates requests by calling octoim's verify API.
@@ -49,6 +57,7 @@ type verifyBotResp struct {
 // On success, injects into gin context:
 //   - "uid", "name", "role" — caller identity
 //   - "related_uids" — [self, owned_bots...] or [self, owner] for visibility
+//
 // verifyCache caches auth verify results to avoid calling octoim on every request.
 // It bounds memory via periodic eviction of expired entries and a hard cap.
 type verifyCache struct {
@@ -119,9 +128,7 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 		// User token auth
 		token := c.GetHeader("token")
 		if token == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"code": "UNAUTHORIZED", "message": "missing token or Authorization header"},
-			})
+			i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthMissingToken, nil, nil)
 			return
 		}
 		handleUserAuth(c, client, cfg.OctoIMURL, token, cache)
@@ -140,6 +147,7 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 			relatedUIDs = append(relatedUIDs, bot.UID)
 		}
 		c.Set("related_uids", relatedUIDs)
+		i18n.PromoteUserLanguage(c, result.Language)
 		c.Next()
 		return
 	}
@@ -147,26 +155,20 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 	body, _ := json.Marshal(map[string]string{"token": token})
 	resp, err := client.Post(baseURL+"/v1/auth/verify", "application/json", bytes.NewReader(body))
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{"code": "AUTH_UNAVAILABLE", "message": "failed to reach auth service"},
-		})
+		i18n.RespondError(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", i18n.KeyAuthUnavailable, nil, nil)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid or expired token"},
-		})
+		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthInvalidToken, nil, nil)
 		return
 	}
 
 	var result verifyTokenResp
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{"code": "AUTH_ERROR", "message": "failed to parse auth response"},
-		})
+		i18n.RespondError(c, http.StatusInternalServerError, "AUTH_ERROR", i18n.KeyAuthParseFailed, nil, nil)
 		return
 	}
 
@@ -179,6 +181,7 @@ func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, 
 		relatedUIDs = append(relatedUIDs, bot.UID)
 	}
 	c.Set("related_uids", relatedUIDs)
+	i18n.PromoteUserLanguage(c, result.Language)
 
 	// Cache for 60s
 	cache.set("user:"+token, &result, 60*time.Second)
@@ -204,6 +207,7 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 		}
 		relatedUIDs := []string{result.BotUID}
 		c.Set("related_uids", relatedUIDs)
+		i18n.PromoteUserLanguage(c, result.Language)
 		c.Next()
 		return
 	}
@@ -211,26 +215,20 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	body, _ := json.Marshal(map[string]string{"bot_token": botToken})
 	resp, err := client.Post(baseURL+"/v1/auth/verify-bot", "application/json", bytes.NewReader(body))
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-			"error": gin.H{"code": "AUTH_UNAVAILABLE", "message": "failed to reach auth service"},
-		})
+		i18n.RespondError(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", i18n.KeyAuthUnavailable, nil, nil)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, resp.Body)
-		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-			"error": gin.H{"code": "UNAUTHORIZED", "message": "invalid bot token"},
-		})
+		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthInvalidBotToken, nil, nil)
 		return
 	}
 
 	var result verifyBotResp
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error": gin.H{"code": "AUTH_ERROR", "message": "failed to parse auth response"},
-		})
+		i18n.RespondError(c, http.StatusInternalServerError, "AUTH_ERROR", i18n.KeyAuthParseFailed, nil, nil)
 		return
 	}
 
@@ -253,6 +251,7 @@ func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string
 	// is handled via the user-auth path's owned_bots expansion.
 	relatedUIDs := []string{result.BotUID}
 	c.Set("related_uids", relatedUIDs)
+	i18n.PromoteUserLanguage(c, result.Language)
 
 	cache.set("bot:"+botToken, &result, 60*time.Second)
 
@@ -272,9 +271,7 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 		}
 		spaceID := c.GetHeader("X-Space-Id")
 		if spaceID == "" {
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error": gin.H{"code": "VALIDATION_ERROR", "message": "missing X-Space-Id header"},
-			})
+			i18n.RespondError(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeySpaceMissingHeader, nil, nil)
 			return
 		}
 
@@ -290,9 +287,7 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 			cacheKey := fmt.Sprintf("%s:%s", spaceID, token[:min(len(token), 16)])
 			if ok, found := cache.get(cacheKey); found {
 				if !ok {
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-						"error": gin.H{"code": "SPACE_FORBIDDEN", "message": "not a member of this space"},
-					})
+					i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
 					return
 				}
 				c.Set("space_id", spaceID)
@@ -305,17 +300,13 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 			resp, err := client.Do(req)
 			if err != nil {
 				log.Printf("SpaceMiddleware: octoim space check failed: %v", err)
-				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-					"error": gin.H{"code": "UPSTREAM_ERROR", "message": "space verification service unavailable"},
-				})
+				i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
 				return
 			}
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusOK {
 				log.Printf("SpaceMiddleware: octoim space check returned status %d", resp.StatusCode)
-				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
-					"error": gin.H{"code": "UPSTREAM_ERROR", "message": "space verification service unavailable"},
-				})
+				i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
 				return
 			}
 			cache.set(cacheKey, true, 60*time.Second)

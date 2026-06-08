@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
@@ -17,7 +18,11 @@ import (
 type OctoNotifier struct {
 	baseURL string
 	token   string
-	client  *http.Client
+	// defaultLang renders the payload's fallback `message` string. Per-recipient
+	// localization is the IM server's job (from message_key + params); this is
+	// only a safety net for clients/IM that have not adopted the key.
+	defaultLang string
+	client      *http.Client
 }
 
 const (
@@ -38,11 +43,15 @@ type notifyRequest struct {
 	Payload  map[string]interface{} `json:"payload,omitempty"`
 }
 
-func NewOctoNotifier(octoIMURL, internalToken string) *OctoNotifier {
+func NewOctoNotifier(octoIMURL, internalToken, defaultLang string) *OctoNotifier {
+	if defaultLang == "" {
+		defaultLang = i18n.DefaultLanguage()
+	}
 	return &OctoNotifier{
-		baseURL: octoIMURL,
-		token:   internalToken,
-		client:  &http.Client{Timeout: 10 * time.Second},
+		baseURL:     octoIMURL,
+		token:       internalToken,
+		defaultLang: defaultLang,
+		client:      &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
@@ -100,40 +109,60 @@ func (n *OctoNotifier) send(spaceID, event, actorID string, targets []string, pa
 	}
 }
 
-func payloadFor(matter *model.Matter, message string) map[string]interface{} {
-	return map[string]interface{}{
+// payloadFor builds the notify payload. It carries the structured message_key
+// + params so the IM server can localize per recipient, plus a default-language
+// `message` fallback. extra merges event-specific fields (e.g. action_key).
+func (n *OctoNotifier) payloadFor(matter *model.Matter, messageKey string, params, extra map[string]any) map[string]interface{} {
+	p := map[string]interface{}{
 		"matter_id":    matter.ID,
 		"matter_title": matter.Title,
-		"message":      message,
+		"message_key":  messageKey,
+		"params":       params,
+		"message":      i18n.Localize(n.defaultLang, messageKey, params),
 	}
+	for k, v := range extra {
+		p[k] = v
+	}
+	return p
 }
 
 func (n *OctoNotifier) NotifyMatterCreated(matter *model.Matter, actorName string, assigneeIDs []string) {
 	targets := dedupTargets(matter.CreatorID, assigneeIDs)
+	params := map[string]any{"Title": matter.Title, "Actor": actorName}
 	n.send(matter.SpaceID, eventMatterCreated, matter.CreatorID, targets,
-		payloadFor(matter, matterCreatedMsg(matter.Title, actorName)))
+		n.payloadFor(matter, i18n.KeyNotifyMatterCreated, params, nil))
 }
 
 func (n *OctoNotifier) NotifyStatusChanged(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
 	all := append([]string{matter.CreatorID}, assigneeIDs...)
 	all = append(all, participantIDs...)
 	targets := dedupTargets(actorID, all)
+	aKey := actionKey(string(matter.Status))
+	params := map[string]any{
+		"Title": matter.Title,
+		"Actor": actorName,
+		// Action is the default-language verb for the fallback message; the IM
+		// server should re-localize action_key per recipient instead.
+		"Action": i18n.Localize(n.defaultLang, aKey, nil),
+	}
 	n.send(matter.SpaceID, eventStatusChanged, actorID, targets,
-		payloadFor(matter, statusChangedMsg(matter.Title, actorName, string(matter.Status))))
+		n.payloadFor(matter, i18n.KeyNotifyStatusChanged, params, map[string]any{"action_key": aKey}))
 }
 
 func (n *OctoNotifier) NotifyAssigneeAdded(matter *model.Matter, actorName, newAssigneeID string) {
 	targets := dedupTargets("", []string{newAssigneeID})
+	params := map[string]any{"Title": matter.Title, "Actor": actorName}
 	n.send(matter.SpaceID, eventAssigneeAdded, "", targets,
-		payloadFor(matter, assigneeAddedMsg(matter.Title, actorName)))
+		n.payloadFor(matter, i18n.KeyNotifyAssigneeAdded, params, nil))
 }
 
 func (n *OctoNotifier) NotifyTimelineEntryAdded(matter *model.Matter, actorID, actorName string, assigneeIDs, participantIDs []string) {
 	all := append([]string{matter.CreatorID}, assigneeIDs...)
 	all = append(all, participantIDs...)
 	targets := dedupTargets(actorID, all)
+	params := map[string]any{"Title": matter.Title, "Actor": actorName}
 	n.send(matter.SpaceID, eventTimelineEntryAdded, actorID, targets,
-		payloadFor(matter, timelineEntryAddedMsg(matter.Title, actorName)))
+		n.payloadFor(matter, i18n.KeyNotifyTimelineEntryAdded, params, nil))
 }
 
 // static check that OctoNotifier satisfies Notifier

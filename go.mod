@@ -3,14 +3,17 @@ module github.com/Mininglamp-OSS/octo-matter
 go 1.25.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/DATA-DOG/go-sqlmock v1.5.0
 	github.com/anthropics/anthropic-sdk-go v1.44.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.9.3
 	github.com/gocraft/dbr/v2 v2.7.7
 	github.com/google/uuid v1.6.0
+	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/openai/openai-go v1.12.0
 	github.com/rubenv/sql-migrate v1.8.1
+	golang.org/x/text v0.35.0
 )
 
 require (
@@ -54,7 +57,6 @@ require (
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

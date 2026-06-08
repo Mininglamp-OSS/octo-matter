@@ -12,6 +12,7 @@ import (
 	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/config"
 	"github.com/Mininglamp-OSS/octo-matter/internal/handler"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
@@ -27,6 +28,10 @@ func main() {
 		log.Fatalf("invalid configuration: %v", err)
 	}
 	log.Printf("starting matter-service env=%s octoim=%s", cfg.AppEnv, cfg.OctoIMURL)
+
+	// i18n: build the message bundle and record the default fallback language.
+	i18n.Init(cfg.DefaultLanguage)
+	log.Printf("i18n enabled: default=%s supported=%v", i18n.DefaultLanguage(), i18n.SupportedLanguages())
 
 	conn, sess, err := repository.NewSession(cfg.MySQLDSN)
 	if err != nil {
@@ -52,7 +57,7 @@ func main() {
 	txMgr := repository.NewTxManager(sess)
 
 	// Notifier
-	notifier := notification.NewOctoNotifier(cfg.OctoIMURL, cfg.NotifyInternalToken)
+	notifier := notification.NewOctoNotifier(cfg.OctoIMURL, cfg.NotifyInternalToken, cfg.DefaultLanguage)
 	notifyWorker := notification.NewWorker(100, 4)
 	defer notifyWorker.Shutdown()
 	log.Printf("notification enabled via octoim %s/v1/internal/notify", cfg.OctoIMURL)

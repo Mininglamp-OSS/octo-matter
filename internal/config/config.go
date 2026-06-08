@@ -23,7 +23,8 @@ type Config struct {
 	LLMApiKey           string
 	LLMModel            string
 	LLMProvider         string
-	LLMTimeout          int // seconds
+	LLMTimeout          int    // seconds
+	DefaultLanguage     string // runtime i18n fallback (zh-CN | en-US)
 }
 
 func Load() *Config {
@@ -39,6 +40,7 @@ func Load() *Config {
 		LLMModel:            envOrDefault("LLM_MODEL", "claude-sonnet-4-6"),
 		LLMProvider:         envOrDefault("OCTO_LLM_PROVIDER", "compat"),
 		LLMTimeout:          envIntOrDefault("LLM_TIMEOUT", 30),
+		DefaultLanguage:     envOrDefault("OCTO_DEFAULT_LANGUAGE", "zh-CN"),
 	}
 }
 
@@ -54,6 +56,9 @@ func (c *Config) Validate() error {
 	}
 	if c.ServerPort == "" {
 		return fmt.Errorf("SERVER_PORT is required")
+	}
+	if c.DefaultLanguage != "zh-CN" && c.DefaultLanguage != "en-US" {
+		return fmt.Errorf("OCTO_DEFAULT_LANGUAGE must be 'zh-CN' or 'en-US', got %q", c.DefaultLanguage)
 	}
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +38,8 @@ func paginated(c *gin.Context, data any, hasMore bool, nextCursor string) {
 	c.JSON(http.StatusOK, gin.H{"data": data, "pagination": pg})
 }
 
+// failCode writes a literal (already-localized or code-only) error message.
+// Kept for callers that don't have a message key; prefer failKey.
 func failCode(c *gin.Context, status int, code, msg string, details map[string]any) {
 	body := gin.H{"code": code, "message": msg}
 	if len(details) > 0 {
@@ -45,37 +48,40 @@ func failCode(c *gin.Context, status int, code, msg string, details map[string]a
 	c.AbortWithStatusJSON(status, gin.H{"error": body})
 }
 
+// failKey writes a localized error: msgID is resolved against the request
+// language by the i18n responder.
+func failKey(c *gin.Context, status int, code, msgID string, details map[string]any) {
+	i18n.RespondError(c, status, code, msgID, nil, details)
+}
+
 func respondErr(c *gin.Context, err error) {
 	if ae, ok := apperr.AsAppError(err); ok {
-		failCode(c, ae.HTTPStatus(), ae.Code(), ae.Message(), ae.Details())
+		i18n.RespondError(c, ae.HTTPStatus(), ae.Code(), ae.MessageID(), ae.Params(), ae.Details())
 		return
 	}
 	switch {
 	case errors.Is(err, apperr.ErrNotFound):
-		failCode(c, http.StatusNotFound, "NOT_FOUND", "not found", nil)
+		failKey(c, http.StatusNotFound, "NOT_FOUND", i18n.KeyNotFound, nil)
 	case errors.Is(err, apperr.ErrForbidden):
-		failCode(c, http.StatusForbidden, "FORBIDDEN", "forbidden", nil)
+		failKey(c, http.StatusForbidden, "FORBIDDEN", i18n.KeyForbidden, nil)
 	case errors.Is(err, apperr.ErrInvalidInput):
-		msg := err.Error()
-		const prefix = "invalid input: "
-		if len(msg) > len(prefix) && msg[:len(prefix)] == prefix {
-			msg = msg[len(prefix):]
-		}
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", msg, nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidRequest, nil)
 	case errors.Is(err, repository.ErrInvalidCursor):
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid cursor", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidCursor, nil)
 	default:
 		log.Printf("internal error: %v", err)
-		failCode(c, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
+		i18n.RespondError(c, http.StatusInternalServerError, "INTERNAL_ERROR", i18n.KeyInternal, nil, nil)
 	}
 }
 
 func bindJSONErr(c *gin.Context, err error) {
 	if err.Error() == "http: request body too large" {
-		failCode(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", "request body exceeds size limit", nil)
+		failKey(c, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE", i18n.KeyPayloadTooLarge, nil)
 		return
 	}
-	failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", err.Error(), nil)
+	// The raw validator/bind error is English and field-specific; surface it
+	// under details for debugging while keeping the message localized.
+	failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidRequest, map[string]any{"reason": err.Error()})
 }
 
 func uid(c *gin.Context) string {

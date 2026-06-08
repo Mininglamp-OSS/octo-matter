@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm/promptstore"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
@@ -372,10 +373,10 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 		return nil, err
 	}
 	if strings.TrimSpace(in.CreatorUID) == "" {
-		return nil, apperr.ValidationError("creator_uid required", "creator_uid")
+		return nil, apperr.ValidationError(i18n.KeyCreatorUIDRequired, "creator_uid")
 	}
 	if strings.TrimSpace(in.ChannelID) == "" {
-		return nil, apperr.ValidationError("channel_id required", "channel_id")
+		return nil, apperr.ValidationError(i18n.KeyChannelIDRequired, "channel_id")
 	}
 	if err := s.matterSvc.RequireChannelMember(ctx, in.CallerToken, in.ChannelID, in.CallerUIDs); err != nil {
 		return nil, err
@@ -466,17 +467,15 @@ func (s *ExtractService) CreateFromMessages(ctx context.Context, in ExtractInput
 
 func validateMessages(msgs []ExtractMessage) error {
 	if len(msgs) == 0 {
-		return apperr.ValidationError("msgs required", "msgs")
+		return apperr.ValidationError(i18n.KeyMsgsRequired, "msgs")
 	}
 	if len(msgs) > ExtractMaxMessages {
-		return apperr.ValidationError(fmt.Sprintf("msgs exceeds limit of %d", ExtractMaxMessages), "msgs")
+		return apperr.ValidationErrorP(i18n.KeyMsgsLimit, "msgs", map[string]any{"Limit": ExtractMaxMessages})
 	}
 	for i, m := range msgs {
 		if len(m.MessageID) > ExtractMaxMessageIDLen {
-			return apperr.ValidationError(
-				fmt.Sprintf("msgs[%d].message_id exceeds limit of %d", i, ExtractMaxMessageIDLen),
-				"msgs.message_id",
-			)
+			return apperr.ValidationErrorP(i18n.KeyMessageIDLimit, "msgs.message_id",
+				map[string]any{"Index": i, "Limit": ExtractMaxMessageIDLen})
 		}
 	}
 	return nil

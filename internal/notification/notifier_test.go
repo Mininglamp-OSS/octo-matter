@@ -103,7 +103,7 @@ func TestOctoNotifier_NotifyMatterCreated(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	n := NewOctoNotifier(srv.URL, "secret-token")
+	n := NewOctoNotifier(srv.URL, "secret-token", "zh-CN")
 	matter := &model.Matter{
 		ID:        "matter1",
 		SpaceID:   "space1",

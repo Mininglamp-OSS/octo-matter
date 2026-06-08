@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
@@ -42,7 +43,10 @@ func SetupRouter(
 	ready ReadinessCheck,
 ) *gin.Engine {
 	r := gin.Default()
-	r.Use(middleware.RequestID())
+	// RequestID first, then early language negotiation so even auth-stage
+	// errors are localized from request-level signals (user.language is merged
+	// in later by AuthMiddleware).
+	r.Use(middleware.RequestID(), i18n.EarlyMiddleware())
 
 	// Health
 	r.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })

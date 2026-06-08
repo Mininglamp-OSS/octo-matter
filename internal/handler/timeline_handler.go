@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
@@ -62,18 +63,18 @@ func (h *TimelineHandler) Create(c *gin.Context) {
 	}
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	if req.MatterID != "" && req.MatterID != matterID {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "body.matter_id must match path :id", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyMatterIDMismatch, nil)
 		return
 	}
 
 	isLLMPath := len(req.Msgs) > 0
 	if isLLMPath {
 		if !authorizedActor(c, req.ParticipantUID) {
-			failCode(c, http.StatusForbidden, "FORBIDDEN", "participant_uid not authorized for caller", nil)
+			failKey(c, http.StatusForbidden, "FORBIDDEN", i18n.KeyParticipantNotAuthorized, nil)
 			return
 		}
 		// Rate limiting moved into TimelineService.createFromMessages so it
@@ -142,7 +143,7 @@ func (h *TimelineHandler) Create(c *gin.Context) {
 func (h *TimelineHandler) List(c *gin.Context) {
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -169,12 +170,12 @@ func (h *TimelineHandler) List(c *gin.Context) {
 func (h *TimelineHandler) Delete(c *gin.Context) {
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	entryID := c.Param("entry_id")
 	if !validUUID(entryID) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid entry_id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidEntryID, nil)
 		return
 	}
 	if err := h.svc.DeleteEntry(c.Request.Context(), matterID, entryID, spaceID(c), relatedUIDs(c), uid(c), "", callerToken(c)); err != nil {
@@ -186,11 +187,11 @@ func (h *TimelineHandler) Delete(c *gin.Context) {
 
 func (h *TimelineHandler) respondCreateErr(c *gin.Context, err error) {
 	if errors.Is(err, llm.ErrEmptyToolCall) {
-		failCode(c, http.StatusUnprocessableEntity, "LLM_EMPTY_EXTRACTION", "LLM returned no extraction", nil)
+		failKey(c, http.StatusUnprocessableEntity, "LLM_EMPTY_EXTRACTION", i18n.KeyLLMEmptyExtraction, nil)
 		return
 	}
 	if isLLMUpstreamErr(err) {
-		failCode(c, http.StatusBadGateway, "LLM_UPSTREAM_ERROR", "upstream LLM error", nil)
+		failKey(c, http.StatusBadGateway, "LLM_UPSTREAM_ERROR", i18n.KeyLLMUpstream, nil)
 		return
 	}
 	if _, ok := apperr.AsAppError(err); ok {
