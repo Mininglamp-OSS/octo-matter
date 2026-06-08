@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -140,21 +142,74 @@ const (
 // invariant for future callers, not a behavior change today. The cross-
 // space WARN log is unchanged; alerting should now also trigger on the
 // new ERROR log to catch caller bugs early.
-func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, spaceID, actorID, action string, detail interface{}) {
+// v3.3.4 §B3 (lml2468 R7 P0, return error): pre-v3.3.4 the function was
+// void and silently dropped on both invariant-violation AND DB error,
+// collapsing two semantically different failures into one indistinguishable
+// "204 OK with no activity" — caller had no way to surface a transient
+// DB error to daemon, breaking §H3's 5xx→503 retry contract for activity
+// writeback. v3.3.4 splits the two drops:
+//
+//   - drop #1 (caller-bug invariant violation: spaceID="" or matterRepo=nil):
+//     KEEP silent + ERROR log + return nil. Returning an error would let
+//     daemon retry forever on a caller bug retry can't fix. ERROR log
+//     triggers human alert.
+//
+//   - drop #2 (matterRepo.GetByID errors): SPLIT on errors.Is(err,
+//     apperr.ErrNotFound). ErrNotFound (= cross-space OR matter-deleted
+//     race, both surface as MatterNotFound) stays silent-drop-by-design
+//     (see A4 race acknowledge below). Any other err (transient: conn
+//     drop, deadlock, timeout) propagates up wrapped → handler returns
+//     500 → daemon §H3 5xx→503 retries.
+//
+// **A4 race acknowledge (cross-space vs matter-deleted race)**: drop #2's
+// ErrNotFound covers two scenarios that surface identically from
+// matterRepo.GetByID:
+//   - by-design cross-space (forged actor crossing space): drop = correct,
+//     this is the v3 §3.2 protection.
+//   - race: handler authz check passed but matter was deleted between
+//     authz GetByID and this GetByID. Probability ≪ 1% (matter deletion
+//     is rare + race window is ms). Propagate-5xx would loop daemon
+//     retries forever on a permanently-gone matter — silent drop is the
+//     less-bad choice.
+// If activity ever becomes a critical path (e.g., audit log replacing log
+// files), introduce an outbox table + reconciliation worker to decouple
+// activity persistence from matter existence. Filed as v3.4 follow-up
+// (see plan §9).
+func (s *MatterService) RecordAgentActivity(ctx context.Context, matterID, spaceID, actorID, action string, detail interface{}) error {
+	// drop #1: caller-bug invariant violation, retry won't help (see §B3
+	// A4 acknowledge); ERROR log triggers alert. Returning an error would
+	// let daemon §H3 map to 503 and retry forever on a permanently buggy
+	// caller — silent drop + ERROR log is the less-bad choice.
 	if spaceID == "" || s.matterRepo == nil {
-		log.Printf("[ERROR] RecordAgentActivity invariant violation: matter=%s spaceID=%q matterRepoSet=%v action=%s — call dropped (v3.3.1 §B.2 fail-closed)",
+		log.Printf("[ERROR] RecordAgentActivity invariant violation: matter=%s spaceID=%q matterRepoSet=%v action=%s — call dropped (v3.3.1 §B.2 fail-closed; v3.3.4 §B3: caller-bug, retry-won't-help)",
 			matterID, spaceID, s.matterRepo != nil, action)
-		return
+		return nil
 	}
 	if _, err := s.matterRepo.GetByID(ctx, matterID, spaceID); err != nil {
-		// Cross-space or missing-matter: fail-quiet WARN per v3 §3.2.
-		// daemon sees 204 from the handler but the activity isn't
-		// forged onto a foreign matter. Monitor the WARN log to catch
-		// real cross-space attempts.
-		log.Printf("[WARN] RecordAgentActivity cross-space or missing matter=%s space=%s: %v", matterID, spaceID, err)
-		return
+		// drop #2 (cross-space OR matter-deleted race): both surface as
+		// apperr.MatterNotFound (wrapping apperr.ErrNotFound) from
+		// matterRepo.GetByID. We silent-drop both:
+		//   - by-design cross-space (forged actor): drop = correct, this is
+		//     the v3 §3.2 protection.
+		//   - race: handler authz check passed but matter was deleted
+		//     between authz GetByID and this GetByID. Probability ≪ 1%
+		//     (matter deletion is rare + race window is ms). Propagate-5xx
+		//     would loop daemon retries forever on a permanently-gone
+		//     matter — silent drop is the less-bad choice.
+		// If activity ever becomes a critical path (e.g., audit log
+		// replacing log files), introduce an outbox table + reconciliation
+		// worker to decouple activity persistence from matter existence.
+		// Filed as v3.4 follow-up (see plan §9).
+		if errors.Is(err, apperr.ErrNotFound) {
+			log.Printf("[WARN] RecordAgentActivity cross-space matter=%s space=%s", matterID, spaceID)
+			return nil // by-design drop (true cross-space OR matter-deleted race, see §B3 A4)
+		}
+		// Transient err (conn drop, deadlock, timeout, context.DeadlineExceeded,
+		// etc.) — propagate up so handler returns 500 and daemon §H3 retries.
+		return fmt.Errorf("RecordAgentActivity: matter lookup: %w", err)
 	}
 	recordActivity(ctx, s.activity, matterID, actorID, action, detail)
+	return nil
 }
 
 // CreateMatterWithAssignees creates the matter, auto-links its source channel

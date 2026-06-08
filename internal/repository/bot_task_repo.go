@@ -218,15 +218,25 @@ func (r *BotTaskRepo) claimNextForBotInner(ctx context.Context, runner dbr.Sessi
 // Ack updates a claimed task to succeeded/failed. The claim_token MUST
 // match — a stale daemon trying to ack with an expired token gets
 // dbr.ErrNotFound (caller surfaces 409).
-func (r *BotTaskRepo) Ack(ctx context.Context, id, claimToken, status, errMsg, resultSummary string, elapsedMs int64) error {
+//
+// v3.3.4 §B1 (lml2468 R7 P0): space_id is part of the WHERE clause.
+// space_id filter relies on invariant: task.space_id ≡ api_key.space_id
+// (see model/bot_task.go INVARIANT). Without this filter a (id,
+// claim_token) pair leaked across spaces (logs, snapshots, errant
+// routing) would let a daemon in SpaceA ack a task that belongs to
+// SpaceB. claim_token is a UUID so the practical exploitability is
+// ~10⁻³⁸, but defense-in-depth + symmetry with ClaimNextForBot's
+// space_id filter is required by CLAUDE.md "every query MUST filter
+// by space_id".
+func (r *BotTaskRepo) Ack(ctx context.Context, id, spaceID, claimToken, status, errMsg, resultSummary string, elapsedMs int64) error {
 	if status != "succeeded" && status != "failed" {
 		return errors.New("invalid status (must be 'succeeded' or 'failed')")
 	}
 	res, err := r.runner.UpdateBySql(
 		`UPDATE matter_bot_task
 		    SET status=?, error_msg=?, result_summary=?, elapsed_ms=?, updated_at=NOW(3)
-		  WHERE id=? AND claim_token=? AND status='dispatched'`,
-		status, errMsg, resultSummary, elapsedMs, id, claimToken,
+		  WHERE id=? AND space_id=? AND claim_token=? AND status='dispatched'`,
+		status, errMsg, resultSummary, elapsedMs, id, spaceID, claimToken,
 	).ExecContext(ctx)
 	if err != nil {
 		return err
@@ -261,22 +271,38 @@ func (r *BotTaskRepo) Ack(ctx context.Context, id, claimToken, status, errMsg, r
 //
 // Wire format unchanged (claim_token + task_id were removed from body
 // in Phase 4 and we don't re-add them). The single SELECT here checks
-// just (matter_id, bot_uid, status='dispatched'), equivalent to AU5's
-// constraints minus the claim_token rotation guard. Same-user multi-
-// daemon互信 is preserved per 决策二 — any of the user's daemons can
-// write during an active task lease, not just the one holding the
+// just (matter_id, space_id, bot_uid, status='dispatched'), equivalent
+// to AU5's constraints minus the claim_token rotation guard. Same-user
+// multi-daemon互信 is preserved per 决策二 — any of the user's daemons
+// can write during an active task lease, not just the one holding the
 // specific claim_token.
-func (r *BotTaskRepo) HasDispatchedTaskForBotOnMatter(ctx context.Context, matterID, botUID string) (bool, error) {
-	var n int
+//
+// v3.3.4 §B6 (lml2468 R7 P2, defense-in-depth symmetric with B1):
+// space_id filter relies on invariant: task.space_id ≡ api_key.space_id
+// (see model/bot_task.go INVARIANT). bot_uid is currently cluster-
+// unique (robot=1 minted), so SQL-level cross-space lookup turns up
+// nothing today; but the symmetric filter keeps us consistent with
+// Ack/ClaimNextForBot and prevents a future "bot_uid scoped per
+// space" change from silently widening the surface. Switched
+// COUNT(*) → EXISTS — same boolean semantics, allows the planner to
+// stop on first match.
+//
+// Parameter order (matterID, spaceID, botUID) intentionally mirrors the
+// SQL WHERE clause column order so a future maintainer's swap is a
+// visible diff rather than a silent runtime bug — both spaceID and
+// botUID are strings, Go won't catch a transposition at compile time.
+// v3.3.4 review bot P1; symmetric with Ack(ctx, id, spaceID, claimToken, ...).
+func (r *BotTaskRepo) HasDispatchedTaskForBotOnMatter(ctx context.Context, matterID, spaceID, botUID string) (bool, error) {
+	var exists bool
 	_, err := r.runner.SelectBySql(
-		`SELECT COUNT(*) FROM matter_bot_task
-		 WHERE matter_id=? AND bot_uid=? AND status='dispatched'`,
-		matterID, botUID,
-	).LoadContext(ctx, &n)
+		`SELECT EXISTS(SELECT 1 FROM matter_bot_task
+		   WHERE matter_id=? AND space_id=? AND bot_uid=? AND status='dispatched')`,
+		matterID, spaceID, botUID,
+	).LoadContext(ctx, &exists)
 	if err != nil {
 		return false, err
 	}
-	return n > 0, nil
+	return exists, nil
 }
 
 // Sweeper: reclaim expired leases back to queued (attempt++), or

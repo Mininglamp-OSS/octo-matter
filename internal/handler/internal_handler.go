@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -131,8 +132,18 @@ func (h *InternalHandler) WriteTimeline(c *gin.Context) {
 	// channel member). The §G RequireKind also prevents api_key callers
 	// from reaching that user path; the two gates close from both sides.
 	hasTask, err := h.botTaskRepo.HasDispatchedTaskForBotOnMatter(
-		c.Request.Context(), matterID, req.ActorUID)
-	if err != nil || !hasTask {
+		c.Request.Context(), matterID, spaceID, req.ActorUID)
+	if err != nil {
+		// v3.3.4 §B2 (lml2468 R7 P0): split err vs !hasTask. Pre-v3.3.4 a
+		// transient DB error (conn drop / deadlock / statement timeout)
+		// collapsed into 403 NO_TASK_BINDING, which daemon contract treats
+		// as permanent-give-up. A legit task lease then permanently lost
+		// its writeback over a single DB blip — directly contradicting
+		// §H3's 5xx→503 daemon retry mapping.
+		respondErr(c, err)
+		return
+	}
+	if !hasTask {
 		failCode(c, http.StatusForbidden, "NO_TASK_BINDING",
 			"actor_uid has no active task on this matter", nil)
 		return
@@ -215,13 +226,21 @@ func (h *InternalHandler) WriteActivity(c *gin.Context) {
 	// skip-when-actor==ctx.uid branch was fail-open). See WriteTimeline
 	// above for the full rationale.
 	hasTask, err := h.botTaskRepo.HasDispatchedTaskForBotOnMatter(
-		c.Request.Context(), matterID, req.ActorUID)
-	if err != nil || !hasTask {
+		c.Request.Context(), matterID, spaceID, req.ActorUID)
+	if err != nil {
+		// v3.3.4 §B2: see WriteTimeline above for rationale.
+		respondErr(c, err)
+		return
+	}
+	if !hasTask {
 		failCode(c, http.StatusForbidden, "NO_TASK_BINDING",
 			"actor_uid has no active task on this matter", nil)
 		return
 	}
-	h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Action, req.Detail)
+	if err := h.matterSvc.RecordAgentActivity(c.Request.Context(), matterID, spaceID, req.ActorUID, req.Action, req.Detail); err != nil {
+		respondErr(c, err)
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
 
@@ -364,6 +383,11 @@ func (h *InternalHandler) ListBotTasksForDaemon(c *gin.Context) {
 	// "context_included false → 403" stance for matter's daemon
 	// task-pull endpoint.
 	if !c.GetBool("verify_context_included") {
+		// v3.3.4 §C6 (review bot — supports §B4 deploy gate detect): emit a
+		// distinctive log line so ops can monitor for "pre-v3.3.x server
+		// still in fleet" condition via batch-flood detection (10+ /min).
+		// See PR description §B4 for the rolling-upgrade contract.
+		log.Printf("[matter] MISSING_CONTEXT verify_context_included=false — likely pre-v3.3.x server (B4 deploy gate)")
 		failCode(c, http.StatusForbidden, "MISSING_CONTEXT",
 			"server did not return owned_bots context; refusing task pull", nil)
 		return
@@ -558,7 +582,25 @@ func (h *InternalHandler) AckBotTaskFromDaemon(c *gin.Context) {
 		bindJSONErr(c, err)
 		return
 	}
-	err := h.botTaskRepo.Ack(c.Request.Context(), id, req.ClaimToken, req.Status, req.ErrorMsg, req.ResultSummary, req.ElapsedMs)
+	// v3.3.4 §B1: pass verified ctx.space_id so the SQL WHERE includes
+	// space_id (defense-in-depth + symmetric with ClaimNextForBot which
+	// already filters by space_id). See bot_task_repo.go Ack docstring.
+	spaceIDVal, _ := c.Get("space_id")
+	spaceID, _ := spaceIDVal.(string)
+	if spaceID == "" {
+		// v3.3.4 review bot P1 (R7 lesson): empty ctx.space_id reaching
+		// this handler = middleware (authMW + RequireKind(apikey)) bug,
+		// NOT a client error. Returning 403 would have daemon treat this
+		// as "permanent forbid" and silently drop the ack — task stays
+		// in 'dispatched' forever, never reclaimed. Same fail-closed
+		// anti-pattern P0-2 was about. Return 500 so daemon §H3 maps
+		// to 503 and retries (next retry should hit a fixed middleware
+		// OR an operator investigates the ERROR log).
+		log.Printf("[ERROR] AckBotTaskFromDaemon: middleware did not inject space_id — server bug (api_key context broken)")
+		failCode(c, http.StatusInternalServerError, "INTERNAL_ERROR", "internal server error", nil)
+		return
+	}
+	err := h.botTaskRepo.Ack(c.Request.Context(), id, spaceID, req.ClaimToken, req.Status, req.ErrorMsg, req.ResultSummary, req.ElapsedMs)
 	if err != nil {
 		if errors.Is(err, dbr.ErrNotFound) {
 			failCode(c, http.StatusConflict, "CLAIM_TOKEN_MISMATCH", "task not in dispatched state with matching token", nil)
