@@ -21,7 +21,6 @@ const (
 var supported = []string{LangZhCN, LangEnUS}
 
 var (
-	bundle *goi18n.Bundle
 	// localizers holds one cached *Localizer per supported language so hot
 	// paths (error rendering) don't allocate a new one per call. Populated once
 	// under initOnce, then read-only — so reads need no lock.
@@ -34,7 +33,7 @@ var (
 
 // Init builds the message bundle and records the default fallback language.
 // Safe to call repeatedly; only the first call does the work (sync.Once), which
-// also establishes the happens-before for lock-free reads of bundle/localizers.
+// also establishes the happens-before for lock-free reads of localizers.
 // An invalid defaultLanguage is rejected by config.Validate before this runs.
 func Init(defaultLanguage string) {
 	initOnce.Do(func() {
@@ -52,7 +51,6 @@ func Init(defaultLanguage string) {
 				panic("i18n: cannot parse locale " + name + ": " + err.Error())
 			}
 		}
-		bundle = b
 		// One localizer per supported language, each with a fallback chain of
 		// [lang, defaultLang, en-US source].
 		localizers = make(map[string]*goi18n.Localizer, len(supported))
