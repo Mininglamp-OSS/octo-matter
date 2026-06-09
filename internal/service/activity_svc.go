@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 )
 
@@ -15,8 +16,8 @@ type activityReader interface {
 
 // ActivityService lists matter activities with space + visibility checks.
 type ActivityService struct {
-	matterRepo  matterScopeChecker
-	access      MatterAccessChecker
+	matterRepo   matterScopeChecker
+	access       MatterAccessChecker
 	activityRepo activityReader
 }
 
@@ -59,7 +60,7 @@ func (s *ActivityService) ListActivities(
 		return nil, false, accessErr
 	}
 	if !ok {
-		return nil, false, apperr.Forbidden("not authorized to access this matter")
+		return nil, false, apperr.Forbidden(i18n.KeyMatterAccess)
 	}
 	return s.activityRepo.ListByMatter(ctx, matterID, cursor, limit)
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
@@ -180,7 +181,7 @@ func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter 
 			member, err := s.im.IsChannelMember(ctx, callerToken, *filter.SourceChannelID, filter.CallerUIDs)
 			if err != nil {
 				log.Printf("[ERROR] ListMatters: IM IsChannelMember failed channel=%s: %v", *filter.SourceChannelID, err)
-				return nil, apperr.Upstream("channel membership service unavailable")
+				return nil, apperr.Upstream(i18n.KeyChannelMembership)
 			}
 			if !member {
 				filter.SourceChannelID = nil
@@ -196,7 +197,7 @@ func (s *MatterService) ListMatters(ctx context.Context, spaceID string, filter 
 			member, err := s.im.IsChannelMember(ctx, callerToken, *filter.ChannelID, filter.CallerUIDs)
 			if err != nil {
 				log.Printf("[ERROR] ListMatters: IM IsChannelMember failed channel=%s: %v", *filter.ChannelID, err)
-				return nil, apperr.Upstream("channel membership service unavailable")
+				return nil, apperr.Upstream(i18n.KeyChannelMembership)
 			}
 			if !member {
 				filter.ChannelID = nil
@@ -284,7 +285,7 @@ func (s *MatterService) GetMatter(ctx context.Context, id, spaceID string, calle
 		return nil, accessErr
 	}
 	if !ok {
-		return nil, apperr.Forbidden("not authorized to view this matter")
+		return nil, apperr.Forbidden(i18n.KeyMatterView)
 	}
 	assignees, err := s.assigneeRepo.ListByMatter(ctx, id)
 	if err != nil {
@@ -313,7 +314,7 @@ func (s *MatterService) CanAccessMatter(ctx context.Context, matter *model.Matte
 
 // RequireChannelMember verifies via octoim that one of callerUIDs is a
 // current member of channelID. Used as a gate before writing matter_channels
-//: without this, an assignee on matter M could
+// : without this, an assignee on matter M could
 // link M to an arbitrary channel they don't belong to, exposing M to that
 // channel's real members.
 //
@@ -333,10 +334,10 @@ func (s *MatterService) RequireChannelMember(ctx context.Context, callerToken, c
 	member, err := s.im.IsChannelMember(ctx, callerToken, channelID, callerUIDs)
 	if err != nil {
 		log.Printf("[ERROR] RequireChannelMember: IM lookup failed channel=%s: %v", channelID, err)
-		return apperr.Upstream("channel membership service unavailable")
+		return apperr.Upstream(i18n.KeyChannelMembership)
 	}
 	if !member {
-		return apperr.Forbidden("caller is not a member of channel")
+		return apperr.Forbidden(i18n.KeyNotChannelMember)
 	}
 	return nil
 }
@@ -361,7 +362,7 @@ func (s *MatterService) canAccessMatter(ctx context.Context, matter *model.Matte
 		member, err := s.im.IsChannelMember(ctx, callerToken, channelID, callerUIDs)
 		if err != nil {
 			log.Printf("[ERROR] canAccessMatter: IM IsChannelMember failed matter=%s channel=%s: %v", matter.ID, channelID, err)
-			return false, apperr.Upstream("channel membership service unavailable")
+			return false, apperr.Upstream(i18n.KeyChannelMembership)
 		}
 		if member {
 			effectiveChannel = channelID
@@ -389,10 +390,6 @@ func (s *MatterService) isCreator(matter *model.Matter, callerUIDs []string) boo
 func (s *MatterService) isAssigneeAny(ctx context.Context, matterID string, callerUIDs []string) (bool, error) {
 	return s.assigneeRepo.IsAssigneeAny(ctx, matterID, callerUIDs)
 }
-
-
-
-
 
 // UpdateMatter applies editable fields. Creator or any assignee (expanded via
 // callerUIDs) may edit.
@@ -436,7 +433,7 @@ func (s *MatterService) UpdateMatter(ctx context.Context, id, spaceID string, ca
 	if deadline != nil {
 		t, err := ParseOptionalRFC3339(*deadline)
 		if err != nil {
-			return nil, apperr.InvalidInput("deadline must be RFC3339 or empty")
+			return nil, apperr.InvalidInput(i18n.KeyDeadlineFormat)
 		}
 		oldUnix := timePtrUnix(matter.Deadline)
 		newUnix := timePtrUnix(t)
@@ -451,7 +448,7 @@ func (s *MatterService) UpdateMatter(ctx context.Context, id, spaceID string, ca
 	if remindAt != nil {
 		t, err := ParseOptionalRFC3339(*remindAt)
 		if err != nil {
-			return nil, apperr.InvalidInput("remind_at must be RFC3339 or empty")
+			return nil, apperr.InvalidInput(i18n.KeyRemindAtFormat)
 		}
 		matter.RemindAt = t
 	}
@@ -497,7 +494,7 @@ func ParseOptionalRFC3339(s string) (*time.Time, error) {
 // require Creator; open↔done is allowed for Creator or any assignee.
 func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, callerUIDs []string, target model.MatterStatus) (*MatterDetail, error) {
 	if !model.IsValidStatus(target) {
-		return nil, apperr.InvalidInput("status must be 'open', 'done', or 'archived'")
+		return nil, apperr.InvalidInput(i18n.KeyStatusInvalid)
 	}
 
 	// Pre-check: if target is archived, only creator can do it.
@@ -508,7 +505,7 @@ func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, calle
 			return nil, err
 		}
 		if !s.isCreator(matter, callerUIDs) {
-			return nil, apperr.Forbidden("only creator can archive/unarchive")
+			return nil, apperr.Forbidden(i18n.KeyOnlyCreatorArchive)
 		}
 	}
 
@@ -527,11 +524,11 @@ func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, calle
 			matter.Status == model.MatterStatusArchived
 		if involvesArchived {
 			if !isCreator {
-				return apperr.Forbidden("only creator can archive/unarchive")
+				return apperr.Forbidden(i18n.KeyOnlyCreatorArchive)
 			}
 		} else {
 			if !isCreator && !isAssigneeAny {
-				return apperr.Forbidden("only creator or assignee can change status")
+				return apperr.Forbidden(i18n.KeyOnlyCreatorOrAssigneeStat)
 			}
 		}
 
@@ -540,7 +537,7 @@ func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, calle
 		}
 
 		if matter.Status == model.MatterStatusArchived && target == model.MatterStatusDone {
-			return apperr.InvalidInput("cannot transition from archived to done; reopen first")
+			return apperr.InvalidInput(i18n.KeyTransitionArchived)
 		}
 
 		if err := r.Matter.UpdateStatus(ctx, id, spaceID, string(target)); err != nil {
@@ -585,10 +582,6 @@ func (s *MatterService) SetStatus(ctx context.Context, id, spaceID string, calle
 		Participants: participants,
 		Channels:     channels,
 	}, nil
-
-
-
-
 
 }
 
@@ -671,7 +664,7 @@ func (s *MatterService) RemoveAssignee(ctx context.Context, matterID, spaceID st
 // LinkChannel attaches a channel to a matter. Creator or any assignee may link.
 func (s *MatterService) LinkChannel(ctx context.Context, matterID, spaceID string, callerUIDs []string, channelID string, channelType uint8, channelName *string) (*model.MatterChannel, error) {
 	if len(callerUIDs) == 0 {
-		return nil, apperr.InvalidInput("caller identity required")
+		return nil, apperr.InvalidInput(i18n.KeyCallerIdentityReq)
 	}
 	matter, err := s.matterRepo.GetByID(ctx, matterID, spaceID)
 	if err != nil {

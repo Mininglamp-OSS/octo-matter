@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 )
@@ -50,7 +51,7 @@ func (s *OutputsService) ListOutputs(
 		return nil, false, accessErr
 	}
 	if !ok {
-		return nil, false, apperr.Forbidden("not authorized to access this matter")
+		return nil, false, apperr.Forbidden(i18n.KeyMatterAccess)
 	}
 	return s.reader.ListOutputs(ctx, repository.OutputsFilter{
 		MatterID: matterID,

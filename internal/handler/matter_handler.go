@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/notification"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
@@ -97,7 +98,7 @@ func (h *MatterHandler) Create(c *gin.Context) {
 	if req.Deadline != nil {
 		t, err := service.ParseOptionalRFC3339(*req.Deadline)
 		if err != nil {
-			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "deadline must be RFC3339 or empty", nil)
+			failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyDeadlineFormat, nil)
 			return
 		}
 		matter.Deadline = t
@@ -105,7 +106,7 @@ func (h *MatterHandler) Create(c *gin.Context) {
 	if req.RemindAt != nil {
 		t, err := service.ParseOptionalRFC3339(*req.RemindAt)
 		if err != nil {
-			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "remind_at must be RFC3339 or empty", nil)
+			failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyRemindAtFormat, nil)
 			return
 		}
 		matter.RemindAt = t
@@ -154,7 +155,7 @@ func (h *MatterHandler) List(c *gin.Context) {
 	}
 	if status != "" {
 		if !model.IsValidStatus(model.MatterStatus(status)) {
-			failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open', 'done', or 'archived'", nil)
+			failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyStatusInvalid, nil)
 			return
 		}
 		filter.Status = &status
@@ -198,7 +199,7 @@ func (h *MatterHandler) List(c *gin.Context) {
 func (h *MatterHandler) Get(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	detail, err := h.svc.GetMatter(c.Request.Context(), id, spaceID(c), relatedUIDs(c), c.Query("source_channel_id"), callerToken(c))
@@ -219,7 +220,7 @@ type updateMatterReq struct {
 func (h *MatterHandler) Update(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	var req updateMatterReq
@@ -242,7 +243,7 @@ type transitionReq struct {
 func (h *MatterHandler) Transition(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	var req transitionReq
@@ -251,7 +252,7 @@ func (h *MatterHandler) Transition(c *gin.Context) {
 		return
 	}
 	if !model.IsValidStatus(model.MatterStatus(req.Status)) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "status must be 'open', 'done', or 'archived'", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyStatusInvalid, nil)
 		return
 	}
 	detail, err := h.svc.SetStatus(c.Request.Context(), id, spaceID(c), relatedUIDs(c), model.MatterStatus(req.Status))
@@ -276,7 +277,7 @@ func (h *MatterHandler) Transition(c *gin.Context) {
 func (h *MatterHandler) Delete(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	if err := h.svc.SoftDelete(c.Request.Context(), id, spaceID(c), relatedUIDs(c)); err != nil {
@@ -298,7 +299,7 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 	}
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	space := spaceID(c)
@@ -320,12 +321,12 @@ func (h *MatterHandler) AddAssignee(c *gin.Context) {
 func (h *MatterHandler) RemoveAssignee(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	assigneeUID := c.Param("uid")
 	if assigneeUID == "" {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "assignee uid is required", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyAssigneeUIDRequired, nil)
 		return
 	}
 	if err := h.svc.RemoveAssignee(c.Request.Context(), id, spaceID(c), relatedUIDs(c), assigneeUID); err != nil {
@@ -344,7 +345,7 @@ type linkChannelReq struct {
 func (h *MatterHandler) LinkChannel(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	var req linkChannelReq
@@ -358,7 +359,7 @@ func (h *MatterHandler) LinkChannel(c *gin.Context) {
 	//   - User path: must be IM-verified member of the target channel.
 	tok := callerToken(c)
 	if tok == "" {
-		failCode(c, http.StatusForbidden, "FORBIDDEN", "bot may not manually link channels", nil)
+		failKey(c, http.StatusForbidden, "FORBIDDEN", i18n.KeyBotLinkChannel, nil)
 		return
 	}
 	if err := h.svc.RequireChannelMember(c.Request.Context(), tok, req.ChannelID, relatedUIDs(c)); err != nil {
@@ -376,12 +377,12 @@ func (h *MatterHandler) LinkChannel(c *gin.Context) {
 func (h *MatterHandler) UnlinkChannel(c *gin.Context) {
 	id := c.Param("id")
 	if !validUUID(id) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	channelID := c.Param("channel_id")
 	if channelID == "" {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "channel_id required", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyChannelIDRequired, nil)
 		return
 	}
 	if err := h.svc.UnlinkChannel(c.Request.Context(), id, spaceID(c), relatedUIDs(c), channelID); err != nil {

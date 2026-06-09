@@ -1,30 +1,19 @@
 package notification
 
-import "fmt"
+import "github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 
-func matterCreatedMsg(title, actorName string) string {
-	return fmt.Sprintf("📋 新任务「%s」— %s 分配给了你", title, actorName)
-}
-
-func statusChangedMsg(title, actorName, newStatus string) string {
-	var action string
+// actionKey maps a matter status to the i18n key for its notification verb.
+// Used by OctoNotifier to build both the structured payload (action_key) and
+// the default-language fallback message.
+func actionKey(newStatus string) string {
 	switch newStatus {
 	case "done":
-		action = "完成了"
+		return i18n.KeyNotifyActionDone
 	case "archived":
-		action = "归档了"
+		return i18n.KeyNotifyActionArchived
 	case "open":
-		action = "重新打开了"
+		return i18n.KeyNotifyActionOpen
 	default:
-		action = "更新了"
+		return i18n.KeyNotifyActionUpdated
 	}
-	return fmt.Sprintf("📋 任务「%s」— %s %s", title, actorName, action)
-}
-
-func assigneeAddedMsg(title, actorName string) string {
-	return fmt.Sprintf("📋 任务「%s」— %s 将你添加为负责人", title, actorName)
-}
-
-func timelineEntryAddedMsg(title, actorName string) string {
-	return fmt.Sprintf("📋 任务「%s」— %s 添加了进展", title, actorName)
 }

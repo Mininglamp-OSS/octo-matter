@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm"
 	"github.com/Mininglamp-OSS/octo-matter/internal/llm/promptstore"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
@@ -324,20 +325,20 @@ func (s *TimelineService) CreateEntry(ctx context.Context, in TimelineInput) (*m
 func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*model.TimelineEntry, error) {
 	content := strings.TrimSpace(in.Content)
 	if content == "" && len(in.Attachments) == 0 {
-		return nil, apperr.ValidationError("content or attachments required", "")
+		return nil, apperr.ValidationError(i18n.KeyContentRequired, "")
 	}
 	if len(content) > MaxContentLength {
-		return nil, apperr.ValidationError("content too long", "content")
+		return nil, apperr.ValidationError(i18n.KeyContentTooLong, "content")
 	}
 	if len(in.Attachments) > MaxAttachmentsPerEntry {
-		return nil, apperr.ValidationError("too many attachments", "attachments")
+		return nil, apperr.ValidationError(i18n.KeyTooManyAttachments, "attachments")
 	}
 	for _, a := range in.Attachments {
 		if a.FileURL == "" {
-			return nil, apperr.ValidationError("file_url required", "attachments")
+			return nil, apperr.ValidationError(i18n.KeyFileURLRequired, "attachments")
 		}
 		if a.FileSize != nil && *a.FileSize > MaxAttachmentSizeBytes {
-			return nil, apperr.ValidationError("attachment too large", "attachments")
+			return nil, apperr.ValidationError(i18n.KeyAttachmentTooLarge, "attachments")
 		}
 	}
 
@@ -350,7 +351,7 @@ func (s *TimelineService) createDirect(ctx context.Context, in TimelineInput) (*
 		return nil, accessErr
 	}
 	if !ok {
-		return nil, apperr.Forbidden("not authorized to access this matter")
+		return nil, apperr.Forbidden(i18n.KeyMatterAccess)
 	}
 
 	var contentPtr *string
@@ -479,13 +480,13 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		return nil, nil, err
 	}
 	if strings.TrimSpace(in.ParticipantUID) == "" {
-		return nil, nil, apperr.ValidationError("participant_uid required", "participant_uid")
+		return nil, nil, apperr.ValidationError(i18n.KeyParticipantUIDReq, "participant_uid")
 	}
 	if strings.TrimSpace(in.ChannelID) == "" {
-		return nil, nil, apperr.ValidationError("channel_id required", "channel_id")
+		return nil, nil, apperr.ValidationError(i18n.KeyChannelIDRequired, "channel_id")
 	}
 	if in.ChannelType != 1 && in.ChannelType != 2 && in.ChannelType != 5 {
-		return nil, nil, apperr.ValidationError("channel_type must be one of 1, 2, 5", "channel_type")
+		return nil, nil, apperr.ValidationError(i18n.KeyChannelTypeInvalid, "channel_type")
 	}
 
 	matter, err := s.matterRepo.GetByID(ctx, in.MatterID, in.SpaceID)
@@ -497,7 +498,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 		return nil, nil, err
 	}
 	if !ok {
-		return nil, nil, apperr.Forbidden("not authorized to access this matter")
+		return nil, nil, apperr.Forbidden(i18n.KeyMatterAccess)
 	}
 
 	// Rate-limit AFTER access — a forbidden caller must not consume the
@@ -505,7 +506,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 	// (matter_id, actor_uid) per design-v3.md §8.
 	if s.limiter != nil && in.ActorUID != "" {
 		if !s.limiter.Allow(in.MatterID + ":" + in.ActorUID) {
-			return nil, nil, apperr.RateLimited("please wait before retrying")
+			return nil, nil, apperr.RateLimited(i18n.KeyRateLimited)
 		}
 	}
 
@@ -587,7 +588,7 @@ func (s *TimelineService) createFromMessages(ctx context.Context, in TimelineInp
 			//     links to existing matters; require a user to link first.
 			//   - User path: already IM-verified above (pre-tx); proceed.
 			if in.CallerToken == "" {
-				return apperr.Forbidden("bot may not link a new channel to an existing matter; ask a channel member to link it first")
+				return apperr.Forbidden(i18n.KeyBotLinkExisting)
 			}
 			mc = &model.MatterChannel{
 				ID:          uuid.New().String(),
@@ -676,7 +677,7 @@ func (s *TimelineService) ListEntries(
 		return nil, false, accessErr
 	}
 	if !ok {
-		return nil, false, apperr.Forbidden("not authorized to access this matter")
+		return nil, false, apperr.Forbidden(i18n.KeyMatterAccess)
 	}
 	entries, hasMore, err := s.timelineRepo.ListByMatter(ctx, matterID, sourceChannelID, cursor, limit)
 	if err != nil {
@@ -723,7 +724,7 @@ func (s *TimelineService) DeleteEntry(ctx context.Context, matterID, id, spaceID
 		return accessErr
 	}
 	if !ok {
-		return apperr.Forbidden("not authorized to access this matter")
+		return apperr.Forbidden(i18n.KeyMatterAccess)
 	}
 	if entry.UserID != actorUID {
 		return apperr.ErrForbidden

@@ -1,0 +1,192 @@
+# zh-CN 运行期翻译。键与 active.en-US.toml 对齐；缺失的键会回落到 en-US 源串。
+
+# --- 通用 / 传输 ---
+[err.common.not_found]
+other = "未找到"
+
+[err.common.forbidden]
+other = "无权限"
+
+[err.common.internal]
+other = "服务器内部错误"
+
+[err.common.payload_too_large]
+other = "请求体超过大小限制"
+
+# --- 鉴权 / Space ---
+[err.auth.missing_token]
+other = "缺少 token 或 Authorization 头"
+
+[err.auth.unavailable]
+other = "无法连接鉴权服务"
+
+[err.auth.invalid_token]
+other = "token 无效或已过期"
+
+[err.auth.invalid_bot_token]
+other = "bot token 无效"
+
+[err.auth.parse_failed]
+other = "解析鉴权响应失败"
+
+[err.space.missing_header]
+other = "缺少 X-Space-Id 头"
+
+[err.space.forbidden]
+other = "不是该 Space 的成员"
+
+[err.space.unavailable]
+other = "Space 校验服务不可用"
+
+# --- 校验 ---
+[err.validation.invalid_id]
+other = "id 格式无效"
+
+[err.validation.invalid_entry_id]
+other = "entry_id 格式无效"
+
+[err.validation.invalid_cursor]
+other = "游标无效"
+
+[err.validation.invalid_request]
+other = "请求体无效"
+
+[err.validation.matter_id_mismatch]
+other = "body.matter_id 必须与路径 :id 一致"
+
+[err.validation.content_required]
+other = "内容或附件不能为空"
+
+[err.validation.content_too_long]
+other = "内容过长"
+
+[err.validation.too_many_attachments]
+other = "附件数量过多"
+
+[err.validation.file_url_required]
+other = "file_url 不能为空"
+
+[err.validation.attachment_too_large]
+other = "附件过大"
+
+[err.validation.participant_uid_required]
+other = "participant_uid 不能为空"
+
+[err.validation.channel_id_required]
+other = "channel_id 不能为空"
+
+[err.validation.channel_type_invalid]
+other = "channel_type 必须为 1、2 或 5"
+
+[err.validation.creator_uid_required]
+other = "creator_uid 不能为空"
+
+[err.validation.msgs_required]
+other = "msgs 不能为空"
+
+[err.validation.msgs_limit]
+other = "msgs 超过上限 {{.Limit}}"
+
+[err.validation.message_id_limit]
+other = "msgs[{{.Index}}].message_id 超过上限 {{.Limit}}"
+
+[err.validation.deadline_format]
+other = "deadline 必须为 RFC3339 格式或留空"
+
+[err.validation.remind_at_format]
+other = "remind_at 必须为 RFC3339 格式或留空"
+
+[err.validation.status_invalid]
+other = "status 必须为 'open'、'done' 或 'archived'"
+
+[err.validation.assignee_uid_required]
+other = "assignee uid 不能为空"
+
+[err.validation.caller_identity_required]
+other = "缺少调用方身份"
+
+[err.validation.transition_archived]
+other = "无法从 archived 直接转为 done；请先重新打开"
+
+# --- 无权限 ---
+[err.forbidden.matter_access]
+other = "无权访问该任务"
+
+[err.forbidden.matter_view]
+other = "无权查看该任务"
+
+[err.forbidden.participant_not_authorized]
+other = "participant_uid 未授权给调用方"
+
+[err.forbidden.creator_uid_not_authorized]
+other = "creator_uid 未授权给调用方"
+
+[err.forbidden.bot_link_channel]
+other = "bot 不能手动关联频道"
+
+[err.forbidden.bot_link_existing]
+other = "bot 不能为已有任务关联新频道；请让频道成员先关联"
+
+[err.forbidden.not_channel_member]
+other = "调用方不是该频道的成员"
+
+[err.forbidden.only_creator_archive]
+other = "仅创建者可归档/取消归档"
+
+[err.forbidden.only_creator_or_assignee_status]
+other = "仅创建者或负责人可变更状态"
+
+# --- 未找到 ---
+[err.notfound.matter]
+other = "任务未找到"
+
+[err.notfound.assignee]
+other = "负责人未找到"
+
+# --- 上游 / 限流 / 冲突 ---
+[err.upstream.generic]
+other = "上游服务不可用"
+
+[err.upstream.channel_membership]
+other = "频道成员服务不可用"
+
+[err.ratelimited.generic]
+other = "请稍后再试"
+
+[err.ratelimited.cooldown]
+other = "请在两次请求之间等待 {{.Cooldown}} 秒"
+
+[err.conflict.duplicate_assignee]
+other = "负责人已存在"
+
+# --- LLM ---
+[err.llm.empty_extraction]
+other = "LLM 未返回抽取结果"
+
+[err.llm.upstream]
+other = "上游 LLM 错误"
+
+# --- 通知 ---
+[notify.matter_created]
+other = "📋 新任务「{{.Title}}」— {{.Actor}} 分配给了你"
+
+[notify.status_changed]
+other = "📋 任务「{{.Title}}」— {{.Actor}} {{.Action}}"
+
+[notify.assignee_added]
+other = "📋 任务「{{.Title}}」— {{.Actor}} 将你添加为负责人"
+
+[notify.timeline_entry_added]
+other = "📋 任务「{{.Title}}」— {{.Actor}} 添加了进展"
+
+[notify.action.done]
+other = "完成了"
+
+[notify.action.archived]
+other = "归档了"
+
+[notify.action.open]
+other = "重新打开了"
+
+[notify.action.updated]
+other = "更新了"

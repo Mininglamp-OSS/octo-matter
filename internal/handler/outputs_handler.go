@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/model"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/gin-gonic/gin"
@@ -47,7 +48,7 @@ const outputsMaxQLen = 100
 func (h *OutputsHandler) List(c *gin.Context) {
 	matterID := c.Param("id")
 	if !validUUID(matterID) {
-		failCode(c, http.StatusBadRequest, "VALIDATION_ERROR", "invalid id format", nil)
+		failKey(c, http.StatusBadRequest, "VALIDATION_ERROR", i18n.KeyInvalidID, nil)
 		return
 	}
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
