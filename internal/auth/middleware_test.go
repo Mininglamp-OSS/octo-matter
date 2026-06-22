@@ -24,14 +24,14 @@ func newAuthTestEngine(t *testing.T, h http.HandlerFunc) *gin.Engine {
 	r.Use(AuthMiddleware(Config{OctoIMURL: srv.URL}))
 	r.GET("/probe", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
-			"uid":         c.GetString("uid"),
-			"name":        c.GetString("name"),
-			"role":        c.GetString("role"),
-			"owner_uid":   c.GetString("owner_uid"),
-			"owner_name":  c.GetString("owner_name"),
-			"space_id":    c.GetString("space_id"),
-			"ctx_incl":    octoauth.IsContextIncluded(c),
-			"sdk_spaces":  octoauth.GetVerifiedSpaces(c),
+			"uid":        c.GetString("uid"),
+			"name":       c.GetString("name"),
+			"role":       c.GetString("role"),
+			"owner_uid":  c.GetString("owner_uid"),
+			"owner_name": c.GetString("owner_name"),
+			"space_id":   c.GetString("space_id"),
+			"ctx_incl":   octoauth.IsContextIncluded(c),
+			"sdk_spaces": octoauth.GetVerifiedSpaces(c),
 		})
 	})
 	return r
@@ -164,7 +164,6 @@ func TestAuthMiddleware_APIKey_HappyPath(t *testing.T) {
 		t.Fatalf("SDK CtxKeyContextIncluded not set for api-key path")
 	}
 	spaces, _ := resp["sdk_spaces"].([]any)
-	// verified spaces = OwnedBotsBySpace keys ∪ {SpaceID}; bound must be deduped in.
 	got := map[string]bool{}
 	for _, s := range spaces {
 		got[s.(string)] = true
@@ -203,13 +202,84 @@ func TestRespondSDKError_StatusMapping(t *testing.T) {
 			if w.Code != tc.status {
 				t.Fatalf("status=%d want %d (body=%s)", w.Code, tc.status, w.Body.String())
 			}
-			// Envelope shape: matter uses i18n.RespondError which
-			// emits {"error":{"code":..., "message":...}}; we sanity
-			// check the body contains an `error` field rather than
-			// a flat `code`.
 			if !strings.Contains(w.Body.String(), `"error"`) {
 				t.Fatalf("body missing nested error envelope: %s", w.Body.String())
 			}
 		})
+	}
+}
+
+// TestSpaceMiddlewareWithSDK_FailClosed asserts the composite gate
+// rejects an X-Space-Id that the verify-context says the caller does
+// NOT belong to.
+func TestSpaceMiddlewareWithSDK_FailClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(octoauth.CtxKeyContextIncluded, true)
+		c.Set(octoauth.CtxKeyVerifiedSpaces, []string{"sp_A"})
+		c.Next()
+	})
+	r.Use(SpaceMiddlewareWithSDK(Config{OctoIMURL: ""}))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id")})
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("X-Space-Id", "sp_B")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("X-Space-Id forgery must 403; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestSpaceMiddlewareWithSDK_VerifiedMemberPasses confirms positive control.
+func TestSpaceMiddlewareWithSDK_VerifiedMemberPasses(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) {
+		c.Set(octoauth.CtxKeyContextIncluded, true)
+		c.Set(octoauth.CtxKeyVerifiedSpaces, []string{"sp_A", "sp_B"})
+		c.Next()
+	})
+	r.Use(SpaceMiddlewareWithSDK(Config{OctoIMURL: ""}))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id")})
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("X-Space-Id", "sp_B")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("verified member must pass; got %d (body: %s)", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["space_id"] != "sp_B" {
+		t.Fatalf("space_id not set: %v", resp)
+	}
+}
+
+// TestSpaceMiddlewareWithSDK_CompatPassesWithoutContext confirms the
+// compatibility window for pre-v1 octo-server.
+func TestSpaceMiddlewareWithSDK_CompatPassesWithoutContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(SpaceMiddlewareWithSDK(Config{OctoIMURL: ""}))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id")})
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("X-Space-Id", "anything")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("compat mode (no verify-context) must pass through; got %d (body: %s)", w.Code, w.Body.String())
 	}
 }

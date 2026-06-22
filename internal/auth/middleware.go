@@ -388,26 +388,45 @@ func RequireSpaceMember(cfg Config) gin.HandlerFunc {
 }
 
 // SpaceMiddlewareWithSDK is the recommended composite Space gate
-// post-PR-C3: it chains the SDK's RequireSpaceMember (fast, in-memory
-// check against verify-context spaces[]) BEFORE the legacy
-// SpaceMiddleware (per-request octo-server membership probe). The
-// in-memory check rejects most forgeries without an extra HTTP call;
-// the per-request probe is the fallback for the pre-context-aware
-// octo-server compatibility window and remains the source of truth
-// for "space exists" semantics.
+// post-PR-C3: it performs the SDK's RequireSpaceMember fail-closed
+// check **inline** (no c.Next() — that would advance the gin chain
+// past the legacy gate to the handler, leaving the legacy probe
+// skipped) BEFORE delegating to the legacy SpaceMiddleware.
 //
-// Use this in SetupRouter instead of bare SpaceMiddleware; the
-// composite is fail-closed on X-Space-Id-not-in-verified-spaces when
-// the verify context is available, fail-loud-but-correct on
-// pre-v1 octo-server.
+// The in-memory check (against the verify-context spaces[] populated
+// by AuthMiddleware) rejects most forgeries without an extra HTTP
+// call; the per-request probe (legacy SpaceMiddleware) is the
+// fallback for pre-context-aware octo-server and remains the source
+// of truth for "space exists" semantics.
+//
+// Why inline (not wrapping client.RequireSpaceMember()): the SDK's
+// RequireSpaceMember decorator calls ctx.Next() on success, which
+// (when invoked as a function from inside another middleware) would
+// advance to the route handler and execute it BEFORE the legacy gate
+// could run. Jerry-Xin flagged this as a critical sequencing bug on
+// #87 review.
 func SpaceMiddlewareWithSDK(cfg Config) gin.HandlerFunc {
-	sdkGate := RequireSpaceMember(cfg)
 	legacyGate := SpaceMiddleware(cfg.OctoIMURL)
 	return func(c *gin.Context) {
-		sdkGate(c)
-		if c.IsAborted() {
-			return
+		// Step 1: inline SDK fail-closed check against verify-context spaces[].
+		// Only enforces when (a) X-Space-Id is set AND (b) verify-context
+		// is included (octo-server v1+). Otherwise pass through to legacyGate.
+		sp := c.GetHeader("X-Space-Id")
+		if sp != "" && octoauth.IsContextIncluded(c) {
+			allowed := false
+			for _, s := range octoauth.GetVerifiedSpaces(c) {
+				if s == sp {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
+				return
+			}
 		}
+		// Step 2: legacy per-request probe (handles space-exists + sets
+		// "space_id" ctx + calls c.Next() at the end).
 		legacyGate(c)
 	}
 }
