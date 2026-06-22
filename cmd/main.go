@@ -116,7 +116,13 @@ func main() {
 
 	// Auth
 	authMW := auth.AuthMiddleware(auth.Config{OctoIMURL: cfg.OctoIMURL})
-	spaceMW := auth.SpaceMiddleware(cfg.OctoIMURL)
+	// Space gate is now a composite (PR-C3): SDK RequireSpaceMember
+	// (fast in-memory check against verify-context spaces[]) chained
+	// BEFORE the legacy SpaceMiddleware (per-request octo-server
+	// membership probe). Together they fail-closed on
+	// X-Space-Id-not-in-verified-spaces when the verify context is
+	// available, fall back to the legacy probe for pre-v1 octo-server.
+	spaceMW := auth.SpaceMiddlewareWithSDK(auth.Config{OctoIMURL: cfg.OctoIMURL})
 
 	// Readiness
 	readiness := func() error { return conn.Ping() }

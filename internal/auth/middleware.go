@@ -360,6 +360,58 @@ func GetRelatedUIDs(c *gin.Context) []string {
 	return nil
 }
 
+// RequireSpaceMember returns the octo-auth SDK's fail-closed
+// X-Space-Id ↔ verified-spaces decorator. It is intended to chain
+// AFTER both AuthMiddleware and SpaceMiddleware: AuthMiddleware
+// populates the verify-context with the user's authorised spaces[];
+// SpaceMiddleware extracts X-Space-Id and asks octo-server "is this
+// space alive?"; THIS decorator answers the orthogonal question "is
+// this caller a member of that space?" without an extra round-trip.
+//
+// Together the three give defense-in-depth on space access:
+//   - AuthMiddleware: who are you?
+//   - SpaceMiddleware: is the space valid?
+//   - RequireSpaceMember: are you in that space?
+//
+// When octo-server is too old to return verify-context
+// (context_included=false), the SDK's decorator falls back to
+// log-warn-and-pass — SpaceMiddleware's per-request membership probe
+// still gates the call.
+//
+// PR-C3 of the parent project (Stage A epic) introduces this as the
+// preferred fail-closed mechanism going forward; SpaceMiddleware will
+// likely be retired in a future PR once all deployments are on a
+// context-aware octo-server.
+func RequireSpaceMember(cfg Config) gin.HandlerFunc {
+	client := getOrInitSDKClient(cfg.OctoIMURL)
+	return client.RequireSpaceMember()
+}
+
+// SpaceMiddlewareWithSDK is the recommended composite Space gate
+// post-PR-C3: it chains the SDK's RequireSpaceMember (fast, in-memory
+// check against verify-context spaces[]) BEFORE the legacy
+// SpaceMiddleware (per-request octo-server membership probe). The
+// in-memory check rejects most forgeries without an extra HTTP call;
+// the per-request probe is the fallback for the pre-context-aware
+// octo-server compatibility window and remains the source of truth
+// for "space exists" semantics.
+//
+// Use this in SetupRouter instead of bare SpaceMiddleware; the
+// composite is fail-closed on X-Space-Id-not-in-verified-spaces when
+// the verify context is available, fail-loud-but-correct on
+// pre-v1 octo-server.
+func SpaceMiddlewareWithSDK(cfg Config) gin.HandlerFunc {
+	sdkGate := RequireSpaceMember(cfg)
+	legacyGate := SpaceMiddleware(cfg.OctoIMURL)
+	return func(c *gin.Context) {
+		sdkGate(c)
+		if c.IsAborted() {
+			return
+		}
+		legacyGate(c)
+	}
+}
+
 // --- Simple in-memory cache for Space membership ---
 //
 // Retained for SpaceMiddleware's octo-server /v1/space/{id} call. The
