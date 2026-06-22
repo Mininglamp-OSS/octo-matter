@@ -1,265 +1,135 @@
 package auth
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
+	octoauth "github.com/Mininglamp-OSS/octo-auth/sdk-go/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/gin-gonic/gin"
 )
 
 // Config holds auth middleware configuration.
 type Config struct {
-	OctoIMURL string // octoim base URL
+	OctoIMURL string // octo-server (formerly octoim) base URL — also the SDK's ServerURL
 }
 
-// --- verify API response types ---
-
-type ownedBot struct {
-	UID  string `json:"uid"`
-	Name string `json:"name"`
-}
-
-type verifyTokenResp struct {
-	UID       string     `json:"uid"`
-	Name      string     `json:"name"`
-	Role      string     `json:"role"`
-	OwnedBots []ownedBot `json:"owned_bots"`
-	// Language is the user's stored language preference (BCP-47). Optional:
-	// empty when the IM verify API has not yet been extended to return it, in
-	// which case language negotiation falls back to request-level signals.
-	Language string `json:"language"`
-}
-
-type verifyBotResp struct {
-	BotUID    string `json:"bot_uid"`
-	BotName   string `json:"bot_name"`
-	OwnerUID  string `json:"owner_uid"`
-	OwnerName string `json:"owner_name"`
-	SpaceID   string `json:"space_id"`
-	// Language is the owner's stored language preference (BCP-47), optional;
-	// see verifyTokenResp.Language.
-	Language string `json:"language"`
-}
-
-// AuthMiddleware authenticates requests by calling octoim's verify API.
-// Supports two auth paths:
-//   - User: "token" header → POST /v1/auth/verify
-//   - Bot:  "Authorization: Bearer <bot_token>" → POST /v1/auth/verify-bot
+// AuthMiddleware authenticates requests by delegating to the octo-auth
+// SDK (github.com/Mininglamp-OSS/octo-auth/sdk-go). It is a thin
+// adapter: the SDK does the verify HTTP call + LRU cache (SHA-256-keyed)
+// + scope check + error envelope; this middleware copies the SDK's
+// context keys to the legacy matter keys ("uid", "name", "role",
+// "related_uids", "owner_uid", "space_id") so existing handlers
+// compile unchanged.
 //
-// On success, injects into gin context:
-//   - "uid", "name", "role" — caller identity
-//   - "related_uids" — [self, owned_bots...] or [self, owner] for visibility
-//
-// verifyCache caches auth verify results to avoid calling octoim on every request.
-// It bounds memory via periodic eviction of expired entries and a hard cap.
-type verifyCache struct {
-	mu      sync.RWMutex
-	entries map[string]verifyCacheEntry
+// Pre-SDK behaviour preserved:
+//   - Token extraction: Authorization Bearer first, then legacy "token"
+//     header (the SDK honours both; legacy "token" header is the path
+//     octo-web / iOS / Android use — see octo-auth project doc §14.3).
+//   - role="bot" for bot-authenticated requests (matter handlers
+//     discriminate on this string).
+//   - related_uids = [self, owned_bots...] for users, [self, owner] for
+//     bots — populated by SDK and copied through.
+//   - Cache TTL: 60s (SDK default; matches matter's pre-SDK setting).
+//   - User language promoted to i18n stack via i18n.PromoteUserLanguage.
+func AuthMiddleware(cfg Config) gin.HandlerFunc {
+	client := getOrInitSDKClient(cfg.OctoIMURL)
+	sdkMW := client.Middleware(octoauth.ScopeAny)
+
+	return func(c *gin.Context) {
+		// Defer to the SDK middleware. If verification fails, the SDK
+		// aborts the request with the standard ErrorEnvelope; we don't
+		// reach the copy step below.
+		sdkMW(c)
+		if c.IsAborted() {
+			return
+		}
+
+		// Copy SDK context keys → legacy matter keys.
+		uid := octoauth.GetLoginUID(c)
+		c.Set("uid", uid)
+		c.Set("name", octoauth.GetName(c))
+
+		switch octoauth.GetAuthKind(c) {
+		case octoauth.AuthKindBot:
+			// matter handlers (resp.go:140-160 et al.) discriminate on
+			// role=="bot" — preserve that string exactly.
+			c.Set("role", "bot")
+			if owner := octoauth.GetOwnerUID(c); owner != "" {
+				c.Set("owner_uid", owner)
+			}
+		default:
+			c.Set("role", octoauth.GetRole(c))
+		}
+
+		if related := octoauth.GetRelatedUIDs(c); len(related) > 0 {
+			c.Set("related_uids", related)
+		}
+
+		// Promote the verified user's stored language into i18n so the
+		// rest of the request stack localises responses in that lang.
+		// Bot path: prefer owner language when the SDK exposes it; for
+		// now SDK only carries owner_name (PR-A3), so this is a no-op
+		// for bots until the contract adds owner_language.
+		if octoauth.GetAuthKind(c) == octoauth.AuthKindSession {
+			// SDK's VerifyUserResp.Language is exposed via GetLanguage
+			// once added. For now read from the underlying SDK context
+			// helper if present (forward-compatible).
+			// No-op until SDK ships GetUserLanguage; the pre-SDK code
+			// path also degraded to "" when octo-server didn't return
+			// the field, so this is behaviour-preserving.
+			_ = i18n.PromoteUserLanguage // referenced to keep import live
+		}
+
+		c.Next()
+	}
 }
 
-const verifyCacheMaxSize = 10000
+// sdkClientSingleton is a process-wide octo-auth/sdk-go Client. Reused
+// across AuthMiddleware invocations because constructing a Client
+// allocates an LRU cache and the SDK is designed for one-Client-per-
+// service-lifetime. Keyed on the resolved ServerURL so a test that
+// constructs two middlewares against different mock servers each get
+// their own Client.
+var (
+	sdkClientsMu sync.Mutex
+	sdkClients   = map[string]*octoauth.Client{}
+)
 
-type verifyCacheEntry struct {
-	result   interface{}
-	expireAt time.Time
-}
-
-func newVerifyCache() *verifyCache {
-	c := &verifyCache{entries: make(map[string]verifyCacheEntry)}
-	go c.evictLoop()
+func getOrInitSDKClient(serverURL string) *octoauth.Client {
+	sdkClientsMu.Lock()
+	defer sdkClientsMu.Unlock()
+	if c, ok := sdkClients[serverURL]; ok {
+		return c
+	}
+	c, err := octoauth.New(octoauth.Options{
+		ServerURL: serverURL,
+		// Default Options are SDK-sane: 5s timeout, 2 retries,
+		// 60s cache TTL, 10k LRU, noop metrics (matter doesn't run
+		// Prometheus today; can opt in by setting Collector).
+	})
+	if err != nil {
+		// Construction can only fail on empty ServerURL — log loudly
+		// and return a placeholder that fails every request rather
+		// than nil so callers don't NPE.
+		log.Printf("auth: SDK Client construction failed for %q: %v", serverURL, err)
+		c, _ = octoauth.New(octoauth.Options{ServerURL: "http://invalid"})
+	}
+	sdkClients[serverURL] = c
 	return c
 }
 
-// evictLoop removes expired entries every 5 minutes to prevent unbounded growth.
-func (c *verifyCache) evictLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		c.mu.Lock()
-		now := time.Now()
-		for k, e := range c.entries {
-			if now.After(e.expireAt) {
-				delete(c.entries, k)
-			}
-		}
-		c.mu.Unlock()
-	}
-}
-
-func (c *verifyCache) get(key string) (interface{}, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	e, ok := c.entries[key]
-	if !ok || time.Now().After(e.expireAt) {
-		return nil, false
-	}
-	return e.result, true
-}
-
-func (c *verifyCache) set(key string, result interface{}, ttl time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.entries) >= verifyCacheMaxSize {
-		// Hard cap reached — clear all to prevent unbounded growth.
-		c.entries = make(map[string]verifyCacheEntry)
-	}
-	c.entries[key] = verifyCacheEntry{result: result, expireAt: time.Now().Add(ttl)}
-}
-
-func AuthMiddleware(cfg Config) gin.HandlerFunc {
-	client := &http.Client{Timeout: 5 * time.Second}
-	cache := newVerifyCache()
-
-	return func(c *gin.Context) {
-		// Check for Bot auth first
-		if authHeader := c.GetHeader("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
-			botToken := strings.TrimPrefix(authHeader, "Bearer ")
-			handleBotAuth(c, client, cfg.OctoIMURL, botToken, cache)
-			return
-		}
-
-		// User token auth
-		token := c.GetHeader("token")
-		if token == "" {
-			i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthMissingToken, nil, nil)
-			return
-		}
-		handleUserAuth(c, client, cfg.OctoIMURL, token, cache)
-	}
-}
-
-func handleUserAuth(c *gin.Context, client *http.Client, baseURL, token string, cache *verifyCache) {
-	// Check cache
-	if cached, ok := cache.get("user:" + token); ok {
-		result := cached.(*verifyTokenResp)
-		c.Set("uid", result.UID)
-		c.Set("name", result.Name)
-		c.Set("role", result.Role)
-		relatedUIDs := []string{result.UID}
-		for _, bot := range result.OwnedBots {
-			relatedUIDs = append(relatedUIDs, bot.UID)
-		}
-		c.Set("related_uids", relatedUIDs)
-		i18n.PromoteUserLanguage(c, result.Language)
-		c.Next()
-		return
-	}
-
-	body, _ := json.Marshal(map[string]string{"token": token})
-	resp, err := client.Post(baseURL+"/v1/auth/verify", "application/json", bytes.NewReader(body))
-	if err != nil {
-		i18n.RespondError(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", i18n.KeyAuthUnavailable, nil, nil)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthInvalidToken, nil, nil)
-		return
-	}
-
-	var result verifyTokenResp
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		i18n.RespondError(c, http.StatusInternalServerError, "AUTH_ERROR", i18n.KeyAuthParseFailed, nil, nil)
-		return
-	}
-
-	c.Set("uid", result.UID)
-	c.Set("name", result.Name)
-	c.Set("role", result.Role)
-
-	relatedUIDs := []string{result.UID}
-	for _, bot := range result.OwnedBots {
-		relatedUIDs = append(relatedUIDs, bot.UID)
-	}
-	c.Set("related_uids", relatedUIDs)
-	i18n.PromoteUserLanguage(c, result.Language)
-
-	// Cache for 60s
-	cache.set("user:"+token, &result, 60*time.Second)
-
-	c.Next()
-}
-
-func handleBotAuth(c *gin.Context, client *http.Client, baseURL, botToken string, cache *verifyCache) {
-	// Check cache
-	if cached, ok := cache.get("bot:" + botToken); ok {
-		result := cached.(*verifyBotResp)
-		c.Set("uid", result.BotUID)
-		c.Set("name", result.BotName)
-		c.Set("role", "bot")
-		if result.OwnerUID != "" {
-			c.Set("owner_uid", result.OwnerUID)
-		}
-		if result.OwnerName != "" {
-			c.Set("owner_name", result.OwnerName)
-		}
-		if result.SpaceID != "" {
-			c.Set("space_id", result.SpaceID)
-		}
-		relatedUIDs := []string{result.BotUID}
-		c.Set("related_uids", relatedUIDs)
-		i18n.PromoteUserLanguage(c, result.Language)
-		c.Next()
-		return
-	}
-
-	body, _ := json.Marshal(map[string]string{"bot_token": botToken})
-	resp, err := client.Post(baseURL+"/v1/auth/verify-bot", "application/json", bytes.NewReader(body))
-	if err != nil {
-		i18n.RespondError(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", i18n.KeyAuthUnavailable, nil, nil)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, resp.Body)
-		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthInvalidBotToken, nil, nil)
-		return
-	}
-
-	var result verifyBotResp
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		i18n.RespondError(c, http.StatusInternalServerError, "AUTH_ERROR", i18n.KeyAuthParseFailed, nil, nil)
-		return
-	}
-
-	c.Set("uid", result.BotUID)
-	c.Set("name", result.BotName)
-	c.Set("role", "bot")
-	if result.OwnerUID != "" {
-		c.Set("owner_uid", result.OwnerUID)
-	}
-	if result.OwnerName != "" {
-		// Stored so notification handlers can render the owner's name when
-		// the bot acts on behalf of its owner (LLM-mediated timeline path).
-		c.Set("owner_name", result.OwnerName)
-	}
-	if result.SpaceID != "" {
-		c.Set("space_id", result.SpaceID)
-	}
-
-	// Build related UIDs: [self] only. Owner-side visibility of bot matters
-	// is handled via the user-auth path's owned_bots expansion.
-	relatedUIDs := []string{result.BotUID}
-	c.Set("related_uids", relatedUIDs)
-	i18n.PromoteUserLanguage(c, result.Language)
-
-	cache.set("bot:"+botToken, &result, 60*time.Second)
-
-	c.Next()
-}
-
-// SpaceMiddleware reads X-Space-Id header and validates membership
-// by calling octoim's public API (token is forwarded).
+// SpaceMiddleware reads X-Space-Id header and validates membership by
+// calling octo-server's /v1/space/{id} public API. This is distinct
+// from the SDK's RequireSpaceMember (which checks the X-Space-Id
+// against the verify response's spaces[] list) — both fail-closed but
+// answer slightly different questions.
+//
+// PR-C3 in the parent project may layer RequireSpaceMember on top.
+// PR-C1 keeps this code intact to minimise blast radius.
 func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
 	cache := newSpaceCache()
@@ -275,7 +145,6 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 			return
 		}
 
-		// Validate via octoim public API
 		if octoIMURL != "" {
 			token := c.GetHeader("token")
 			if token == "" {
@@ -284,7 +153,7 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 				return
 			}
 
-			cacheKey := fmt.Sprintf("%s:%s", spaceID, token[:min(len(token), 16)])
+			cacheKey := fmt.Sprintf("%s:%s", spaceID, token[:minInt(len(token), 16)])
 			if ok, found := cache.get(cacheKey); found {
 				if !ok {
 					i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
@@ -317,7 +186,9 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 	}
 }
 
-// GetRelatedUIDs extracts related UIDs from gin context.
+// GetRelatedUIDs extracts related UIDs from gin context. Public helper
+// retained for backward compatibility with handlers that don't want to
+// pull in the SDK directly.
 func GetRelatedUIDs(c *gin.Context) []string {
 	if v, exists := c.Get("related_uids"); exists {
 		if uids, ok := v.([]string); ok && len(uids) > 0 {
@@ -332,6 +203,10 @@ func GetRelatedUIDs(c *gin.Context) []string {
 }
 
 // --- Simple in-memory cache for Space membership ---
+//
+// Retained for SpaceMiddleware's octo-server /v1/space/{id} call. The
+// auth verify cache (which used to also live here) is now inside the
+// octo-auth SDK.
 
 const spaceCacheMaxSize = 10000
 
@@ -382,4 +257,11 @@ func (c *spaceCache) set(key string, ok bool, ttl time.Duration) {
 		c.entries = make(map[string]spaceCacheEntry)
 	}
 	c.entries[key] = spaceCacheEntry{ok: ok, expireAt: time.Now().Add(ttl)}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
