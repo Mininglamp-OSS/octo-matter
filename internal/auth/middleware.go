@@ -114,6 +114,16 @@ func handleUser(c *gin.Context, client *octoauth.Client, token string) {
 	if resp.Language != "" {
 		i18n.PromoteUserLanguage(c, resp.Language)
 	}
+	// Set SDK ctx keys too so SpaceMiddlewareWithSDK's IsContextIncluded
+	// + GetVerifiedSpaces check works (Jerry-Xin P0 review on #87:
+	// without these set, the SDK gate is a silent no-op). We bypass
+	// SDK's injectUserContext because we call Client.VerifyUser
+	// directly, so we have to set the SDK keys ourselves.
+	if resp.ContextIncluded {
+		c.Set(octoauth.CtxKeyContextIncluded, true)
+		c.Set(octoauth.CtxKeyVerifiedSpaces, resp.Spaces)
+		c.Set(octoauth.CtxKeyOwnedBotsBySpace, resp.OwnedBotsBySpace)
+	}
 	c.Next()
 }
 
@@ -146,6 +156,18 @@ func handleBot(c *gin.Context, client *octoauth.Client, token string) {
 		// Bot path: language is the owner's preference.
 		i18n.PromoteUserLanguage(c, resp.Language)
 	}
+	// SDK ctx keys for the bot path. For Scope="space" bots the
+	// server-verified binding is the only allowed space; mirror what
+	// the SDK's injectBotContext does so SpaceMiddlewareWithSDK
+	// enforces against the bot binding (yujiawei P0 review on
+	// octo-auth#2 fix).
+	if resp.SpaceID != "" {
+		c.Set("space_id", resp.SpaceID)
+		if resp.Scope == "space" {
+			c.Set(octoauth.CtxKeyContextIncluded, true)
+			c.Set(octoauth.CtxKeyVerifiedSpaces, []string{resp.SpaceID})
+		}
+	}
 	c.Next()
 }
 
@@ -158,6 +180,35 @@ func handleAPIKey(c *gin.Context, client *octoauth.Client, token string) {
 	c.Set("uid", resp.UID)
 	if resp.SpaceID != "" {
 		c.Set("space_id", resp.SpaceID)
+	}
+	// SDK ctx keys for the API key path so SpaceMiddlewareWithSDK
+	// enforces against the verify-context. Built from
+	// OwnedBotsBySpace's keys (the set of spaces the key has access
+	// to) — mirrors what the SDK's injectAPIKeyContext does for
+	// daemon callers.
+	if resp.ContextIncluded {
+		c.Set(octoauth.CtxKeyContextIncluded, true)
+		c.Set(octoauth.CtxKeyOwnedBotsBySpace, resp.OwnedBotsBySpace)
+		spaces := make([]string, 0, len(resp.OwnedBotsBySpace))
+		for k := range resp.OwnedBotsBySpace {
+			spaces = append(spaces, k)
+		}
+		// Also include the bound space (if any) so SpaceMiddlewareWithSDK
+		// passes when X-Space-Id matches the binding even when the bot
+		// list is empty.
+		if resp.SpaceID != "" {
+			found := false
+			for _, s := range spaces {
+				if s == resp.SpaceID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				spaces = append(spaces, resp.SpaceID)
+			}
+		}
+		c.Set(octoauth.CtxKeyVerifiedSpaces, spaces)
 	}
 	c.Next()
 }
