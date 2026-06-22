@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/DATA-DOG/go-sqlmock v1.5.0
-	github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622113250-704ad4ec2dfc
+	github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622120547-886acfd181d4
 	github.com/anthropics/anthropic-sdk-go v1.44.1
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.9.3

@@ -1,9 +1,11 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,74 +19,164 @@ type Config struct {
 	OctoIMURL string // octo-server (formerly octoim) base URL — also the SDK's ServerURL
 }
 
-// AuthMiddleware authenticates requests by delegating to the octo-auth
-// SDK (github.com/Mininglamp-OSS/octo-auth/sdk-go). It is a thin
-// adapter: the SDK does the verify HTTP call + LRU cache (SHA-256-keyed)
-// + scope check + error envelope; this middleware copies the SDK's
-// context keys to the legacy matter keys ("uid", "name", "role",
-// "related_uids", "owner_uid", "space_id") so existing handlers
-// compile unchanged.
+// AuthMiddleware authenticates requests via the octo-auth SDK by
+// calling Client.VerifyUser / VerifyBot / VerifyAPIKey directly (not
+// the SDK's gin.Middleware wrapper). The wrapper-style middleware
+// calls c.Next() at the end of its body, which advances the entire
+// gin chain — meaning my "copy SDK keys → legacy keys" code would run
+// AFTER the downstream handler had already executed (mochashanyao
+// review F1 on #86). Direct Client.Verify* calls give full control
+// over chain sequencing while preserving the SDK's value: SHA-256-
+// keyed LRU cache, strict prefix validation, fail-closed-on-5xx,
+// anti-enumeration error mapping.
 //
 // Pre-SDK behaviour preserved:
-//   - Token extraction: Authorization Bearer first, then legacy "token"
-//     header (the SDK honours both; legacy "token" header is the path
-//     octo-web / iOS / Android use — see octo-auth project doc §14.3).
+//   - Token extraction: Authorization Bearer (any prefix) first; legacy
+//     "token" header fallback used by octo-web / iOS / Android (project
+//     doc §14.3).
 //   - role="bot" for bot-authenticated requests (matter handlers
 //     discriminate on this string).
-//   - related_uids = [self, owned_bots...] for users, [self, owner] for
-//     bots — populated by SDK and copied through.
-//   - Cache TTL: 60s (SDK default; matches matter's pre-SDK setting).
-//   - User language promoted to i18n stack via i18n.PromoteUserLanguage.
+//   - owner_uid + owner_name copied for bots (LLM-mediated
+//     bot-on-behalf-of-owner notifications need both).
+//   - related_uids = [self, owned_bots...] for users, [self, owner]
+//     for bots.
+//   - User-language preference promoted into i18n via
+//     i18n.PromoteUserLanguage — for sessions from VerifyUserResp.Language,
+//     for bots from VerifyBotResp.Language (owner's preference).
+//   - Cache TTL: 60s (SDK default).
 func AuthMiddleware(cfg Config) gin.HandlerFunc {
 	client := getOrInitSDKClient(cfg.OctoIMURL)
-	sdkMW := client.Middleware(octoauth.ScopeAny)
 
 	return func(c *gin.Context) {
-		// Defer to the SDK middleware. If verification fails, the SDK
-		// aborts the request with the standard ErrorEnvelope; we don't
-		// reach the copy step below.
-		sdkMW(c)
-		if c.IsAborted() {
+		token, kind, ok := extractToken(c)
+		if !ok {
+			i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthMissingToken, nil, nil)
 			return
 		}
 
-		// Copy SDK context keys → legacy matter keys.
-		uid := octoauth.GetLoginUID(c)
-		c.Set("uid", uid)
-		c.Set("name", octoauth.GetName(c))
+		switch kind {
+		case sdkKindAPIKey:
+			handleAPIKey(c, client, token)
+		case sdkKindBot:
+			handleBot(c, client, token)
+		default: // session token
+			handleUser(c, client, token)
+		}
+	}
+}
 
-		switch octoauth.GetAuthKind(c) {
-		case octoauth.AuthKindBot:
-			// matter handlers (resp.go:140-160 et al.) discriminate on
-			// role=="bot" — preserve that string exactly.
-			c.Set("role", "bot")
-			if owner := octoauth.GetOwnerUID(c); owner != "" {
-				c.Set("owner_uid", owner)
-			}
+// Token-kind sentinel for extractToken (matches the SDK's classification).
+type tokenKind int
+
+const (
+	sdkKindSession tokenKind = iota
+	sdkKindBot
+	sdkKindAPIKey
+)
+
+// extractToken pulls (token, kind, true) from the request. Returns
+// (_, _, false) when no parseable token is present.
+func extractToken(c *gin.Context) (string, tokenKind, bool) {
+	if h := c.GetHeader("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		tok := strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		if tok == "" {
+			return "", 0, false
+		}
+		switch {
+		case strings.HasPrefix(tok, "uk_"):
+			return tok, sdkKindAPIKey, true
+		case strings.HasPrefix(tok, "bf_"), strings.HasPrefix(tok, "app_"):
+			return tok, sdkKindBot, true
 		default:
-			c.Set("role", octoauth.GetRole(c))
+			return tok, sdkKindSession, true
 		}
+	}
+	if tok := strings.TrimSpace(c.GetHeader("token")); tok != "" {
+		return tok, sdkKindSession, true
+	}
+	return "", 0, false
+}
 
-		if related := octoauth.GetRelatedUIDs(c); len(related) > 0 {
-			c.Set("related_uids", related)
-		}
+func handleUser(c *gin.Context, client *octoauth.Client, token string) {
+	resp, err := client.VerifyUser(c.Request.Context(), token, true /* includeContext */)
+	if err != nil {
+		respondSDKError(c, err)
+		return
+	}
+	c.Set("uid", resp.UID)
+	c.Set("name", resp.Name)
+	c.Set("role", resp.Role)
+	related := []string{resp.UID}
+	for _, b := range resp.OwnedBots {
+		related = append(related, b.UID)
+	}
+	c.Set("related_uids", related)
+	if resp.Language != "" {
+		i18n.PromoteUserLanguage(c, resp.Language)
+	}
+	c.Next()
+}
 
-		// Promote the verified user's stored language into i18n so the
-		// rest of the request stack localises responses in that lang.
-		// Bot path: prefer owner language when the SDK exposes it; for
-		// now SDK only carries owner_name (PR-A3), so this is a no-op
-		// for bots until the contract adds owner_language.
-		if octoauth.GetAuthKind(c) == octoauth.AuthKindSession {
-			// SDK's VerifyUserResp.Language is exposed via GetLanguage
-			// once added. For now read from the underlying SDK context
-			// helper if present (forward-compatible).
-			// No-op until SDK ships GetUserLanguage; the pre-SDK code
-			// path also degraded to "" when octo-server didn't return
-			// the field, so this is behaviour-preserving.
-			_ = i18n.PromoteUserLanguage // referenced to keep import live
-		}
+func handleBot(c *gin.Context, client *octoauth.Client, token string) {
+	resp, err := client.VerifyBot(c.Request.Context(), token)
+	if err != nil {
+		respondSDKError(c, err)
+		return
+	}
+	// matter handlers (resp.go:140-160 et al.) discriminate on
+	// role=="bot" — preserve that string exactly.
+	c.Set("uid", resp.BotUID)
+	c.Set("name", resp.BotName)
+	c.Set("role", "bot")
+	if resp.OwnerUID != "" {
+		c.Set("owner_uid", resp.OwnerUID)
+	}
+	if resp.OwnerName != "" {
+		// LLM-mediated bot-on-behalf-of-owner notifications
+		// (internal/handler/resp.go:101-105) need the owner's display
+		// name; legacy authVerifyBot returned it.
+		c.Set("owner_name", resp.OwnerName)
+	}
+	related := []string{resp.BotUID}
+	if resp.OwnerUID != "" {
+		related = append(related, resp.OwnerUID)
+	}
+	c.Set("related_uids", related)
+	if resp.Language != "" {
+		// Bot path: language is the owner's preference.
+		i18n.PromoteUserLanguage(c, resp.Language)
+	}
+	c.Next()
+}
 
-		c.Next()
+func handleAPIKey(c *gin.Context, client *octoauth.Client, token string) {
+	resp, err := client.VerifyAPIKey(c.Request.Context(), token, true /* includeContext */)
+	if err != nil {
+		respondSDKError(c, err)
+		return
+	}
+	c.Set("uid", resp.UID)
+	if resp.SpaceID != "" {
+		c.Set("space_id", resp.SpaceID)
+	}
+	c.Next()
+}
+
+// respondSDKError maps a SDK sentinel error to matter's i18n envelope.
+// Anti-enumeration: any "token bad" reason → single 401 with
+// KeyAuthInvalidToken.
+func respondSDKError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, octoauth.ErrTokenMissing):
+		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthMissingToken, nil, nil)
+	case errors.Is(err, octoauth.ErrTokenInvalid), errors.Is(err, octoauth.ErrKindMismatch):
+		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthInvalidToken, nil, nil)
+	case errors.Is(err, octoauth.ErrBotUnavailable):
+		i18n.RespondError(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", i18n.KeyAuthUnavailable, nil, nil)
+	case errors.Is(err, octoauth.ErrUpstreamUnavailable):
+		i18n.RespondError(c, http.StatusServiceUnavailable, "AUTH_UNAVAILABLE", i18n.KeyAuthUnavailable, nil, nil)
+	default:
+		i18n.RespondError(c, http.StatusUnauthorized, "UNAUTHORIZED", i18n.KeyAuthInvalidToken, nil, nil)
 	}
 }
 
