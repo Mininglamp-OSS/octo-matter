@@ -10,6 +10,8 @@ github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622120547-886acfd181d4 h1
 github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622120547-886acfd181d4/go.mod h1:tL8hGqAcqXFCI2M9AJKRapPoLhJNXXRh8mffzfjzOeY=
 github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622124627-577175ccfb15 h1:upwV+JJw3phTEx2wjiNt4L0hI9TsU/SpKTmoHIzeOv4=
 github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622124627-577175ccfb15/go.mod h1:tL8hGqAcqXFCI2M9AJKRapPoLhJNXXRh8mffzfjzOeY=
+github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622125426-364c4704cd6e h1:wP9IQ7x8G5ux3NXvXNaqv+ms5s+Xb/WzLl5DlumUvbQ=
+github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260622125426-364c4704cd6e/go.mod h1:tL8hGqAcqXFCI2M9AJKRapPoLhJNXXRh8mffzfjzOeY=
 github.com/anthropics/anthropic-sdk-go v1.44.1 h1:HSevhzwYd5CRjW6JXc4P6y4tT4gBpZUpwy5Id0vWXNc=
 github.com/anthropics/anthropic-sdk-go v1.44.1/go.mod h1:bx5vWuHFuGPkELH8Z4KUiNSohFnUwScdpTyr+50myPo=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
