@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -178,36 +179,54 @@ func handleAPIKey(c *gin.Context, client *octoauth.Client, token string) {
 		return
 	}
 	c.Set("uid", resp.UID)
+	// yujiawei round-4 P1: handleAPIKey was omitting `role` and
+	// `related_uids`, both of which downstream handlers consume
+	// (internal/handler/resp.go branches on role=="bot"; GetRelatedUIDs
+	// falls back to [uid] when the key is missing, which silently
+	// expands visibility for API-key callers).
+	c.Set("role", "apikey")
+	related := []string{resp.UID}
+	// For an API key the related set is owner + every owned bot across
+	// every accessible space. Stable order so cache-key callers don't
+	// see ordering flips per request.
+	if len(resp.OwnedBotsBySpace) > 0 {
+		spaceKeys := make([]string, 0, len(resp.OwnedBotsBySpace))
+		for sp := range resp.OwnedBotsBySpace {
+			spaceKeys = append(spaceKeys, sp)
+		}
+		sort.Strings(spaceKeys)
+		for _, sp := range spaceKeys {
+			related = append(related, resp.OwnedBotsBySpace[sp]...)
+		}
+	}
+	c.Set("related_uids", related)
 	if resp.SpaceID != "" {
 		c.Set("space_id", resp.SpaceID)
 	}
-	// SDK ctx keys for the API key path so SpaceMiddlewareWithSDK
-	// enforces against the verify-context. Built from
-	// OwnedBotsBySpace's keys (the set of spaces the key has access
-	// to) — mirrors what the SDK's injectAPIKeyContext does for
-	// daemon callers.
+	// SDK ctx keys for the API key path so SpaceMiddleware enforces
+	// against the verify-context. Built from OwnedBotsBySpace's keys
+	// (the set of spaces the key has access to) — mirrors what the
+	// SDK's injectAPIKeyContext does for daemon callers.
 	if resp.ContextIncluded {
 		c.Set(octoauth.CtxKeyContextIncluded, true)
 		c.Set(octoauth.CtxKeyOwnedBotsBySpace, resp.OwnedBotsBySpace)
-		spaces := make([]string, 0, len(resp.OwnedBotsBySpace))
+		// Verified spaces = union(OwnedBotsBySpace keys, {SpaceID}).
+		// Jerry-Xin round-4 P0 on octo-auth#2 (also applied here in
+		// the matter adapter): a bound API key with no owned bots
+		// would otherwise produce an empty list and 403 the legitimate
+		// X-Space-Id call. Dedup defensively.
+		spaceSet := make(map[string]struct{}, len(resp.OwnedBotsBySpace)+1)
 		for k := range resp.OwnedBotsBySpace {
+			spaceSet[k] = struct{}{}
+		}
+		if resp.SpaceID != "" {
+			spaceSet[resp.SpaceID] = struct{}{}
+		}
+		spaces := make([]string, 0, len(spaceSet))
+		for k := range spaceSet {
 			spaces = append(spaces, k)
 		}
-		// Also include the bound space (if any) so SpaceMiddlewareWithSDK
-		// passes when X-Space-Id matches the binding even when the bot
-		// list is empty.
-		if resp.SpaceID != "" {
-			found := false
-			for _, s := range spaces {
-				if s == resp.SpaceID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				spaces = append(spaces, resp.SpaceID)
-			}
-		}
+		sort.Strings(spaces) // stable order — see related_uids note above
 		c.Set(octoauth.CtxKeyVerifiedSpaces, spaces)
 	}
 	c.Next()
@@ -280,7 +299,37 @@ func getOrInitSDKClient(serverURL string) *octoauth.Client {
 // answer slightly different questions.
 //
 // PR-C3 in the parent project may layer RequireSpaceMember on top.
-// PR-C1 keeps this code intact to minimise blast radius.
+// SpaceMiddleware reads X-Space-Id header and validates membership.
+//
+// Round-5 fail-closed migration (P0 from OctoBoooot / Jerry-Xin /
+// yujiawei convergent review on #86 head b5f5fd9): the prior
+// SpaceMiddleware only checked the legacy `token:` header path for
+// the membership round-trip to octo-server's /v1/space/{id}, and
+// fell OPEN when the `token` header was absent — setting space_id
+// from the client-supplied X-Space-Id and continuing without
+// verification. AuthMiddleware now routes Bearer-session and
+// Bearer-API-key traffic through paths that DON'T send the legacy
+// `token:` header, so a valid user could claim any X-Space-Id and
+// read/write into spaces they aren't a member of — a cross-tenant
+// data leak the new Bearer modes introduced.
+//
+// New verification order (fail-closed on every reachable path):
+//   1. Inline check from AuthMiddleware's SDK context. If
+//      octoauth.IsContextIncluded(c) is true the verify-context is
+//      authoritative — X-Space-Id MUST be in GetVerifiedSpaces(c)
+//      or we 403. This covers Bearer-session, Bearer-API-key, and
+//      Bearer-bot Scope=space — every new auth mode this PR
+//      introduces. No octo-server round-trip needed; AuthMiddleware
+//      already paid for it.
+//   2. Legacy `token:` header fallback for pre-v1 octo-server (when
+//      the verify response doesn't carry context) — keeps the
+//      existing octo-server /v1/space/{id} round-trip + cache.
+//   3. Neither: AuthMiddleware should always have set ONE of the
+//      two, so reaching here means an unauthenticated request slipped
+//      through (which AuthMiddleware would already have 401'd in a
+//      mounted chain) OR an OctoIMURL=empty config (the test bypass
+//      path, preserved below). Anything else is a misconfiguration —
+//      fail-closed with 503 so the operator notices.
 func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 	client := &http.Client{Timeout: 5 * time.Second}
 	cache := newSpaceCache()
@@ -296,11 +345,30 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 			return
 		}
 
+		// Path 1: SDK verify-context (authoritative for every Bearer
+		// auth mode AuthMiddleware sets up).
+		if octoauth.IsContextIncluded(c) {
+			for _, s := range octoauth.GetVerifiedSpaces(c) {
+				if s == spaceID {
+					c.Set("space_id", spaceID)
+					c.Next()
+					return
+				}
+			}
+			i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
+			return
+		}
+
+		// Path 2: legacy `token:` header round-trip for pre-v1
+		// octo-server. Skipped when OctoIMURL is empty (test mode).
 		if octoIMURL != "" {
 			token := c.GetHeader("token")
 			if token == "" {
-				c.Set("space_id", spaceID)
-				c.Next()
+				// No SDK context AND no legacy token: the request has
+				// no verifiable membership signal. Pre-round-5 this
+				// branch fail-OPENED; that was the cross-tenant leak.
+				// Fail-closed instead.
+				i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
 				return
 			}
 
@@ -333,12 +401,19 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 			}
 			if resp.StatusCode != http.StatusOK {
 				log.Printf("SpaceMiddleware: octoim space check returned status %d", resp.StatusCode)
-				i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
+				i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
 				return
 			}
 			cache.set(cacheKey, true, 60*time.Second)
+			c.Set("space_id", spaceID)
+			c.Next()
+			return
 		}
 
+		// Path 3: OctoIMURL empty (test-only configuration). Preserve
+		// the pre-round-5 fall-through here because production
+		// always sets OctoIMURL and this branch only ever fires in
+		// unit tests that don't assert on space membership.
 		c.Set("space_id", spaceID)
 		c.Next()
 	}

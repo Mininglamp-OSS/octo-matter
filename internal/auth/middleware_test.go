@@ -258,7 +258,9 @@ func TestSpaceMiddlewareWithSDK_VerifiedMemberPasses(t *testing.T) {
 		t.Fatalf("verified member must pass; got %d (body: %s)", w.Code, w.Body.String())
 	}
 	var resp map[string]string
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, w.Body.String())
+	}
 	if resp["space_id"] != "sp_B" {
 		t.Fatalf("space_id not set: %v", resp)
 	}
@@ -281,5 +283,255 @@ func TestSpaceMiddlewareWithSDK_CompatPassesWithoutContext(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("compat mode (no verify-context) must pass through; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestAuthAndSpaceMiddleware_BearerSession_NonMember_403 pins the
+// round-4 P0 from OctoBoooot / Jerry-Xin / yujiawei convergent
+// review on #86: a Bearer-session caller whose verify response lists
+// spaces=[sp_member] MUST 403 when they send X-Space-Id=sp_attacker,
+// even though the legacy `token:` header is absent. Prior to round-5
+// SpaceMiddleware fell into the `if token == "" { c.Set(space_id);
+// c.Next() }` fail-open branch and let the attacker claim any space.
+func TestAuthAndSpaceMiddleware_BearerSession_NonMember_403(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyUserResp{
+			SchemaVersion:   1, Kind: "user", UID: "u1", Name: "Alice", Role: "admin",
+			ContextIncluded: true,
+			Spaces:          []string{"sp_member"},
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.Use(SpaceMiddleware(mockOcto.URL))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id")})
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	// New Bearer-session form (round-4 introduced) — sends NO legacy
+	// `token:` header, so the pre-round-5 SpaceMiddleware fell open.
+	req.Header.Set("Authorization", "Bearer session_token_with_no_prefix_value")
+	req.Header.Set("X-Space-Id", "sp_attacker")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("Bearer-session with X-Space-Id outside verified spaces MUST 403; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestAuthAndSpaceMiddleware_BearerSession_Member_200 is the positive
+// control complement: same Bearer-session caller with X-Space-Id IN
+// the verified list passes through.
+func TestAuthAndSpaceMiddleware_BearerSession_Member_200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyUserResp{
+			SchemaVersion:   1, Kind: "user", UID: "u1", Name: "Alice", Role: "admin",
+			ContextIncluded: true,
+			Spaces:          []string{"sp_member"},
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.Use(SpaceMiddleware(mockOcto.URL))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id")})
+	})
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer session_token_with_no_prefix_value")
+	req.Header.Set("X-Space-Id", "sp_member")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Bearer-session with verified X-Space-Id MUST pass; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestAuthAndSpaceMiddleware_BearerAPIKey_BoundSpaceOnly_200 covers the
+// "bound API key with no owned bots" shape: X-Space-Id matches the
+// binding → pass.
+func TestAuthAndSpaceMiddleware_BearerAPIKey_BoundSpaceOnly_200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion: 1, Kind: "apikey",
+			UID: "u_owner", KeyID: "k1",
+			SpaceID:         "sp_bound",
+			ContextIncluded: true,
+			// OwnedBotsBySpace deliberately empty.
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.Use(SpaceMiddleware(mockOcto.URL))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id"), "role": c.GetString("role")})
+	})
+
+	apiKey := "uk_" + strings.Repeat("k", 32)
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Space-Id", "sp_bound")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("API key bound to sp_bound with matching X-Space-Id MUST pass; got %d (body: %s)", w.Code, w.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["role"] != "apikey" {
+		t.Errorf("handleAPIKey must set role=apikey; got %q", resp["role"])
+	}
+}
+
+// TestAuthAndSpaceMiddleware_BearerAPIKey_Unbound_NonOwnedSpace_403
+// covers the actual yujiawei P0 scenario: an UNBOUND API key
+// (resp.SpaceID="") with OwnedBotsBySpace covering only sp_a sends
+// X-Space-Id=sp_attacker. Pre-round-5 handleAPIKey didn't set
+// space_id (SpaceID empty), so SpaceMiddleware hit the empty-token
+// fail-open branch and granted sp_attacker. With round-5
+// fail-closed, SpaceMiddleware consumes the SDK verified-spaces
+// (sp_a only here) and 403s on sp_attacker.
+func TestAuthAndSpaceMiddleware_BearerAPIKey_Unbound_NonOwnedSpace_403(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion:    1, Kind: "apikey",
+			UID:              "u_owner",
+			KeyID:            "k1",
+			SpaceID:          "", // UNBOUND key
+			ContextIncluded:  true,
+			OwnedBotsBySpace: map[string][]string{"sp_a": {"b1"}},
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.Use(SpaceMiddleware(mockOcto.URL))
+	r.GET("/x", func(c *gin.Context) { c.Status(200) })
+
+	apiKey := "uk_" + strings.Repeat("k", 32)
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Space-Id", "sp_attacker")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("unbound API key with X-Space-Id outside OwnedBotsBySpace MUST 403; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestAuthAndSpaceMiddleware_BearerAPIKey_Unbound_OwnedSpace_200 is
+// the positive complement: unbound API key with X-Space-Id matching
+// one of its OwnedBotsBySpace keys passes.
+func TestAuthAndSpaceMiddleware_BearerAPIKey_Unbound_OwnedSpace_200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion: 1, Kind: "apikey",
+			UID: "u_owner", KeyID: "k1",
+			SpaceID:          "",
+			ContextIncluded:  true,
+			OwnedBotsBySpace: map[string][]string{"sp_a": {"b1"}, "sp_b": {"b2"}},
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.Use(SpaceMiddleware(mockOcto.URL))
+	r.GET("/x", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"space_id": c.GetString("space_id")})
+	})
+
+	apiKey := "uk_" + strings.Repeat("k", 32)
+	req := httptest.NewRequest("GET", "/x", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Space-Id", "sp_b")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unbound API key with X-Space-Id IN OwnedBotsBySpace MUST pass; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
+
+// TestHandleAPIKey_SetsRoleAndRelatedUIDs covers the yujiawei P1
+// finding directly via the probe handler.
+func TestHandleAPIKey_SetsRoleAndRelatedUIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+			SchemaVersion: 1, Kind: "apikey",
+			UID: "u_owner", KeyID: "k1",
+			SpaceID:          "sp_a",
+			ContextIncluded:  true,
+			OwnedBotsBySpace: map[string][]string{"sp_a": {"b1", "b2"}, "sp_b": {"b3"}},
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.GET("/probe", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"role":         c.GetString("role"),
+			"related_uids": GetRelatedUIDs(c),
+		})
+	})
+
+	apiKey := "uk_" + strings.Repeat("k", 32)
+	req := httptest.NewRequest("GET", "/probe", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["role"] != "apikey" {
+		t.Errorf("role = %q want apikey", resp["role"])
+	}
+	related, _ := resp["related_uids"].([]any)
+	got := map[string]bool{}
+	for _, u := range related {
+		got[u.(string)] = true
+	}
+	for _, want := range []string{"u_owner", "b1", "b2", "b3"} {
+		if !got[want] {
+			t.Errorf("related_uids missing %q; got %+v", want, related)
+		}
 	}
 }
