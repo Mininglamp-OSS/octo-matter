@@ -42,12 +42,14 @@ func newAuthTestEngine(t *testing.T, h http.HandlerFunc) *gin.Engine {
 // IsContextIncluded + GetVerifiedSpaces (Jerry-Xin P0 review on #87).
 func TestAuthMiddleware_User_HappyPath(t *testing.T) {
 	r := newAuthTestEngine(t, func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(contract.VerifyUserResp{
+		if err := json.NewEncoder(w).Encode(contract.VerifyUserResp{
 			SchemaVersion:    1, Kind: "user", UID: "u1", Name: "Alice", Role: "admin",
 			ContextIncluded:  true,
 			Spaces:           []string{"sp_a", "sp_b"},
 			OwnedBotsBySpace: map[string][]string{"sp_a": {"b1"}},
-		})
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
 	})
 	req := httptest.NewRequest("GET", "/probe", nil)
 	req.Header.Set("token", "user-tok-1")
@@ -57,7 +59,9 @@ func TestAuthMiddleware_User_HappyPath(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, w.Body.String())
+	}
 	if resp["uid"] != "u1" || resp["name"] != "Alice" || resp["role"] != "admin" {
 		t.Fatalf("legacy keys wrong: %+v", resp)
 	}
@@ -75,11 +79,13 @@ func TestAuthMiddleware_User_HappyPath(t *testing.T) {
 // against the bot binding.
 func TestAuthMiddleware_Bot_HappyPath(t *testing.T) {
 	r := newAuthTestEngine(t, func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(contract.VerifyBotResp{
+		if err := json.NewEncoder(w).Encode(contract.VerifyBotResp{
 			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
 			BotKind: "app", Scope: "space", SpaceID: "sp_A",
 			OwnerUID: "u1", OwnerName: "Owner",
-		})
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
 	})
 	req := httptest.NewRequest("GET", "/probe", nil)
 	req.Header.Set("Authorization", "Bearer app_a_real_app_bot_token_here")
@@ -89,7 +95,9 @@ func TestAuthMiddleware_Bot_HappyPath(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, w.Body.String())
+	}
 	if resp["uid"] != "b1" || resp["role"] != "bot" || resp["owner_uid"] != "u1" || resp["owner_name"] != "Owner" {
 		t.Fatalf("bot legacy keys wrong: %+v", resp)
 	}
@@ -126,14 +134,16 @@ func TestAuthMiddleware_NoToken_401(t *testing.T) {
 // merge-dedup logic was easy to break unnoticed).
 func TestAuthMiddleware_APIKey_HappyPath(t *testing.T) {
 	r := newAuthTestEngine(t, func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
+		if err := json.NewEncoder(w).Encode(contract.VerifyAPIKeyResp{
 			SchemaVersion: 1, Kind: "apikey",
 			UID:              "u_owner",
 			KeyID:            "k1",
 			SpaceID:          "sp_bound",
 			ContextIncluded:  true,
 			OwnedBotsBySpace: map[string][]string{"sp_a": {"b1"}, "sp_b": {"b2"}},
-		})
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
 	})
 	apiKey := "uk_" + strings.Repeat("k", 32)
 	req := httptest.NewRequest("GET", "/probe", nil)
@@ -144,7 +154,9 @@ func TestAuthMiddleware_APIKey_HappyPath(t *testing.T) {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 	var resp map[string]any
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v body=%s", err, w.Body.String())
+	}
 	if resp["uid"] != "u_owner" || resp["space_id"] != "sp_bound" {
 		t.Fatalf("api-key legacy keys wrong: %+v", resp)
 	}

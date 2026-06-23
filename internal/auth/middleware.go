@@ -257,9 +257,17 @@ func getOrInitSDKClient(serverURL string) *octoauth.Client {
 	if err != nil {
 		// Construction can only fail on empty ServerURL — log loudly
 		// and return a placeholder that fails every request rather
-		// than nil so callers don't NPE.
+		// than nil so callers don't NPE. The placeholder construction
+		// uses a hardcoded non-empty ServerURL so it cannot itself
+		// fail; if octoauth.New ever grows new failure modes, panic
+		// rather than return nil and crash callers far from the
+		// misconfiguration.
 		log.Printf("auth: SDK Client construction failed for %q: %v", serverURL, err)
-		c, _ = octoauth.New(octoauth.Options{ServerURL: "http://invalid"})
+		var pErr error
+		c, pErr = octoauth.New(octoauth.Options{ServerURL: "http://invalid"})
+		if pErr != nil {
+			log.Panicf("auth: SDK Client placeholder construction failed: %v", pErr)
+		}
 	}
 	sdkClients[serverURL] = c
 	return c
@@ -307,7 +315,12 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 				return
 			}
 
-			req, _ := http.NewRequest("GET", octoIMURL+"/v1/space/"+spaceID, nil)
+			req, err := http.NewRequest("GET", octoIMURL+"/v1/space/"+spaceID, nil)
+			if err != nil {
+				log.Printf("SpaceMiddleware: build request: %v", err)
+				i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
+				return
+			}
 			req.Header.Set("token", token)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -315,7 +328,9 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 				i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
 				return
 			}
-			resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				log.Printf("SpaceMiddleware: resp.Body.Close: %v", cerr)
+			}
 			if resp.StatusCode != http.StatusOK {
 				log.Printf("SpaceMiddleware: octoim space check returned status %d", resp.StatusCode)
 				i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
