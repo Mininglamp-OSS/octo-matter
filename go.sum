@@ -4,8 +4,8 @@ github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/DATA-DOG/go-sqlmock v1.5.0 h1:Shsta01QNfFxHCfpW6YH2STWB0MudeXXEWMr20OEh60=
 github.com/DATA-DOG/go-sqlmock v1.5.0/go.mod h1:f/Ixk793poVmq4qj/V1dPUg2JEAKC73Q5eFN3EC/SaM=
-github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260624025908-d6746e1d418f h1:9UZLiNn6Lp6fejRigpNeFts5vqg9cGC5+ZXmmnjLiaA=
-github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260624025908-d6746e1d418f/go.mod h1:tL8hGqAcqXFCI2M9AJKRapPoLhJNXXRh8mffzfjzOeY=
+github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260624085038-e89810cda3b2 h1:IuOtnyYfgusSm0TudixXxIL4e5aLdwkT1cGSSHCkTIs=
+github.com/Mininglamp-OSS/octo-auth/sdk-go v0.0.0-20260624085038-e89810cda3b2/go.mod h1:tL8hGqAcqXFCI2M9AJKRapPoLhJNXXRh8mffzfjzOeY=
 github.com/anthropics/anthropic-sdk-go v1.44.1 h1:HSevhzwYd5CRjW6JXc4P6y4tT4gBpZUpwy5Id0vWXNc=
 github.com/anthropics/anthropic-sdk-go v1.44.1/go.mod h1:bx5vWuHFuGPkELH8Z4KUiNSohFnUwScdpTyr+50myPo=
 github.com/bahlo/generic-list-go v0.2.0 h1:5sz/EEAK+ls5wF+NeqDpk5+iNdMDXrh3z3nPnH1Wvgk=
