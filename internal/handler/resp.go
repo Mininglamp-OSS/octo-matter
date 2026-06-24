@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/Mininglamp-OSS/octo-matter/internal/apperr"
+	"github.com/Mininglamp-OSS/octo-matter/internal/auth"
 	"github.com/Mininglamp-OSS/octo-matter/internal/i18n"
 	"github.com/Mininglamp-OSS/octo-matter/internal/repository"
 	"github.com/gin-gonic/gin"
@@ -125,9 +126,20 @@ func relatedUIDs(c *gin.Context) []string {
 // authenticated via Bearer + verify-bot, not the public token used by the
 // channel members API; see PR#34 thread for the trust model). Service-layer
 // access checks treat "" as "skip IM channel-membership verification".
+//
+// yujiawei round-5 P1 review on #86: the prior implementation only read
+// the legacy `token:` header, so a human Bearer-session caller
+// (Authorization: Bearer <session>) returned "" — silently downgrading
+// to the bot sentinel and bypassing RequireChannelMember at matter
+// creation + extract. Now the AuthMiddleware stashes the raw session
+// credential under auth.CtxKeyAuthToken regardless of which header
+// carried it, and we prefer that stashed value over the header.
 func callerToken(c *gin.Context) string {
 	if c.GetString("role") == "bot" {
 		return ""
+	}
+	if tok := c.GetString(auth.CtxKeyAuthToken); tok != "" {
+		return tok
 	}
 	return c.GetHeader("token")
 }

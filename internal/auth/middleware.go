@@ -66,6 +66,22 @@ func AuthMiddleware(cfg Config) gin.HandlerFunc {
 	}
 }
 
+// CtxKeyAuthToken stores the raw session credential (token: header
+// or Authorization: Bearer payload) for downstream code that needs
+// to forward it — specifically internal/handler/resp.go's
+// callerToken(c), which feeds RequireChannelMember's IM round-trip
+// to octo-server's /v1/space/{id}.
+//
+// yujiawei round-5 P1 review on matter#86: the previous handleUser
+// did not stash this anywhere, so callerToken(c) fell back to
+// reading the legacy `token:` header. Bearer-session callers carry
+// no `token:` header, so callerToken returned "" — and the
+// service-layer "" sentinel ("skip channel check, treat as bot")
+// silently disabled RequireChannelMember at matter create + extract.
+// Stashing the credential here lets resp.go forward the right token
+// regardless of which header carried it.
+const CtxKeyAuthToken = "matter.auth_token"
+
 // Token-kind sentinel for extractToken (matches the SDK's classification).
 type tokenKind int
 
@@ -107,6 +123,11 @@ func handleUser(c *gin.Context, client *octoauth.Client, token string) {
 	c.Set("uid", resp.UID)
 	c.Set("name", resp.Name)
 	c.Set("role", resp.Role)
+	// Stash the session credential so resp.go's callerToken(c) can
+	// forward it to RequireChannelMember regardless of whether the
+	// caller used `token:` or `Authorization: Bearer`. yujiawei P1
+	// on #86 round-5.
+	c.Set(CtxKeyAuthToken, token)
 	related := []string{resp.UID}
 	for _, b := range resp.OwnedBots {
 		related = append(related, b.UID)
@@ -149,9 +170,18 @@ func handleBot(c *gin.Context, client *octoauth.Client, token string) {
 		c.Set("owner_name", resp.OwnerName)
 	}
 	related := []string{resp.BotUID}
-	if resp.OwnerUID != "" {
-		related = append(related, resp.OwnerUID)
-	}
+	// related_uids = [self] ONLY for bots (per pre-SDK contract).
+	// Jerry-Xin + yujiawei round-5 P0 on #86: an earlier draft of this
+	// adapter appended OwnerUID here, but the codebase intentionally
+	// keeps the raw relatedUIDs(c) at [self] and routes owner-side
+	// scope through internal/handler/resp.go's effectiveCallerUIDs(c)
+	// (which adds owner only on the write paths that opted in per the
+	// v3 design §5). Appending owner here silently widens bot authz on
+	// every raw relatedUIDs(c) consumer (matter_handler.go's
+	// RequireChannelMember + ~12 access checks across timeline /
+	// activity / outputs handlers). The owner_uid ctx key is the
+	// signal that effectiveCallerUIDs uses; do NOT bake it into
+	// related_uids here.
 	c.Set("related_uids", related)
 	if resp.Language != "" {
 		// Bot path: language is the owner's preference.
@@ -179,6 +209,13 @@ func handleAPIKey(c *gin.Context, client *octoauth.Client, token string) {
 		return
 	}
 	c.Set("uid", resp.UID)
+	// API-key callers: KeyID identifies the credential, UID is the
+	// owning user. yujiawei round-5 nit on #86: also set `name` for
+	// consistency with handleUser/handleBot (downstream code uses
+	// c.GetString("name") for display/log labels).
+	if resp.KeyID != "" {
+		c.Set("name", "apikey:"+resp.KeyID)
+	}
 	// yujiawei round-4 P1: handleAPIKey was omitting `role` and
 	// `related_uids`, both of which downstream handlers consume
 	// (internal/handler/resp.go branches on role=="bot"; GetRelatedUIDs
@@ -401,7 +438,19 @@ func SpaceMiddleware(octoIMURL string) gin.HandlerFunc {
 			}
 			if resp.StatusCode != http.StatusOK {
 				log.Printf("SpaceMiddleware: octoim space check returned status %d", resp.StatusCode)
-				i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
+				// Distinguish 4xx (membership denied) from 5xx (upstream
+				// outage) — Jerry-Xin/yujiawei/OctoBoooot round-5
+				// convergent feedback on #86: the round-5 first cut
+				// mapped every non-200 to 403, which lost the ops
+				// signal for upstream outages. 4xx is a real "not a
+				// member" answer; 5xx is "upstream broken", and ops
+				// alerts on UPSTREAM_ERROR should not be drowned by
+				// authz-shaped responses.
+				if resp.StatusCode >= 500 {
+					i18n.RespondError(c, http.StatusServiceUnavailable, "UPSTREAM_ERROR", i18n.KeySpaceUnavailable, nil, nil)
+				} else {
+					i18n.RespondError(c, http.StatusForbidden, "SPACE_FORBIDDEN", i18n.KeySpaceForbidden, nil, nil)
+				}
 				return
 			}
 			cache.set(cacheKey, true, 60*time.Second)

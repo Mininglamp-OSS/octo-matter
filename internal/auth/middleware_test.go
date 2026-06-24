@@ -458,3 +458,138 @@ func TestHandleAPIKey_SetsRoleAndRelatedUIDs(t *testing.T) {
 		}
 	}
 }
+
+// TestHandleBot_RelatedUIDsIsSelfOnly pins the Jerry-Xin + yujiawei
+// convergent round-5 P0 on #86: bot `related_uids` must be [self]
+// only. An earlier draft of this adapter appended OwnerUID, silently
+// widening bot authorization on every raw relatedUIDs(c) consumer
+// (matter_handler.go's RequireChannelMember + ~12 other read/write
+// access checks across timeline/activity/outputs handlers). Owner
+// scope is applied surgically via effectiveCallerUIDs(c) on the
+// specific write paths that opted in (v3 design §5); baking owner
+// into related_uids defeats that design.
+func TestHandleBot_RelatedUIDsIsSelfOnly(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyBotResp{
+			SchemaVersion: 1, Kind: "bot", BotUID: "b1", BotName: "Bot",
+			BotKind: "app", Scope: "space", SpaceID: "sp_A",
+			OwnerUID: "u_owner", OwnerName: "Owner",
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.GET("/probe", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"related_uids": GetRelatedUIDs(c),
+			"owner_uid":    c.GetString("owner_uid"),
+		})
+	})
+
+	req := httptest.NewRequest("GET", "/probe", nil)
+	req.Header.Set("Authorization", "Bearer app_a_real_app_bot_token_here")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	related, _ := resp["related_uids"].([]any)
+	if len(related) != 1 || related[0] != "b1" {
+		t.Errorf("bot related_uids must be [self]=[\"b1\"]; got %+v — appending owner here silently widens bot authz across ~12 raw relatedUIDs(c) callers", related)
+	}
+	// owner_uid is still set as a separate ctx key (effectiveCallerUIDs
+	// reads it) — confirm we didn't lose that signal in the revert.
+	if resp["owner_uid"] != "u_owner" {
+		t.Errorf("owner_uid ctx key must still be set; got %+v", resp["owner_uid"])
+	}
+}
+
+// TestHandleUser_StashesAuthToken_BearerSessionVisibleToCallerToken
+// pins the yujiawei round-5 P1 fix: a Bearer-session caller must
+// reach RequireChannelMember with a real callerToken (forwarded as
+// the IM auth credential), not the empty-string sentinel that
+// silently downgrades to "skip channel check". The middleware now
+// stashes the raw session token under auth.CtxKeyAuthToken, and
+// resp.go's callerToken(c) reads it before falling back to the
+// legacy `token:` header.
+func TestHandleUser_StashesAuthToken_BearerSessionVisibleToCallerToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := json.NewEncoder(w).Encode(contract.VerifyUserResp{
+			SchemaVersion: 1, Kind: "user", UID: "u1", Name: "Alice", Role: "admin",
+		}); err != nil {
+			t.Errorf("mock encode: %v", err)
+		}
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.GET("/probe", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{
+			"stashed": c.GetString(CtxKeyAuthToken),
+		})
+	})
+
+	req := httptest.NewRequest("GET", "/probe", nil)
+	req.Header.Set("Authorization", "Bearer bearer_session_token_value_123")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp["stashed"] != "bearer_session_token_value_123" {
+		t.Errorf("Bearer credential must be stashed under CtxKeyAuthToken; got %q", resp["stashed"])
+	}
+}
+
+// TestSpaceMiddleware_LegacyPath_5xxMapsTo503 pins the
+// Jerry-Xin/yujiawei/OctoBoooot convergent round-5 ask on #86: when
+// the legacy /v1/space/{id} round-trip returns a 5xx, the response
+// must be 503 UPSTREAM_ERROR (not 403). Mapping 5xx to 403 was the
+// round-5 first-cut behavior; it lost the ops signal for genuine
+// upstream outages (alert on 5xx vs alert on 403 are very different
+// SRE workflows).
+func TestSpaceMiddleware_LegacyPath_5xxMapsTo503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockOcto := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/space/sp_A" {
+			http.Error(w, "upstream broken", http.StatusInternalServerError)
+			return
+		}
+		// AuthMiddleware verify call — return a user without verify-context
+		// so SpaceMiddleware falls through to the legacy path.
+		_ = json.NewEncoder(w).Encode(contract.VerifyUserResp{
+			SchemaVersion: 1, Kind: "user", UID: "u1", Name: "Alice", Role: "admin",
+			ContextIncluded: false,
+		})
+	}))
+	t.Cleanup(mockOcto.Close)
+
+	r := gin.New()
+	r.Use(AuthMiddleware(Config{OctoIMURL: mockOcto.URL}))
+	r.Use(SpaceMiddleware(mockOcto.URL))
+	r.GET("/x", func(c *gin.Context) { c.Status(200) })
+
+	req := httptest.NewRequest("GET", "/x", nil)
+	// Legacy token: header path so SpaceMiddleware uses Path 2 (not Path 1).
+	req.Header.Set("token", "legacy-session-token")
+	req.Header.Set("X-Space-Id", "sp_A")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("5xx from legacy /v1/space/{id} round-trip MUST map to 503; got %d (body: %s)", w.Code, w.Body.String())
+	}
+}
