@@ -25,6 +25,18 @@ type Config struct {
 	LLMProvider         string
 	LLMTimeout          int    // seconds
 	DefaultLanguage     string // runtime i18n fallback (zh-CN | en-US)
+
+	// v2 engine knobs (sane defaults; env-overridable for ops/testing)
+	PublicUIPath             string        // doorbell deep-link base (behind nginx: /matter/ui)
+	OutboxDispatchInterval   time.Duration // MATTER_OUTBOX_DISPATCH_SECONDS
+	OutboxRedeliverAfter     time.Duration // MATTER_OUTBOX_REDELIVER_MINUTES
+	OutboxMaxRetries         uint          // MATTER_OUTBOX_MAX_RETRIES
+	WatchdogInterval         time.Duration // MATTER_WATCHDOG_INTERVAL_SECONDS
+	WatchdogEnabled          bool          // MATTER_WATCHDOG_ENABLED
+	WatchdogReviveSilence    time.Duration // MATTER_WATCHDOG_REVIVE_MINUTES
+	WatchdogLeafSLA          time.Duration // MATTER_WATCHDOG_LEAF_SLA_MINUTES
+	WatchdogBlockAfterRevive time.Duration // MATTER_WATCHDOG_BLOCK_MINUTES
+	ScheduleTick             time.Duration // MATTER_SCHEDULE_TICK_SECONDS
 }
 
 func Load() *Config {
@@ -41,6 +53,17 @@ func Load() *Config {
 		LLMProvider:         envOrDefault("OCTO_LLM_PROVIDER", "compat"),
 		LLMTimeout:          envIntOrDefault("LLM_TIMEOUT", 30),
 		DefaultLanguage:     envOrDefault("OCTO_DEFAULT_LANGUAGE", "zh-CN"),
+
+		PublicUIPath:             envOrDefault("MATTER_PUBLIC_UI_PATH", "/matter/ui"),
+		OutboxDispatchInterval:   time.Duration(envIntOrDefault("MATTER_OUTBOX_DISPATCH_SECONDS", 3)) * time.Second,
+		OutboxRedeliverAfter:     time.Duration(envIntOrDefault("MATTER_OUTBOX_REDELIVER_MINUTES", 10)) * time.Minute,
+		OutboxMaxRetries:         uint(envIntOrDefault("MATTER_OUTBOX_MAX_RETRIES", 5)),
+		WatchdogInterval:         time.Duration(envIntOrDefault("MATTER_WATCHDOG_INTERVAL_SECONDS", 60)) * time.Second,
+		WatchdogEnabled:          envBoolOrDefault("MATTER_WATCHDOG_ENABLED", true),
+		WatchdogReviveSilence:    time.Duration(envIntOrDefault("MATTER_WATCHDOG_REVIVE_MINUTES", 5)) * time.Minute,
+		WatchdogLeafSLA:          time.Duration(envIntOrDefault("MATTER_WATCHDOG_LEAF_SLA_MINUTES", 60)) * time.Minute,
+		WatchdogBlockAfterRevive: time.Duration(envIntOrDefault("MATTER_WATCHDOG_BLOCK_MINUTES", 15)) * time.Minute,
+		ScheduleTick:             time.Duration(envIntOrDefault("MATTER_SCHEDULE_TICK_SECONDS", 30)) * time.Second,
 	}
 }
 
@@ -74,6 +97,15 @@ func envIntOrDefault(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func envBoolOrDefault(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return fallback
